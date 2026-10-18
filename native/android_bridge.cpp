@@ -1,0 +1,27 @@
+#include "core.hpp"
+#include <jni.h>
+#include <android/bitmap.h>
+#include <cstring>
+#include <codecvt>
+#include <locale>
+#include <stdexcept>
+namespace {
+std::string str(JNIEnv* e,jstring s){if(!s)return {};auto p=e->GetStringChars(s,nullptr);std::u16string input(reinterpret_cast<const char16_t*>(p),e->GetStringLength(s));e->ReleaseStringChars(s,p);return std::wstring_convert<std::codecvt_utf8_utf16<char16_t>,char16_t>{}.to_bytes(input);}
+jstring result(JNIEnv* e,const std::string& s){auto input=std::wstring_convert<std::codecvt_utf8_utf16<char16_t>,char16_t>{}.from_bytes(s);return e->NewString(reinterpret_cast<const jchar*>(input.data()),static_cast<jsize>(input.size()));}
+}
+extern "C" {
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_inspect(JNIEnv*e,jobject,jstring p){return result(e,translatepdf::inspect(str(e,p)));}
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_readPage(JNIEnv*e,jobject,jstring p,jint i){return result(e,translatepdf::readPage(str(e,p),i));}
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_loadModel(JNIEnv*e,jobject,jstring p,jint c,jint t){return result(e,translatepdf::loadModel(str(e,p),c,t));}
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_translate(JNIEnv*e,jobject,jstring p,jstring g,jstring c){return result(e,translatepdf::translate(str(e,p),str(e,g),str(e,c)));}
+JNIEXPORT void JNICALL Java_dev_kigya_translatepdf_NativeCore_releaseModel(JNIEnv*,jobject){translatepdf::releaseModel();}
+JNIEXPORT void JNICALL Java_dev_kigya_translatepdf_NativeCore_cancel(JNIEnv*,jobject){translatepdf::cancel();}
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_exportPage(JNIEnv*e,jobject,jstring p,jint i,jstring b,jstring d,jstring f){return result(e,translatepdf::exportPage(str(e,p),i,str(e,b),str(e,d),str(e,f)));}
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_mergePdf(JNIEnv*e,jobject,jstring p,jstring d){return result(e,translatepdf::mergePdf(str(e,p),str(e,d)));}
+JNIEXPORT jobject JNICALL Java_dev_kigya_translatepdf_NativeCore_render(JNIEnv*e,jobject,jstring p,jint i,jint w){try{
+ auto r=translatepdf::render(str(e,p),i,w);auto cls=e->FindClass("android/graphics/Bitmap");auto cfgcls=e->FindClass("android/graphics/Bitmap$Config");auto config=e->GetStaticObjectField(cfgcls,e->GetStaticFieldID(cfgcls,"ARGB_8888","Landroid/graphics/Bitmap$Config;"));auto create=e->GetStaticMethodID(cls,"createBitmap","(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;");auto bitmap=e->CallStaticObjectMethod(cls,create,r.width,r.height,config);if(e->ExceptionCheck()||!bitmap)return nullptr;
+ AndroidBitmapInfo info{};if(AndroidBitmap_getInfo(e,bitmap,&info)!=0)return nullptr;void* pixels=nullptr;if(AndroidBitmap_lockPixels(e,bitmap,&pixels)!=0)return nullptr;
+ for(int y=0;y<r.height;y++){auto dst=static_cast<uint8_t*>(pixels)+y*info.stride;auto src=r.rgba.data()+y*r.width*4;for(int x=0;x<r.width;x++){dst[x*4]=src[x*4+2];dst[x*4+1]=src[x*4+1];dst[x*4+2]=src[x*4];dst[x*4+3]=src[x*4+3];}}
+ AndroidBitmap_unlockPixels(e,bitmap);return bitmap;
+}catch(const std::exception& ex){e->ThrowNew(e->FindClass("java/lang/IllegalStateException"),ex.what());return nullptr;}}
+}

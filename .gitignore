@@ -1,0 +1,58 @@
+# Personal workflow skills: BEGIN
+/.agents/skills/p-build-app
+/.agents/skills/p-find-ideas
+/.agents/skills/p-validate-idea
+/.agents/skills/p-prepare-google-play
+/.agents/skills/p-capture-lesson
+/.agents/skills/p-create-readme
+# Personal workflow skills: END
+
+<!-- P BUILD APP: BEGIN -->
+/.agents/skills/p-build-app
+/.p-build-app/tooling.json
+/.p-build-app/npm-cache/
+/.p-build-app/local/
+/.local-private/
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.p12
+*.mobileprovision
+<!-- P BUILD APP: END -->
+
+# Build outputs and private development evidence
+node_modules/
+android/.gradle/
+android/.cxx/
+android/app/.cxx/
+android/app/build/
+android/build/
+android/local.properties
+ios/Pods/
+ios/build/
+coverage/
+.DS_Store
+/.playwright-mcp/
+/.serena/
+/.codex/
+/AGENTS.md
+/BUILD-APP-HANDOFF.md
+/.p-build-app/
+/docs/
+
+/ios/Frameworks/
+/ios/vendor/
+/.bundle/
+/ios/.xcode.env.local
+
+/.agents/
+
+/START_HERE.md
+
+# Local LLVM coverage profiles
+*.profraw
+*.profdata
+__pycache__/
+*.pyc

@@ -93,27 +93,109 @@ void annotate(FPDF_PAGE page,const json& block,double height,const std::string& 
 }
 void unload(){if(ctx){llama_free(ctx);ctx=nullptr;}if(model){llama_model_free(model);model=nullptr;}loadedPath.clear();}
 bool abortInference(void*){return stopped.load();}
+
+struct TextRun {
+ json block;
+ double baseline;
+ FPDF_FONT font;
+ bool horizontal;
+};
+
+void appendRun(TextRun& destination,const TextRun& next,const std::string& separator) {
+ auto& a=destination.block;const auto& b=next.block;
+ a["text"]=a["text"].get<std::string>()+separator+b["text"].get<std::string>();
+ a["sourceText"]=a["text"];
+ for(const char* edge:{"left","top"})a[edge]=std::min(a[edge].get<double>(),b[edge].get<double>());
+ for(const char* edge:{"right","bottom","fontSize"})a[edge]=std::max(a[edge].get<double>(),b[edge].get<double>());
+ for(const auto& index:b["objectIndices"])a["objectIndices"].push_back(index);
+}
+
+json groupText(std::vector<TextRun> runs) {
+ // Sort by the transformed baseline with a strict ordering. A fuzzy comparator
+ // is not transitive and can scramble fragments on the same printed line.
+ std::sort(runs.begin(),runs.end(),[](const TextRun& a,const TextRun& b){
+  if(a.baseline!=b.baseline)return a.baseline<b.baseline;
+  return a.block["left"].get<double>()<b.block["left"].get<double>();
+ });
+ // Establish rows before x ordering: tiny baseline differences must not visit a
+ // right-hand fragment before its left-hand neighbour. Anchor each row once so
+ // successive comparisons cannot drift into the following printed line.
+ std::vector<std::vector<TextRun>> rows;
+ for(auto& run:runs){
+  int row=-1;
+  if(run.horizontal)for(size_t i=0;i<rows.size();++i){
+   const auto& anchor=rows[i].front();
+   const double fs=std::min(anchor.block["fontSize"].get<double>(),run.block["fontSize"].get<double>());
+   if(anchor.horizontal&&std::abs(anchor.baseline-run.baseline)<fs*0.15){row=static_cast<int>(i);break;}
+  }
+  if(row<0)rows.push_back({std::move(run)});else rows[row].push_back(std::move(run));
+ }
+ runs.clear();
+ for(auto& row:rows){
+  std::sort(row.begin(),row.end(),[](const TextRun& a,const TextRun& b){return a.block["left"].get<double>()<b.block["left"].get<double>();});
+  for(auto& run:row)runs.push_back(std::move(run));
+ }
+ std::vector<TextRun> lineRuns;
+ for(const auto& run:runs){
+  int best=-1;double nearest=1e9;
+  for(size_t i=0;i<lineRuns.size();++i){
+   const auto& line=lineRuns[i];const auto& a=line.block;const auto& b=run.block;
+   const double fs=std::max(a["fontSize"].get<double>(),b["fontSize"].get<double>());
+   const double gap=b["left"].get<double>()-a["right"].get<double>();
+   if(line.horizontal&&run.horizontal&&std::abs(line.baseline-run.baseline)<fs*0.15&&
+      gap>=-fs*0.15&&gap<fs*0.8&&gap<nearest&&
+      a["text"].get<std::string>().size()+b["text"].get<std::string>().size()+1<=1800){best=static_cast<int>(i);nearest=gap;}
+  }
+  if(best<0){lineRuns.push_back(run);continue;}
+  auto& line=lineRuns[best];const auto text=line.block["text"].get<std::string>();
+  const auto next=run.block["text"].get<std::string>();
+  const bool separated=text.back()==' '||next.front()==' '||text.back()=='\t'||next.front()=='\t';
+  const bool sign=text.back()=='-'||(text.size()>=3&&text.compare(text.size()-3,3,"−")==0);
+  appendRun(line,run,!separated&&!sign&&nearest>run.block["fontSize"].get<double>()*0.15?" ":"");
+ }
+ std::sort(lineRuns.begin(),lineRuns.end(),[](const TextRun& a,const TextRun& b){
+  if(a.baseline!=b.baseline)return a.baseline<b.baseline;
+  return a.block["left"].get<double>()<b.block["left"].get<double>();
+ });
+ struct Paragraph { TextRun content;TextRun lastLine; };
+ std::vector<Paragraph> paragraphs;
+ for(const auto& line:lineRuns){
+  int best=-1;double nearest=1e9;
+  for(size_t i=0;i<paragraphs.size();++i){
+   const auto& paragraph=paragraphs[i];const auto& previous=paragraph.lastLine;
+   const auto& a=previous.block;const auto& b=line.block;
+   const double fs=std::max(a["fontSize"].get<double>(),b["fontSize"].get<double>());
+   const double advance=line.baseline-previous.baseline;
+   const double gap=b["top"].get<double>()-a["bottom"].get<double>();
+   if(previous.horizontal&&line.horizontal&&previous.font==line.font&&
+      std::abs(a["fontSize"].get<double>()-b["fontSize"].get<double>())<fs*0.15&&
+      std::abs(a["left"].get<double>()-b["left"].get<double>())<std::max(3.,fs*0.6)&&
+      advance>fs*0.7&&advance<fs*1.5&&gap>=-fs*0.15&&gap<fs*0.65&&advance<nearest&&
+      paragraph.content.block["text"].get<std::string>().size()+b["text"].get<std::string>().size()+1<=1800){best=static_cast<int>(i);nearest=advance;}
+  }
+  if(best<0){paragraphs.push_back({line,line});continue;}
+  appendRun(paragraphs[best].content,line," ");paragraphs[best].lastLine=line;
+ }
+ json blocks=json::array();for(auto& paragraph:paragraphs)blocks.push_back(std::move(paragraph.content.block));
+ return blocks;
+}
 }
 std::string inspect(const std::string& path){try{std::lock_guard<std::mutex> lock(pdfMutex);initPdf();Doc d(path);return json{{"pageCount",FPDF_GetPageCount(d.value)},{"encrypted",false}}.dump();}catch(const std::exception&e){return failure(e);}}
 std::string readPage(const std::string& path,int index){try{
  std::lock_guard<std::mutex> lock(pdfMutex);initPdf();Doc d(path);Page p(d.value,index);TextPage tp(p.value);
- const double w=FPDF_GetPageWidthF(p.value),h=FPDF_GetPageHeightF(p.value);json blocks=json::array();
+ const double w=FPDF_GetPageWidthF(p.value),h=FPDF_GetPageHeightF(p.value);std::vector<TextRun> runs;
  for(int i=0;i<FPDFPage_CountObjects(p.value);i++){
   auto obj=FPDFPage_GetObject(p.value,i);if(FPDFPageObj_GetType(obj)!=FPDF_PAGEOBJ_TEXT)continue;
   const auto text=objectText(obj,tp.value);if(text.empty()||text.find_first_not_of(" \r\n\t")==std::string::npos)continue;
   float l=0,b=0,r=0,t=0,size=10; if(!FPDFPageObj_GetBounds(obj,&l,&b,&r,&t))continue;FPDFTextObj_GetFontSize(obj,&size);
-  blocks.push_back({{"id","p"+std::to_string(index)+"-o"+std::to_string(i)},{"text",text},{"sourceText",text},{"left",l},{"top",h-t},{"right",r},{"bottom",h-b},{"fontSize",size},{"source","native"},{"objectIndex",i},{"objectIndices",json::array({i})}});
+  FS_MATRIX matrix{};const bool transformed=FPDFPageObj_GetMatrix(obj,&matrix);
+  if(transformed)size*=std::hypot(matrix.c,matrix.d);
+  if(!std::isfinite(size)||size<=0)size=std::max(1.f,t-b);
+  const bool horizontal=transformed&&matrix.a>0&&matrix.d>0&&std::abs(matrix.b)<0.001&&std::abs(matrix.c)<0.001;
+  json block={{"id","p"+std::to_string(index)+"-o"+std::to_string(i)},{"text",text},{"sourceText",text},{"left",l},{"top",h-t},{"right",r},{"bottom",h-b},{"fontSize",size},{"source","native"},{"objectIndex",i},{"objectIndices",json::array({i})}};
+  runs.push_back({std::move(block),transformed?h-matrix.f:h-t,FPDFTextObj_GetFont(obj),horizontal});
  }
- std::sort(blocks.begin(),blocks.end(),[](const json&a,const json&b){if(std::abs(a["top"].get<double>()-b["top"].get<double>())<3)return a["left"].get<double>()<b["left"].get<double>();return a["top"].get<double>()<b["top"].get<double>();});
- json merged=json::array();
- for(auto& block:blocks){
-  int best=-1;double nearest=1e9;
-  for(size_t i=0;i<merged.size();++i){auto& prev=merged[i];double fs=std::max(prev["fontSize"].get<double>(),block["fontSize"].get<double>());double gap=block["top"].get<double>()-prev["bottom"].get<double>();
-   if(std::abs(block["left"].get<double>()-prev["left"].get<double>())<8&&gap>=-1&&gap<fs*0.9&&prev["text"].get<std::string>().size()+block["text"].get<std::string>().size()<1800&&gap<nearest){best=static_cast<int>(i);nearest=gap;}
-  }
-  if(best<0){merged.push_back(block);continue;}
-  auto& prev=merged[best];prev["text"]=prev["text"].get<std::string>()+" "+block["text"].get<std::string>();prev["sourceText"]=prev["text"];prev["right"]=std::max(prev["right"].get<double>(),block["right"].get<double>());prev["bottom"]=block["bottom"];prev["objectIndices"].push_back(block["objectIndex"]);
- }
+ const auto merged=groupText(std::move(runs));
  return json{{"index",index},{"width",w},{"height",h},{"rotation",FPDFPage_GetRotation(p.value)},{"blocks",merged}}.dump();
 }catch(const std::exception&e){return failure(e);}}
 Raster render(const std::string& path,int index,int width){

@@ -129,6 +129,7 @@ internal class PdfTranslationService : Service() {
       val job = database.jobJson(id) ?: error("Translation job was not found.")
       val source = database.jobDocumentPath(id) ?: error("Source document is unavailable.")
       val modelId = job.getString("modelId")
+      database.requireCurrentPipeline(id)
       val pageCount = job.getInt("totalPages")
       var completed = database.completedPageCount(id)
       val needsTranslation = completed < pageCount

@@ -10,6 +10,10 @@ import org.json.JSONObject
 internal class TranslatorDatabase(context: Context) :
   SQLiteOpenHelper(context, "translator-private.db", null, 2) {
 
+  companion object {
+    const val PIPELINE_VERSION = 2
+  }
+
   override fun onConfigure(db: SQLiteDatabase) {
     super.onConfigure(db)
     db.setForeignKeyConstraintsEnabled(true)
@@ -97,7 +101,7 @@ internal class TranslatorDatabase(context: Context) :
     writableDatabase.insertOrThrow("jobs", null, ContentValues().apply {
       put("id", id); put("document_id", documentId); put("model_id", input.getString("modelId"))
       put("model_revision", modelRevision); put("source_sha256", sourceSha); put("glossary_snapshot", glossarySnapshot)
-      put("pipeline_version", 1)
+      put("pipeline_version", PIPELINE_VERSION)
       put("source_lang", input.getString("sourceLanguage")); put("target_lang", input.getString("targetLanguage"))
       put("status", "queued"); put("stage", "queued"); put("completed_pages", 0); put("total_pages", pages)
       putNull("current_page"); put("glossary_id", glossaryId)
@@ -174,6 +178,13 @@ internal class TranslatorDatabase(context: Context) :
   fun jobDocumentPath(id: String): String? = readableDatabase.rawQuery(
     "SELECT d.path FROM jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=?", arrayOf(id),
   ).use { if (it.moveToFirst()) it.getString(0) else null }
+
+  fun requireCurrentPipeline(id: String) {
+    val compatible = readableDatabase.rawQuery("SELECT pipeline_version FROM jobs WHERE id=?", arrayOf(id)).use {
+      it.moveToFirst() && it.getInt(0) == PIPELINE_VERSION
+    }
+    check(compatible) { "This job uses an older processing pipeline. Start a new job; its saved pages remain available for review." }
+  }
 
   fun hasActiveJob(exceptId: String? = null): Boolean {
     val sql = if (exceptId == null) "SELECT 1 FROM jobs WHERE status IN ('running','queued') LIMIT 1"

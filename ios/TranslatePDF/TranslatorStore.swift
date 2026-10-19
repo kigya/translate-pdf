@@ -118,7 +118,7 @@ final class TranslatorStore {
     }
     let glossaryId=input["glossaryId"] as? String
     let glossarySnapshot=try glossaryText(glossaryId)
-    try execute("INSERT INTO jobs(id,document_id,model_id,model_revision,source_sha256,glossary_snapshot,pipeline_version,source_lang,target_lang,status,stage,completed_pages,total_pages,current_page,glossary_id,error,created_at,updated_at) VALUES(?,?,?,?,?,?,1,?,?,'queued','queued',0,?,NULL,?,NULL,?,?)", [id,documentId,modelId,definition.revision,sourceSHA256,glossarySnapshot,input["sourceLanguage"] as! String,input["targetLanguage"] as! String,pageCount,glossaryId ?? NSNull(),now,now])
+    try execute("INSERT INTO jobs(id,document_id,model_id,model_revision,source_sha256,glossary_snapshot,pipeline_version,source_lang,target_lang,status,stage,completed_pages,total_pages,current_page,glossary_id,error,created_at,updated_at) VALUES(?,?,?,?,?,?,2,?,?,'queued','queued',0,?,NULL,?,NULL,?,?)", [id,documentId,modelId,definition.revision,sourceSHA256,glossarySnapshot,input["sourceLanguage"] as! String,input["targetLanguage"] as! String,pageCount,glossaryId ?? NSNull(),now,now])
     return try job(id) ?? [:]
   }
 
@@ -134,10 +134,10 @@ final class TranslatorStore {
   func validateJobSnapshot(_ id:String,model:ModelDefinition)throws {
     guard let row=try query("SELECT model_revision,source_sha256,pipeline_version FROM jobs WHERE id=?",[id]).first,
       row["model_revision"] as? String == model.revision,
-      row["pipeline_version"] as? Int64 == 1,
+      row["pipeline_version"] as? Int64 == 2,
       let expected=row["source_sha256"] as? String,!expected.isEmpty,
       let source=try jobSource(id),try sha256(at:URL(fileURLWithPath:source)) == expected else {
-      throw NSError(domain:"PdfTranslator",code:6,userInfo:[NSLocalizedDescriptionKey:"This job's source or model snapshot no longer matches its saved checkpoint. Start a new job to use the current inputs."])
+      throw NSError(domain:"PdfTranslator",code:6,userInfo:[NSLocalizedDescriptionKey:"This job's source, model or processing version no longer matches its saved checkpoint. Start a new job to use the current inputs."])
     }
   }
 

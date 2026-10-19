@@ -162,9 +162,7 @@ def coverageClassDirs = files(
         exclude "**/BuildConfig.*", "**/R.class", '**/R$*.class', "**/Manifest*.*"
     }
 )
-def coverageExecutionData = fileTree(buildDir) {
-    include "**/testDebugUnitTest.exec", "**/testDebugUnitTest.ec"
-}
+def coverageExecutionData = files(layout.buildDirectory.file("jacoco/testDebugUnitTest.exec"))
 
 tasks.register("jacocoTestReport", JacocoReport) {
     dependsOn tasks.named("testDebugUnitTest")

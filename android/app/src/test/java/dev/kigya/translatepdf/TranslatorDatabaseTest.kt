@@ -36,6 +36,22 @@ class TranslatorDatabaseTest {
   }
 
   @Test
+  fun changedPipelineCannotResumeOldBlockCheckpoints() {
+    createJob("pipeline-job")
+    database.requireCurrentPipeline("pipeline-job")
+    val saved = JSONArray().put(JSONObject().put("id", "old-line").put("sourceText", "Do not")
+      .put("translatedText", "Не").put("status", "translated"))
+    database.savePage("pipeline-job", 0, "running", saved.toString(), expectedBlocks = 1)
+    database.writableDatabase.execSQL("UPDATE jobs SET pipeline_version=1 WHERE id='pipeline-job'")
+    val failure = runCatching { database.requireCurrentPipeline("pipeline-job") }.exceptionOrNull()
+    assertTrue(failure is IllegalStateException)
+    assertTrue(failure!!.message!!.contains("Start a new job"))
+    assertTrue(database.jobJson("pipeline-job") != null)
+    assertEquals(saved.toString(), database.pageBlockArray("pipeline-job", 0).toString())
+    assertTrue(runCatching { database.requireCurrentPipeline("missing") }.isFailure)
+  }
+
+  @Test
   fun interruptedRunningJobRecoversFromDurablePageAndPreservesNativeObjectIndices() {
     val input = createJob("job-1")
     val blocks = JSONArray()

@@ -29,6 +29,7 @@ final class TranslatorStore {
     try ensureColumn("jobs","source_sha256","TEXT NOT NULL DEFAULT ''")
     try ensureColumn("jobs","glossary_snapshot","TEXT NOT NULL DEFAULT ''")
     try ensureColumn("jobs","pipeline_version","INTEGER NOT NULL DEFAULT 1")
+    try ensureColumn("jobs","model_profile","TEXT NOT NULL DEFAULT ''")
     try migrateSnapshots()
   }
 
@@ -83,6 +84,36 @@ final class TranslatorStore {
     try execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", [key, value])
   }
 
+  func selectedModelId() throws -> String {
+    try resolveSelectedModelId(recommended: ModelCatalog.recommendedId, installedMemoryEligible: [])
+  }
+
+  /// Atomically initializes/repairs the preference, while keeping every valid saved choice
+  /// stable when device-resource recommendations change between bootstrap calls.
+  func resolveSelectedModelId(recommended: String, installedMemoryEligible: [String]) throws -> String {
+    lock.lock(); defer { lock.unlock() }
+    let saved = try setting("selected_model_id", fallback: "")
+    if let definition = try? ModelCatalog.get(saved), definition.translationEnabled {
+      return definition.id
+    }
+
+    let installedIds = Set(installedMemoryEligible)
+    let preferredInstalled = ModelCatalog.models.reversed().first {
+      installedIds.contains($0.id) && $0.translationEnabled
+    }
+    let preferred = preferredInstalled ?? ((try? ModelCatalog.get(recommended)).flatMap { $0.translationEnabled ? $0 : nil })
+      ?? (try! ModelCatalog.get(ModelCatalog.recommendedId))
+    try setSetting("selected_model_id", preferred.id)
+    return preferred.id
+  }
+
+  @discardableResult
+  func setSelectedModelId(_ id: String) throws -> String {
+    let definition = try ModelCatalog.get(id)
+    try setSetting("selected_model_id", definition.id)
+    return definition.id
+  }
+
   func saveDocument(id: String, name: String, path: String, pages: Int, sourceSHA256: String) throws -> [String: Any] {
     let importedAt = Int64(Date().timeIntervalSince1970 * 1000)
     try execute("INSERT INTO documents(id,name,path,pages,source_sha256,imported_at) VALUES(?,?,?,?,?,?)", [id,name,path,pages,sourceSHA256,importedAt])
@@ -103,10 +134,15 @@ final class TranslatorStore {
   }
   func deleteModel(_ id: String) throws { try execute("DELETE FROM models WHERE id=?", [id]) }
 
-  func models() throws -> [[String: Any]] {
+  func models(totalMemory: UInt64, availableMemory: UInt64, availableDisk: UInt64, systemLowMemory: Bool) throws -> [[String: Any]] {
     try ModelCatalog.models.map { definition in
       let state = try modelState(definition.id)
-      return definition.snapshot(status: state?["status"] as? String ?? "not_downloaded", downloadedBytes: state?["downloaded_bytes"] as? Int64 ?? 0, error: state?["error"] as? String)
+      let status = state?["status"] as? String ?? "not_downloaded"
+      let recordedBytes = state?["downloaded_bytes"] as? Int64 ?? 0
+      let partialBytes = ((try? FileManager.default.attributesOfItem(atPath:definition.partialURL.path)[.size]) as? NSNumber)?.int64Value ?? 0
+      let downloadedBytes = min(definition.bytes,max(recordedBytes,partialBytes))
+      let assessment = MemoryPolicy.assess(definition, status: status, downloadedBytes: downloadedBytes, total: totalMemory, available: availableMemory, availableDisk: availableDisk, systemLowMemory: systemLowMemory)
+      return definition.snapshot(status: status, downloadedBytes: downloadedBytes, error: state?["error"] as? String, assessment: assessment)
     }
   }
 
@@ -118,13 +154,14 @@ final class TranslatorStore {
     }
     let glossaryId=input["glossaryId"] as? String
     let glossarySnapshot=try glossaryText(glossaryId)
-    try execute("INSERT INTO jobs(id,document_id,model_id,model_revision,source_sha256,glossary_snapshot,pipeline_version,source_lang,target_lang,status,stage,completed_pages,total_pages,current_page,glossary_id,error,created_at,updated_at) VALUES(?,?,?,?,?,?,2,?,?,'queued','queued',0,?,NULL,?,NULL,?,?)", [id,documentId,modelId,definition.revision,sourceSHA256,glossarySnapshot,input["sourceLanguage"] as! String,input["targetLanguage"] as! String,pageCount,glossaryId ?? NSNull(),now,now])
+    guard definition.supportsGlossary || glossarySnapshot.isEmpty else { throw NSError(domain:"PdfTranslator",code:11,userInfo:[NSLocalizedDescriptionKey:"The selected model profile does not support glossary instructions. Clear the glossary or choose a glossary-compatible model before creating the job."]) }
+    try execute("INSERT INTO jobs(id,document_id,model_id,model_revision,source_sha256,glossary_snapshot,pipeline_version,model_profile,source_lang,target_lang,status,stage,completed_pages,total_pages,current_page,glossary_id,error,created_at,updated_at) VALUES(?,?,?,?,?,?,3,?,?,?,'queued','queued',0,?,NULL,?,NULL,?,?)", [id,documentId,modelId,definition.revision,sourceSHA256,glossarySnapshot,definition.profile,input["sourceLanguage"] as! String,input["targetLanguage"] as! String,pageCount,glossaryId ?? NSNull(),now,now])
     return try job(id) ?? [:]
   }
 
   func job(_ id: String) throws -> [String: Any]? {
-    guard let r = try query("SELECT j.id,j.document_id,d.name,j.model_id,j.model_revision,j.source_sha256,j.pipeline_version,j.source_lang,j.target_lang,j.status,j.stage,j.completed_pages,j.total_pages,j.current_page,j.error,j.created_at,j.updated_at FROM jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=?", [id]).first else { return nil }
-    return ["id":r["id"]!,"documentId":r["document_id"]!,"documentName":r["name"]!,"modelId":r["model_id"]!,"modelRevision":r["model_revision"]!,"sourceSHA256":r["source_sha256"]!,"pipelineVersion":r["pipeline_version"]!,"sourceLanguage":r["source_lang"]!,"targetLanguage":r["target_lang"]!,"status":r["status"]!,"stage":r["stage"]!,"completedPages":r["completed_pages"]!,"totalPages":r["total_pages"]!,"currentPage":r["current_page"] ?? NSNull(),"error":r["error"] ?? NSNull(),"createdAt":r["created_at"]!,"updatedAt":r["updated_at"]!]
+    guard let r = try query("SELECT j.id,j.document_id,d.name,j.model_id,j.model_revision,j.model_profile,j.source_sha256,j.pipeline_version,j.source_lang,j.target_lang,j.status,j.stage,j.completed_pages,j.total_pages,j.current_page,j.error,j.created_at,j.updated_at FROM jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=?", [id]).first else { return nil }
+    return ["id":r["id"]!,"documentId":r["document_id"]!,"documentName":r["name"]!,"modelId":r["model_id"]!,"modelRevision":r["model_revision"]!,"modelProfile":r["model_profile"]!,"sourceSHA256":r["source_sha256"]!,"pipelineVersion":r["pipeline_version"]!,"sourceLanguage":r["source_lang"]!,"targetLanguage":r["target_lang"]!,"status":r["status"]!,"stage":r["stage"]!,"completedPages":r["completed_pages"]!,"totalPages":r["total_pages"]!,"currentPage":r["current_page"] ?? NSNull(),"error":r["error"] ?? NSNull(),"createdAt":r["created_at"]!,"updatedAt":r["updated_at"]!]
   }
 
   func jobs() throws -> [[String: Any]] { try query("SELECT id FROM jobs ORDER BY created_at DESC").compactMap { try job($0["id"] as! String) } }
@@ -132,9 +169,11 @@ final class TranslatorStore {
   func jobGlossaryText(_ id: String) throws -> String { try query("SELECT glossary_snapshot FROM jobs WHERE id=?", [id]).first?["glossary_snapshot"] as? String ?? "" }
 
   func validateJobSnapshot(_ id:String,model:ModelDefinition)throws {
-    guard let row=try query("SELECT model_revision,source_sha256,pipeline_version FROM jobs WHERE id=?",[id]).first,
+    guard let row=try query("SELECT model_id,model_revision,model_profile,source_sha256,pipeline_version FROM jobs WHERE id=?",[id]).first,
+      row["model_id"] as? String == model.id,
       row["model_revision"] as? String == model.revision,
-      row["pipeline_version"] as? Int64 == 2,
+      row["model_profile"] as? String == model.profile,
+      row["pipeline_version"] as? Int64 == 3,
       let expected=row["source_sha256"] as? String,!expected.isEmpty,
       let source=try jobSource(id),try sha256(at:URL(fileURLWithPath:source)) == expected else {
       throw NSError(domain:"PdfTranslator",code:6,userInfo:[NSLocalizedDescriptionKey:"This job's source, model or processing version no longer matches its saved checkpoint. Start a new job to use the current inputs."])
@@ -180,7 +219,7 @@ final class TranslatorStore {
   }
   func glossaryText(_ id: String?) throws -> String {
     let rows = try id == nil ? query("SELECT source,target FROM glossary ORDER BY source COLLATE NOCASE") : query("SELECT source,target FROM glossary WHERE id=?", [id!])
-    return rows.compactMap { guard let source = $0["source"] as? String, let target = $0["target"] as? String else { return nil }; return "\(source) => \(target)" }.joined(separator:"\n")
+    return rows.compactMap { guard let source = $0["source"] as? String, let target = $0["target"] as? String else { return nil }; return "\(source) translates to \(target)" }.joined(separator:"\n")
   }
   func deleteGlossary(_ id: String) throws { try execute("DELETE FROM glossary WHERE id=?", [id]) }
   func saveExport(_ id: String, path: String, name: String, sha256: String) throws { try execute("INSERT OR REPLACE INTO exports(id,path,name,sha256,created_at) VALUES(?,?,?,?,?)", [id,path,name,sha256,Int64(Date().timeIntervalSince1970 * 1000)]) }

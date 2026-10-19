@@ -129,7 +129,7 @@ internal class PdfTranslationService : Service() {
       val job = database.jobJson(id) ?: error("Translation job was not found.")
       val source = database.jobDocumentPath(id) ?: error("Source document is unavailable.")
       val modelId = job.getString("modelId")
-      database.requireCurrentPipeline(id)
+      database.validateJobSnapshot(id, ModelCatalog.get(modelId))
       val pageCount = job.getInt("totalPages")
       var completed = database.completedPageCount(id)
       val needsTranslation = completed < pageCount
@@ -139,8 +139,10 @@ internal class PdfTranslationService : Service() {
       val freeDisk = android.os.StatFs(filesDir.absolutePath).let { it.availableBlocksLong * it.blockSizeLong }
       val recommendation = MemoryPolicy.recommend(memory.totalMem, memory.availMem, memory.threshold, memory.lowMemory, freeDisk)
       val qaProfile = needsTranslation && isRegisteredBoundedDebugProfile(id, modelId, source, pageCount, memory.lowMemory, recommendation)
-      if (needsTranslation && modelId == ModelCatalog.RECOMMENDED_ID && !recommendation.memoryEstimateEligible && !qaProfile) {
-        pauseForResources(id, recommendation.reason)
+      val definition = ModelCatalog.get(modelId)
+      val selectedResources = MemoryPolicy.resources(definition, memory.totalMem, memory.availMem, memory.threshold, memory.lowMemory, freeDisk, definition.bytes)
+      if (needsTranslation && !selectedResources.memoryEligible && !qaProfile) {
+        pauseForResources(id, "Free memory is below the selected model's estimated process memory plus the system reserve.")
         return
       }
       val outputSpaceReserve = File(source).length() * 2 + 256L * 1024L * 1024L
@@ -158,7 +160,7 @@ internal class PdfTranslationService : Service() {
         catch (error: Exception) { ocrSetupFailure = error.message ?: "The bundled English OCR engine is unavailable." }
         activeOcrEngine = ocrEngine
         database.updateJob(id, status = "running", stage = "extracting", clearError = true)
-        val loadResult = JSONObject(NativeCore.loadModel(downloader.fileFor(modelId).absolutePath, 2048, 4))
+        val loadResult = JSONObject(NativeCore.loadModel(downloader.fileFor(modelId).absolutePath, 2048, 4, definition.profile))
         if (loadResult.has("error")) error(loadResult.optString("error", "Model failed to load."))
       } else database.updateJob(id, status = "running", stage = "exporting", clearError = true)
       for (pageIndex in 0 until pageCount) {

@@ -6,7 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)inspect:(NSString *)path;
 + (NSString *)readPage:(NSString *)path index:(NSInteger)index;
 + (nullable NSData *)renderPNG:(NSString *)path index:(NSInteger)index width:(NSInteger)width;
-+ (NSString *)loadModel:(NSString *)path context:(NSInteger)context threads:(NSInteger)threads;
++ (NSString *)loadModel:(NSString *)path context:(NSInteger)context threads:(NSInteger)threads profile:(NSString *)profile;
 + (NSString *)translate:(NSString *)text glossary:(NSString *)glossary context:(NSString *)context;
 + (void)releaseModel;
 + (void)cancel;

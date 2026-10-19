@@ -12,7 +12,7 @@ jstring result(JNIEnv* e,const std::string& s){auto input=std::wstring_convert<s
 extern "C" {
 JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_inspect(JNIEnv*e,jobject,jstring p){return result(e,translatepdf::inspect(str(e,p)));}
 JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_readPage(JNIEnv*e,jobject,jstring p,jint i){return result(e,translatepdf::readPage(str(e,p),i));}
-JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_loadModel(JNIEnv*e,jobject,jstring p,jint c,jint t){return result(e,translatepdf::loadModel(str(e,p),c,t));}
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_loadModel(JNIEnv*e,jobject,jstring p,jint c,jint t,jstring profile){return result(e,translatepdf::loadModel(str(e,p),c,t,str(e,profile)));}
 JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_translate(JNIEnv*e,jobject,jstring p,jstring g,jstring c){return result(e,translatepdf::translate(str(e,p),str(e,g),str(e,c)));}
 JNIEXPORT void JNICALL Java_dev_kigya_translatepdf_NativeCore_releaseModel(JNIEnv*,jobject){translatepdf::releaseModel();}
 JNIEXPORT void JNICALL Java_dev_kigya_translatepdf_NativeCore_cancel(JNIEnv*,jobject){translatepdf::cancel();}

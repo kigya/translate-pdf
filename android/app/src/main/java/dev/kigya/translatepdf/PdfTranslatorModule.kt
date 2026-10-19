@@ -61,7 +61,18 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     val info = android.app.ActivityManager.MemoryInfo().also(manager::getMemoryInfo)
     val stat = StatFs(context.filesDir.absolutePath)
     val availableDisk = stat.availableBlocksLong * stat.blockSizeLong
-    val recommendation = MemoryPolicy.recommend(info.totalMem, info.availMem, info.threshold, info.lowMemory, availableDisk)
+    val downloaded = ModelCatalog.models.associate { it.id to if (downloader.isInstalled(it.id)) it.bytes else downloader.partialLength(it.id) }
+    val recommendation = MemoryPolicy.recommend(info.totalMem, info.availMem, info.threshold, info.lowMemory, availableDisk, downloaded)
+    val initialSelection = ModelCatalog.models.asReversed().firstOrNull {
+      downloader.isInstalled(it.id) && MemoryPolicy.resources(it, info.totalMem, info.availMem, info.threshold, info.lowMemory, availableDisk, it.bytes).memoryEligible
+    }?.id ?: recommendation.recommendedModelId
+    val selectedModelId = database.selectedModelId(initialSelection)
+    val models = database.modelsJson()
+    for (index in 0 until models.length()) {
+      val value = models.getJSONObject(index)
+      val model = ModelCatalog.get(value.getString("id"))
+      MemoryPolicy.resources(model, info.totalMem, info.availMem, info.threshold, info.lowMemory, availableDisk, downloaded[model.id] ?: 0).applyTo(value)
+    }
     JSONObject()
       .put("schemaVersion", 1)
       .put("device", JSONObject()
@@ -83,15 +94,16 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
         .put("resourceEstimateEligible", recommendation.resourceEstimateEligible)
         .put("recommendedModelAvailable", recommendation.recommendationAvailable)
         .put("recommendationReason", recommendation.reason)
-        .put("recommendationVerified", recommendation.recommendationAvailable))
+        .put("recommendationVerified", false))
       .put("preferences", JSONObject()
         .put("theme", database.setting("theme", "system"))
-        .put("language", database.setting("language", "system")))
+        .put("language", database.setting("language", "system"))
+        .put("selectedModelId", selectedModelId))
       .put("onboarding", JSONObject()
         .put("version", database.setting("onboarding_version", "1").toIntOrNull() ?: 1)
         .put("page", database.setting("onboarding_page", "0").toIntOrNull() ?: 0)
         .put("done", database.setting("onboarding_done", "false").toBoolean()))
-      .put("models", database.modelsJson())
+      .put("models", models)
       .put("documents", database.documentsJson())
       .put("jobs", database.jobsJson())
       .put("glossary", database.glossaryJson())
@@ -123,11 +135,12 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     val model = ModelCatalog.get(modelId)
     if (context.currentActivity == null || context.currentActivity?.isFinishing == true) throw IllegalStateException("Open the app before starting a model download.")
     if (PdfTranslationService.isActive) throw IllegalStateException("Wait until the current background operation finishes before downloading another model.")
-    if (!hasStorageFor(model.bytes)) throw IllegalStateException("Not enough free storage for this model and a resumable partial file.")
     if (downloader.isReady(modelId)) {
       database.modelStatus(modelId, "ready", model.bytes)
       return@runAsync model.toJson("ready", model.bytes).toString()
     }
+    require(model.translationEnabled) { "This model is unavailable in the current runtime." }
+    if (!hasStorageFor((model.bytes - downloader.partialLength(modelId)).coerceAtLeast(0))) throw IllegalStateException("Not enough free storage for the remaining download and work reserve.")
     database.modelStatus(modelId, "downloading", downloader.partialLength(modelId))
     val intent = Intent(context, PdfTranslationService::class.java)
       .setAction(PdfTranslationService.ACTION_START_MODEL)
@@ -170,7 +183,9 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     require(input.optString("sourceLanguage") == "en" && input.optString("targetLanguage") == "ru") {
       "Only English to Russian translation is available in this prototype."
     }
-    require(ModelCatalog.get(modelId).translationEnabled) { "This compact model has not passed quality and device benchmarks and cannot be used for translation yet." }
+    val definition = ModelCatalog.get(modelId)
+    require(definition.translationEnabled) { "This model is unavailable in the current runtime." }
+    require(definition.supportsGlossary || database.glossaryText(null).isBlank()) { "This model uses direct translation without a glossary. Choose Hy-MT2 to use saved terms." }
     if (!downloader.isInstalled(modelId)) throw IllegalStateException("Download and verify the selected model first.")
     val pageCount = database.documentInfo(documentId)?.second ?: throw IllegalArgumentException("The source document could not be inspected.")
     val id = UUID.randomUUID().toString()
@@ -407,7 +422,13 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
         localeManager.applicationLocales = if (language == "system") LocaleList.getEmptyLocaleList() else LocaleList.forLanguageTags(language)
       }
     }
-    JSONObject().put("theme", database.setting("theme", "system")).put("language", database.setting("language", "system")).toString()
+    if (settings.has("selectedModelId")) {
+      val model = ModelCatalog.get(settings.getString("selectedModelId"))
+      require(model.translationEnabled) { "This model is unavailable in the current runtime." }
+      database.setSetting("selectedModelId", model.id)
+    }
+    JSONObject().put("theme", database.setting("theme", "system")).put("language", database.setting("language", "system"))
+      .put("selectedModelId", database.setting("selectedModelId", ModelCatalog.RECOMMENDED_ID)).toString()
   }
 
   @ReactMethod

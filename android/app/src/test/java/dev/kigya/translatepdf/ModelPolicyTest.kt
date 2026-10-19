@@ -7,41 +7,46 @@ import org.junit.Test
 
 class ModelPolicyTest {
   @Test
-  fun q4ResourceEstimateRequiresReserveAndProvisionalPipelineEnvelope() {
+  fun everyModelUsesItsOwnEnvelopeAndTheCurrentSystemReserve() {
     val total = 8L * 1024 * 1024 * 1024
-    val reserve = maxOf(512L * 1024 * 1024, total * 15 / 100, 600L * 1024 * 1024)
-    val disk = ModelCatalog.get(ModelCatalog.RECOMMENDED_ID).bytes + 512L * 1024 * 1024
-    val needed = reserve + 2L * 1024 * 1024 * 1024
-
-    val enough = MemoryPolicy.recommend(total, needed, 600L * 1024 * 1024, false, disk)
-    val short = MemoryPolicy.recommend(total, needed - 1, 600L * 1024 * 1024, false, disk)
-
-    assertEquals(ModelCatalog.RECOMMENDED_ID, enough.recommendedModelId)
-    assertEquals(reserve, enough.reserveBytes)
-    assertTrue(enough.resourceEstimateEligible)
-    assertTrue(enough.memoryEstimateEligible)
-    assertTrue(enough.diskEstimateEligible)
-    assertFalse(enough.recommendationAvailable)
-    assertTrue(enough.reason.contains("not yet validated"))
-    assertFalse(short.resourceEstimateEligible)
-    assertFalse(short.memoryEstimateEligible)
+    val threshold = 600L * 1024 * 1024
+    val reserve = maxOf(512L * 1024 * 1024, total * 15 / 100, threshold)
+    for (model in ModelCatalog.models) {
+      val disk = model.bytes + 512L * 1024 * 1024
+      val enough = MemoryPolicy.resources(model, total, reserve + model.requiredMemoryBytes, threshold, false, disk)
+      val short = MemoryPolicy.resources(model, total, reserve + model.requiredMemoryBytes - 1, threshold, false, disk)
+      assertEquals(reserve, enough.reserveBytes)
+      assertTrue(enough.eligible)
+      assertEquals("available", enough.reason)
+      assertFalse(short.eligible)
+      assertEquals("memory", short.reason)
+    }
   }
 
   @Test
-  fun systemLowMemorySignalAndDownloadReserveBlockResourceEstimate() {
-    val total = 4L * 1024 * 1024 * 1024
-    val q4 = ModelCatalog.get(ModelCatalog.RECOMMENDED_ID)
-    val required = 4L * 1024 * 1024 * 1024
-    val memoryLow = MemoryPolicy.recommend(total, required, 1L * 1024 * 1024 * 1024, true, q4.bytes + 512L * 1024 * 1024)
-    val diskLow = MemoryPolicy.recommend(total, required, 1L * 1024 * 1024 * 1024, false, q4.bytes + 512L * 1024 * 1024 - 1)
+  fun resumeAndInstalledModelsRequireOnlyTheRemainingTransferAndWorkReserve() {
+    val model = ModelCatalog.models[1]
+    val headroom = 512L * 1024 * 1024
+    val downloaded = model.bytes / 2
+    assertEquals(model.bytes - downloaded + headroom, MemoryPolicy.requiredDiskBytes(model.bytes, downloaded))
+    assertEquals(headroom, MemoryPolicy.requiredDiskBytes(model.bytes, model.bytes))
+    assertEquals(headroom, MemoryPolicy.requiredDiskBytes(model.bytes, Long.MAX_VALUE))
+    val low = MemoryPolicy.resources(model, 4L shl 30, 4L shl 30, 1L shl 30, true, model.bytes + headroom)
+    assertFalse(low.eligible)
+    assertEquals("lowMemory", low.reason)
+    val diskLow = MemoryPolicy.resources(model, 8L shl 30, 8L shl 30, 0, false, headroom - 1, model.bytes)
+    assertFalse(diskLow.diskEligible)
+    assertEquals("disk", diskLow.reason)
+  }
 
-    assertEquals(1L * 1024 * 1024 * 1024, memoryLow.reserveBytes)
-    assertFalse(memoryLow.resourceEstimateEligible)
-    assertTrue(memoryLow.reason.contains("Android reports low memory"))
-    assertFalse(diskLow.resourceEstimateEligible)
-    assertTrue(diskLow.memoryEstimateEligible)
-    assertFalse(diskLow.diskEstimateEligible)
-    assertTrue(diskLow.reason.contains("Free storage"))
+  @Test
+  fun recommendationIsAResourceSuggestionAndDoesNotLockOtherEligibleChoices() {
+    val top = ModelCatalog.models.last()
+    val result = MemoryPolicy.recommend(12L shl 30, 10L shl 30, 0, false, 20L shl 30)
+    assertEquals(top.id, result.recommendedModelId)
+    assertTrue(result.recommendationAvailable)
+    assertTrue(result.reason.contains("experimental"))
+    assertTrue(ModelCatalog.models.all { MemoryPolicy.resources(it, 12L shl 30, 10L shl 30, 0, false, 20L shl 30).eligible })
   }
 
   @Test
@@ -62,20 +67,16 @@ class ModelPolicyTest {
   }
 
   @Test
-  fun catalogPinsQ4AndKeepsCompactCandidatesDisabledUntilBenchmarked() {
-    val q4 = ModelCatalog.get(ModelCatalog.RECOMMENDED_ID)
-    val compact = ModelCatalog.models.filter { it.id != ModelCatalog.RECOMMENDED_ID }
-
-    assertEquals(1_133_080_448L, q4.bytes)
-    assertEquals("dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699", q4.sha256)
-    assertEquals("a0c709d9fac510f2c807aa3af52872340dc37a4a", q4.revision)
-    assertTrue(q4.url.endsWith("/Hy-MT2-1.8B-Q4_K_M.gguf"))
-    assertFalse(q4.qualityBenchmarked)
-    assertTrue(q4.translationEnabled)
-    assertEquals(2, compact.size)
-    assertTrue(compact.all { !it.qualityBenchmarked && !it.translationEnabled })
-    assertTrue(compact.all { it.sha256.matches(Regex("^[0-9a-f]{64}$")) })
-    assertEquals("Hy-MT2-1.8B.i1-IQ3_XS.gguf", ModelCatalog.get("hy-mt2-iq3-xs").fileName)
-    assertEquals("Hy-MT2-1.8B.i1-IQ2_M.gguf", ModelCatalog.get("hy-mt2-iq2-m").fileName)
+  fun catalogHasThreeDistinctPinnedChoicesAndLegacyModelsStayOutOfThePicker() {
+    val models = ModelCatalog.models
+    assertEquals(3, models.size)
+    assertEquals(setOf("compact", "balanced", "quality"), models.map { it.tier }.toSet())
+    assertEquals(3, models.map { it.id }.toSet().size)
+    assertTrue(models.all { it.translationEnabled && !it.qualityBenchmarked })
+    assertTrue(models.all { it.sha256.matches(Regex("^[0-9a-f]{64}$")) && it.revision.matches(Regex("^[0-9a-f]{40}$")) })
+    assertTrue(models.all { it.url.contains("/resolve/${it.revision}/") && it.licenseUrl.startsWith("https://") })
+    assertFalse(models.any { it.id == "hy-mt2-iq3-xs" || it.id == "hy-mt2-iq2-m" })
+    assertFalse(ModelCatalog.get("hy-mt2-iq3-xs").translationEnabled)
+    assertFalse(ModelCatalog.get("hy-mt2-iq2-m").translationEnabled)
   }
 }

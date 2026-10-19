@@ -139,6 +139,10 @@ class PdfExportTest(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('TRANSLATEPDF_TEST_MODEL'), 'Optional local model was not supplied')
     def test_real_model_returns_text_and_context_overflow_is_not_committed(self):
         model = os.environ['TRANSLATEPDF_TEST_MODEL']
+        configuration = run('model-configuration', model)
+        self.assertEqual((1024, 1), (configuration['first']['context'], configuration['first']['threads']))
+        self.assertEqual((2048, 2), (configuration['second']['context'], configuration['second']['threads']))
+        self.assertEqual((2048, 2), (configuration['cached']['context'], configuration['cached']['threads']))
         translated = run('translate', model, 'Do not remove the head restraint.')
         self.assertNotIn('error', translated)
         self.assertIn('не', translated['text'].lower())

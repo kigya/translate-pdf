@@ -30,6 +30,7 @@ std::atomic<bool> stopped{false};
 llama_model* model = nullptr;
 llama_context* ctx = nullptr;
 std::string loadedPath;
+std::string loadedProfile;
 std::u16string wide(const std::string& s) { return std::wstring_convert<std::codecvt_utf8_utf16<char16_t>,char16_t>{}.from_bytes(s); }
 std::string utf8(const std::u16string& s) { return std::wstring_convert<std::codecvt_utf8_utf16<char16_t>,char16_t>{}.to_bytes(s); }
 void initPdf() { std::call_once(pdfInit, [] { FPDF_InitLibrary(); }); }
@@ -91,7 +92,7 @@ void annotate(FPDF_PAGE page,const json& block,double height,const std::string& 
  auto title=wide("Translation - placement needs review");FPDFAnnot_SetStringValue(a,"T",reinterpret_cast<const unsigned short*>(title.c_str()));FPDFPage_CloseAnnot(a);
  if(!ok)throw std::runtime_error("Cannot save translation annotation");
 }
-void unload(){if(ctx){llama_free(ctx);ctx=nullptr;}if(model){llama_model_free(model);model=nullptr;}loadedPath.clear();}
+void unload(){if(ctx){llama_free(ctx);ctx=nullptr;}if(model){llama_model_free(model);model=nullptr;}loadedPath.clear();loadedProfile.clear();}
 bool abortInference(void*){return stopped.load();}
 
 struct TextRun {
@@ -207,48 +208,73 @@ Raster render(const std::string& path,int index,int width){
  auto bmp=FPDFBitmap_CreateEx(width,height,FPDFBitmap_BGRA,r.rgba.data(),width*4);if(!bmp)throw std::runtime_error("Cannot allocate page bitmap");
  FPDFBitmap_FillRect(bmp,0,0,width,height,0xffffffff);FPDF_RenderPageBitmap(bmp,p.value,0,0,width,height,0,FPDF_ANNOT);FPDFBitmap_Destroy(bmp);return r;
 }
-std::string loadModel(const std::string& path,int context,int threads){try{
+std::string loadModel(const std::string& path,int context,int threads,const std::string& profile){try{
  std::lock_guard<std::mutex> lock(modelMutex);std::call_once(llamaInit,[]{llama_log_set([](ggml_log_level,const char*,void*){},nullptr);llama_backend_init();});stopped=false;
- if(model&&loadedPath==path&&ctx)return json{{"loaded",true},{"context",llama_n_ctx(ctx)}}.dump();unload();
+ if(profile!="hy-mt2"&&profile!="translategemma")throw std::runtime_error("Unknown translation profile");
+ const int requestedContext=std::clamp(context,1024,4096),requestedThreads=std::clamp(threads,1,4);
+ if(model&&loadedPath==path&&loadedProfile==profile&&ctx&&llama_n_ctx(ctx)==static_cast<uint32_t>(requestedContext)&&llama_n_threads(ctx)==requestedThreads)return json{{"loaded",true},{"context",llama_n_ctx(ctx)},{"threads",llama_n_threads(ctx)}}.dump();unload();
  auto mp=llama_model_default_params();mp.n_gpu_layers=0;mp.load_mode=LLAMA_LOAD_MODE_MMAP;mp.check_tensors=true;
  model=llama_model_load_from_file(path.c_str(),mp);if(!model)throw std::runtime_error("Model cannot be loaded by this runtime");
+ if(llama_model_has_encoder(model)){unload();throw std::runtime_error("Model architecture does not match its pinned translation profile");}
  auto cp=llama_context_default_params();cp.n_ctx=std::clamp(context,1024,4096);cp.n_batch=128;cp.n_ubatch=64;cp.n_threads=std::clamp(threads,1,4);cp.n_threads_batch=cp.n_threads;cp.offload_kqv=false;cp.abort_callback=abortInference;cp.abort_callback_data=nullptr;
- ctx=llama_init_from_model(model,cp);if(!ctx){unload();throw std::runtime_error("Insufficient resources for the model context");}loadedPath=path;
- return json{{"loaded",true},{"context",llama_n_ctx(ctx)},{"modelBytes",llama_model_size(model)},{"templateAvailable",llama_model_chat_template(model,nullptr)!=nullptr}}.dump();
+ ctx=llama_init_from_model(model,cp);if(!ctx){unload();throw std::runtime_error("Insufficient resources for the model context");}loadedPath=path;loadedProfile=profile;
+ return json{{"loaded",true},{"context",llama_n_ctx(ctx)},{"threads",llama_n_threads(ctx)},{"modelBytes",llama_model_size(model)},{"templateAvailable",llama_model_chat_template(model,nullptr)!=nullptr}}.dump();
 }catch(const std::exception&e){return failure(e);}}
 std::string translate(const std::string& text,const std::string& glossary,const std::string& context){try{
  std::lock_guard<std::mutex> lock(modelMutex);if(!ctx||!model)throw std::runtime_error("Model is not loaded");if(stopped)throw std::runtime_error("Canceled");
  if(!std::regex_search(text,std::regex("[A-Za-z]")))return json{{"text",text},{"tokens",0},{"seconds",0},{"skipped",true}}.dump();
+ if(loadedProfile!="hy-mt2"&&!glossary.empty())throw std::runtime_error("This model uses direct translation without a glossary. Choose a glossary-capable model to apply saved terms.");
  std::string instruction;
  if(!glossary.empty())instruction+="Reference the following translations:\n"+glossary+"\n\n";
  if(!context.empty())instruction+="[Background Information]\n"+context+"\n";
  instruction+="Translate the following text into Russian. Note that you should only output the translated result without any additional explanation:\n\n"+text;
- const char* tmpl=llama_model_chat_template(model,nullptr);if(!tmpl)throw std::runtime_error("GGUF lacks a verified chat template");
- llama_chat_message message{"user",instruction.c_str()};std::vector<char> formatted(instruction.size()*3+8192);
- int n=llama_chat_apply_template(tmpl,&message,1,true,formatted.data(),formatted.size());if(n<0)throw std::runtime_error("Unsupported GGUF chat template");if(n>=static_cast<int>(formatted.size())){formatted.resize(n+1);n=llama_chat_apply_template(tmpl,&message,1,true,formatted.data(),formatted.size());}
- const auto vocab=llama_model_get_vocab(model);int count=-llama_tokenize(vocab,formatted.data(),n,nullptr,0,true,true);
+ const char* tmpl=llama_model_chat_template(model,nullptr);std::string prompt;
+ if(loadedProfile=="translategemma"){
+  // Exact EN/RU specialization of the pinned model's embedded structured
+  // template. Context and glossary are never added to the text being translated.
+  prompt="<bos><start_of_turn>user\nYou are a professional English (en) to Russian (ru) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Russian grammar, vocabulary, and cultural sensitivities.\nProduce only the Russian translation, without any additional explanations or commentary. Please translate the following English text into Russian:\n\n\n"+text+"<end_of_turn>\n<start_of_turn>model\n";
+ }else {
+  if(!tmpl)throw std::runtime_error("GGUF lacks a verified chat template");
+  llama_chat_message message{"user",instruction.c_str()};std::vector<char> formatted(instruction.size()*3+8192);
+  int n=llama_chat_apply_template(tmpl,&message,1,true,formatted.data(),formatted.size());if(n<0)throw std::runtime_error("Unsupported GGUF chat template");if(n>=static_cast<int>(formatted.size())){formatted.resize(n+1);n=llama_chat_apply_template(tmpl,&message,1,true,formatted.data(),formatted.size());if(n<0||n>=static_cast<int>(formatted.size()))throw std::runtime_error("Cannot format translation prompt");}
+  prompt.assign(formatted.data(),n);
+ }
+ const auto vocab=llama_model_get_vocab(model);
+ int plainCount=-llama_tokenize(vocab,prompt.data(),prompt.size(),nullptr,0,false,true);if(plainCount<=0)throw std::runtime_error("Translation prompt contains no tokens");
+ std::vector<llama_token> plain(plainCount);llama_tokenize(vocab,prompt.data(),prompt.size(),plain.data(),plainCount,false,true);
+ // Some templates already emit BOS. Asking the tokenizer to add it again
+ // changes the actual request and can degrade translation.
+ const bool addSpecial=plain.front()!=llama_vocab_bos(vocab);
+ int count=-llama_tokenize(vocab,prompt.data(),prompt.size(),nullptr,0,addSpecial,true);
  // The pinned community IQ files declare EOS=3, while their Hunyuan chat
  // template ends assistant messages with this explicit token (official Q4's
  // EOS). Honour the template boundary without changing the verified GGUF.
  llama_token assistantEnd=LLAMA_TOKEN_NULL;
- if(std::string(tmpl).find("<｜hy_Assistant｜>")!=std::string::npos&&std::string(tmpl).find("<｜hy_place▁holder▁no▁2｜>")!=std::string::npos){
+ if(loadedProfile=="hy-mt2"&&tmpl&&std::string(tmpl).find("<｜hy_Assistant｜>")!=std::string::npos&&std::string(tmpl).find("<｜hy_place▁holder▁no▁2｜>")!=std::string::npos){
   const std::string end="<｜hy_place▁holder▁no▁2｜>";llama_token candidate;
   if(llama_tokenize(vocab,end.data(),static_cast<int>(end.size()),&candidate,1,false,true)==1)assistantEnd=candidate;
  }
+ if(loadedProfile=="hy-mt2"&&tmpl&&std::string(tmpl).find("<|eos|>")!=std::string::npos){
+  const std::string end="<|eos|>";llama_token candidate;
+  if(llama_tokenize(vocab,end.data(),static_cast<int>(end.size()),&candidate,1,false,true)==1)assistantEnd=candidate;
+ }
  if(count<=0||count>static_cast<int>(llama_n_ctx(ctx))-384)throw std::runtime_error("Block exceeds model context; split it without truncation");
- std::vector<llama_token> tokens(count);llama_tokenize(vocab,formatted.data(),n,tokens.data(),count,true,true);llama_memory_clear(llama_get_memory(ctx),true);
- auto start=std::chrono::steady_clock::now();for(int pos=0;pos<count;pos+=128){if(stopped)throw std::runtime_error("Canceled");auto batch=llama_batch_get_one(tokens.data()+pos,std::min(128,count-pos));if(llama_decode(ctx,batch)!=0)throw std::runtime_error(stopped?"Canceled":"Inference failed while reading input");}
+ std::vector<llama_token> tokens(count);llama_tokenize(vocab,prompt.data(),prompt.size(),tokens.data(),count,addSpecial,true);llama_memory_clear(llama_get_memory(ctx),true);
+ auto start=std::chrono::steady_clock::now();
+ for(int pos=0;pos<count;pos+=128){if(stopped)throw std::runtime_error("Canceled");auto batch=llama_batch_get_one(tokens.data()+pos,std::min(128,count-pos));if(llama_decode(ctx,batch)!=0)throw std::runtime_error(stopped?"Canceled":"Inference failed while reading input");}
  auto sampler=llama_sampler_chain_init(llama_sampler_chain_default_params());
+ if(loadedProfile=="hy-mt2"){
  llama_sampler_chain_add(sampler,llama_sampler_init_penalties(llama_vocab_n_tokens(vocab),64,1.05f,0.0f,0.0f));
  llama_sampler_chain_add(sampler,llama_sampler_init_top_k(20));
  llama_sampler_chain_add(sampler,llama_sampler_init_top_p(0.6f,1));
  llama_sampler_chain_add(sampler,llama_sampler_init_temp(0.7f));
  llama_sampler_chain_add(sampler,llama_sampler_init_dist(42));
+ }else llama_sampler_chain_add(sampler,llama_sampler_init_greedy());
  std::string output;int generated=0;bool ended=false;
  int sourceTokens=-llama_tokenize(vocab,text.data(),static_cast<int>(text.size()),nullptr,0,false,false);
  int limit=std::min({static_cast<int>(llama_n_ctx(ctx))-count-4,std::max(96,sourceTokens*4+32),1024});
  try{for(int i=0;i<limit;i++){
-  if(stopped)throw std::runtime_error("Canceled");auto token=llama_sampler_sample(sampler,ctx,-1);if(llama_vocab_is_eog(vocab,token)||token==assistantEnd){ended=true;break;}
+  if(stopped)throw std::runtime_error("Canceled");auto token=llama_sampler_sample(sampler,ctx,-1);if(assistantEnd==LLAMA_TOKEN_NULL?llama_vocab_is_eog(vocab,token):token==assistantEnd){ended=true;break;}
   char buf[512];int len=llama_token_to_piece(vocab,token,buf,sizeof(buf),0,false);if(len<0)throw std::runtime_error("Cannot decode model token");output.append(buf,len);generated++;
   auto batch=llama_batch_get_one(&token,1);if(llama_decode(ctx,batch)!=0)throw std::runtime_error(stopped?"Canceled":"Inference failed while generating output");
  }}catch(...){llama_sampler_free(sampler);throw;}llama_sampler_free(sampler);

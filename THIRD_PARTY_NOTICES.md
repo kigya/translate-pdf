@@ -28,9 +28,13 @@ The English `tessdata_fast` OCR data is Apache-2.0. Its tracked notice is [`lice
 
 The PDFium package directory was copied in full from the private build inputs, including its root `LICENSE` and the complete `licenses/` directory. These copies are source-tracked, and the Android `assets/licenses/` packages the hierarchy with app builds. CocoaPods flattens resource-bundle files, so the iOS bundle stores the same files under unique names formed by replacing path separators with `__`; `ios/scripts/sync-license-resources.sh` regenerates that mirror from this canonical directory. This does not establish that every transitive platform/toolchain dependency is inventoried.
 
-## Translation model
+## Translation models
 
 The model is downloaded by the user at runtime and is not checked into this repository. Tencent's Hy-MT2 1.8B model repository identifies the model as Apache-2.0: [Tencent model repository](https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF), pinned source revision `a0c709d9fac510f2c807aa3af52872340dc37a4a`. The community IQ3_XS and IQ2_M conversions are from `mradermacher/Hy-MT2-1.8B-i1-GGUF`, revision `9f5c7d98d8b625800775e6197e55c7ed38f2f33a`; the pinned repository metadata reports Apache-2.0, and its canonical license text is in [`licenses/models/hy-mt2-1.8b/LICENSE-Apache-2.0.txt`](licenses/models/hy-mt2-1.8b/LICENSE-Apache-2.0.txt). Those are community conversions, not Tencent-published quantizations. Their artifact hashes and sizes are recorded in the model catalog; translation quality and device-memory compatibility remain unverified.
+
+The current chooser also offers the official [Hy-MT2 7B Q4_K_M package](https://huggingface.co/tencent/Hy-MT2-7B-GGUF), revision `ab8472660ac61fac25f1af43fac2599d52a8a775`. The exact upstream Apache-2.0 license, including Tencent's 2026 copyright notice, is preserved in [`licenses/models/hy-mt2-7b/LICENSE`](licenses/models/hy-mt2-7b/LICENSE); package provenance is in the adjacent [`NOTICE.txt`](licenses/models/hy-mt2-7b/NOTICE.txt). The legacy IQ3_XS and IQ2_M packages are disabled and absent from the three-choice picker.
+
+[TranslateGemma 4B](https://huggingface.co/google/translategemma-4b-it) uses the Gemma Terms of Use and incorporated use restrictions. The downloadable Q4_K_M derivative is from `bullerwins/translategemma-4b-it-GGUF`, revision `7c938465a870d8624bcfa98a8e4a3510053c19a8`; it is a community quantization. Full [terms](licenses/models/TranslateGemma/TermsOfUse.txt), [use restrictions](licenses/models/TranslateGemma/ProhibitedUsePolicy.txt), the required [Notice](licenses/models/TranslateGemma/Notice), and [quantization provenance](licenses/models/TranslateGemma/ModificationNotice.txt) are bundled with the app. The model screen links to the terms and requires an explicit acceptance action before download. This does not establish release-specific legal clearance.
 
 ## Redistribution limits
 

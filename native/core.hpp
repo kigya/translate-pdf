@@ -7,7 +7,7 @@ struct Raster { int width; int height; std::vector<uint8_t> rgba; }; // BGRA byt
 std::string inspect(const std::string& path);
 std::string readPage(const std::string& path, int index);
 Raster render(const std::string& path, int index, int width);
-std::string loadModel(const std::string& path, int context, int threads);
+std::string loadModel(const std::string& path, int context, int threads, const std::string& profile = "hy-mt2");
 std::string translate(const std::string& text, const std::string& glossary, const std::string& context);
 void releaseModel();
 void cancel();

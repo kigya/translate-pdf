@@ -1,0 +1,8 @@
+TranslateGemma is developed by Google. This optional Q4_K_M GGUF package is a quantized derivative of google/translategemma-4b-it, converted by bullerwins. Translate PDF downloads the pinned quantized file unchanged. No endorsement by Google or the quantization contributor is implied.
+
+Source: https://huggingface.co/bullerwins/translategemma-4b-it-GGUF
+Revision: 7c938465a870d8624bcfa98a8e4a3510053c19a8
+File: translategemma-4b-it-Q4_K_M.gguf
+SHA-256: 7f7357c14abd9da4eb200b38b05da502cd6e10d7e1d403fbc9f78c19f3209b72
+
+Use of this optional model is governed by the included Gemma Terms of Use and Gemma Prohibited Use Policy. Users must not use or distribute Gemma or its derivatives for the restricted uses in Section 3.2, including in violation of applicable laws or the incorporated Prohibited Use Policy.

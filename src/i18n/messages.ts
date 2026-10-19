@@ -44,6 +44,20 @@ const en = {
   onboardFailed: 'Could not save the introduction. Try again.', saveGlossary: 'Save term', editTerm: 'Edit term', removeTerm: 'Remove term', noGlossary: 'No glossary terms yet.',
   running: 'In progress', pausedStatus: 'Paused', completed: 'Complete', partial: 'Partial result', failed: 'Failed', canceledStatus: 'Canceled',
   unknownError: 'The operation did not finish. Your local files are still available.', currentDevice: 'This device', modelRevision: 'Revision', fileSize: 'Package size', freeDisk: 'Free storage',
+  modelChoiceBody: 'Choose by sample result and download size.',
+  modelEvidenceLine: 'Meaning preserved in {acceptable} of {total} test passages',
+  modelEvidenceCaveat: 'Technical English→Russian sample; results vary by document.',
+  modelTierCompact: 'Compact tier', modelTierBalanced: 'Balanced tier', modelTierQuality: 'Quality tier',
+  modelTierTradeoffCompact: 'Smallest download in this group.',
+  modelTierTradeoffBalanced: 'Middle download size in this group.',
+  modelTierTradeoffQuality: 'Largest download; highest sample result in this group.',
+  modelMemoryEstimate: 'Full-pipeline memory estimate (reserve excluded)',
+  modelResourceMemory: 'Not enough available memory for this model and pipeline.', modelResourceDisk: 'Not enough free storage for this download.',
+  modelResourceLowMemory: 'The system reports low memory. Close other work and try again.', modelResourceUnsupported: 'This model is not enabled or its resource estimate is unavailable.',
+  useThisModel: 'Use this model', selectedModel: 'Selected for new jobs',
+  modelVerifyOriginal: 'Test passages contained technical errors. Check warnings, numbers, parts, and steps against the original.',
+  modelGlossaryUnsupported: 'This model cannot use your saved glossary. Choose a model that supports it or remove the glossary terms before translating.',
+  gemmaTermsNotice: 'Downloading this model accepts its license and use restrictions.', acceptAndDownload: 'Accept and download',
 } as const;
 
 type MessageKey = keyof typeof en;
@@ -81,6 +95,20 @@ const ru: Record<MessageKey, string> = {
   saveGlossary: 'Сохранить термин', editTerm: 'Изменить термин', removeTerm: 'Удалить термин', noGlossary: 'Глоссарий пока пуст.', running: 'Выполняется', pausedStatus: 'Приостановлено',
   completed: 'Готово', partial: 'Частичный результат', failed: 'Ошибка', canceledStatus: 'Отменено', unknownError: 'Не удалось завершить действие. Локальные файлы сохранены.',
   currentDevice: 'Это устройство', modelRevision: 'Ревизия', fileSize: 'Размер пакета', freeDisk: 'Свободное место', onboardFailed: 'Не удалось сохранить знакомство. Повторите попытку.',
+  modelChoiceBody: 'Выберите по результату выборки и размеру загрузки.',
+  modelEvidenceLine: 'Смысл сохранён в {acceptable} из {total} проверенных фрагментов',
+  modelEvidenceCaveat: 'Выборка технических текстов с английского на русский; результаты зависят от документа.',
+  modelTierCompact: 'Компактный уровень', modelTierBalanced: 'Сбалансированный уровень', modelTierQuality: 'Уровень качества',
+  modelTierTradeoffCompact: 'Самая маленькая загрузка среди этих моделей.',
+  modelTierTradeoffBalanced: 'Средний размер загрузки среди этих моделей.',
+  modelTierTradeoffQuality: 'Самая большая загрузка и лучший результат в этой выборке.',
+  modelMemoryEstimate: 'Оценка памяти полного процесса (без резерва)',
+  modelResourceMemory: 'Недостаточно доступной памяти для этой модели и обработки.', modelResourceDisk: 'Недостаточно свободного места для загрузки.',
+  modelResourceLowMemory: 'Система сообщает о нехватке памяти. Закройте другие приложения и повторите попытку.', modelResourceUnsupported: 'Модель не включена или оценка ресурсов недоступна.',
+  useThisModel: 'Использовать эту модель', selectedModel: 'Выбрана для новых задач',
+  modelVerifyOriginal: 'В тестовых фрагментах были технические ошибки. Сверяйте предупреждения, числа, детали и действия с оригиналом.',
+  modelGlossaryUnsupported: 'Эта модель не может использовать сохранённый глоссарий. Выберите модель с его поддержкой или удалите термины перед переводом.',
+  gemmaTermsNotice: 'Загрузка этой модели означает принятие лицензии и ограничений на её использование.', acceptAndDownload: 'Принять и загрузить',
 };
 
 const localeKeys = new Set(localeOptions.map(([id]) => id));
@@ -110,7 +138,7 @@ export function localeDirection(value: string | null | undefined): 'rtl' | 'ltr'
 
 export function createTranslator(locale: Locale) {
   const dict: Record<MessageKey, string> = locale === 'ru' ? ru : locale === 'en' || locale === 'system' ? en : localizedMessages[locale];
-  return (key: MessageKey): string => dict[key];
+  return (key: MessageKey, values?: Record<string, string | number>): string => Object.entries(values ?? {}).reduce((message, [name, value]) => message.replaceAll(`{${name}}`, String(value)), dict[key]);
 }
 
 export type Translator = ReturnType<typeof createTranslator>;

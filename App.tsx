@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, AppStateStatus, BackHandler, ColorSchemeName, Image, Platform, Pressable, ScrollView, StatusBar, Text, View, useColorScheme, useWindowDimensions } from 'react-native';
+import { AppState, AppStateStatus, BackHandler, ColorSchemeName, Image, Linking, Platform, Pressable, ScrollView, StatusBar, Text, View, useColorScheme, useWindowDimensions } from 'react-native';
 import Animated, { FadeIn, useReducedMotion } from 'react-native-reanimated';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BootstrapSnapshot, DocumentSnapshot, ExportedPdf, JobDetails, JobSnapshot, ModelSnapshot, OnboardingState, PdfTranslator } from './src/native/PdfTranslator';
@@ -7,14 +7,15 @@ import { localeOptions, normalizeLocale, createTranslator, localeDirection, Mess
 import { resolveTheme, palettes } from './src/ui/theme';
 import { Button, Card, Field, Header, Label, Notice, ProgressBar, Row, Screen, SectionTitle } from './src/ui/components';
 import { ONBOARDING_VERSION, OnboardingScreen } from './src/onboarding/OnboardingScreen';
-import { modelCanBeInstalled, modelCanTranslate } from './src/domain/modelEligibility';
+import { modelCanBeInstalled, modelCanTranslate, modelResourceReason } from './src/domain/modelEligibility';
 
 type Route = 'home' | 'model' | 'prepare' | 'job' | 'preview' | 'settings' | 'privacy' | 'licenses';
 const BASE_ONBOARDING: OnboardingState = { version: ONBOARDING_VERSION, page: 0, done: false };
-const formatBytes = (bytes: number) => bytes <= 0 ? '—' : bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(0)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+const formatBytes = (bytes?: number | null) => bytes == null || !Number.isFinite(bytes) || bytes < 0 ? '—' : bytes === 0 ? '0 B' : bytes >= 1_000_000_000 ? `${(bytes / 1_000_000_000).toFixed(2)} GB` : bytes >= 1_000_000 ? `${Math.round(bytes / 1_000_000)} MB` : bytes >= 1_000 ? `${Math.max(1, Math.round(bytes / 1_000))} KB` : `${Math.round(bytes)} B`;
 const stageKeys: Record<JobSnapshot['stage'], MessageKey> = { queued: 'stageQueued', copying: 'stageCopying', extracting: 'stageExtracting', ocr: 'stageOcr', translating: 'stageTranslating', layout: 'stageLayout', exporting: 'stageExporting', complete: 'stageComplete' };
 const statusKeys: Record<JobSnapshot['status'], MessageKey> = { queued: 'running', running: 'running', paused: 'pausedStatus', completed: 'completed', partial: 'partial', failed: 'failed', canceled: 'canceledStatus' };
 const modelStatusKeys: Record<ModelSnapshot['status'], MessageKey> = { not_downloaded: 'modelNotDownloaded', downloading: 'modelDownloading', paused: 'modelPaused', verifying: 'modelVerifying', ready: 'modelReady', error: 'modelError' };
+const resourceReasonKeys = { available: 'modelResourceUnsupported', memory: 'modelResourceMemory', disk: 'modelResourceDisk', lowMemory: 'modelResourceLowMemory', unsupported: 'modelResourceUnsupported' } satisfies Record<NonNullable<ModelSnapshot['resourceReason']>, MessageKey>;
 const isRunning = (status: JobSnapshot['status']) => status === 'running' || status === 'queued';
 const formatDuration = (seconds: number, unit: (key: 'seconds' | 'minutes' | 'hours') => string) => seconds < 60 ? `${Math.ceil(seconds)} ${unit('seconds')}` : seconds < 3600 ? `${Math.ceil(seconds / 60)} ${unit('minutes')}` : `${Math.floor(seconds / 3600)} ${unit('hours')} ${Math.ceil((seconds % 3600) / 60)} ${unit('minutes')}`;
 const localeSystem = (nativeLocale?: string) => normalizeLocale(nativeLocale ?? Intl?.DateTimeFormat?.().resolvedOptions?.().locale ?? 'en');
@@ -57,7 +58,7 @@ function AppContent() {
   const wide = width >= 760;
   const selectedJob = snapshot?.jobs.find(job => job.id === selectedJobId) ?? snapshot?.jobs.find(job => job.status === 'running' || job.status === 'paused') ?? null;
   const recommendedModel = snapshot?.models.find(model => model.id === snapshot.device.recommendedModelId) ?? null;
-  const selectedModel = snapshot?.models.find(model => model.id === selectedJob?.modelId && model.translationEnabled) ?? (recommendedModel?.status === 'ready' && recommendedModel.translationEnabled ? recommendedModel : null) ?? snapshot?.models.find(model => model.status === 'ready' && model.translationEnabled) ?? recommendedModel;
+  const selectedModel = snapshot?.models.find(model => model.id === snapshot.preferences.selectedModelId && model.translationEnabled) ?? (recommendedModel?.status === 'ready' && recommendedModel.translationEnabled ? recommendedModel : null) ?? snapshot?.models.find(model => model.status === 'ready' && model.translationEnabled) ?? recommendedModel;
 
   const refresh = useCallback(async () => {
     const fresh = await PdfTranslator.bootstrap();
@@ -132,7 +133,8 @@ function AppContent() {
   const startDownload = (model: ModelSnapshot) => safely(() => PdfTranslator.startModelDownload(model.id));
   const pauseDownload = (model: ModelSnapshot) => safely(() => PdfTranslator.pauseModelDownload(model.id));
   const deleteModel = (model: ModelSnapshot) => safely(() => PdfTranslator.deleteModel(model.id));
-  const setPreference = (key: 'theme' | 'language', value: string) => safely(() => PdfTranslator.setSettings({ [key]: value }));
+  const setPreference = (key: 'theme' | 'language' | 'selectedModelId', value: string) => safely(() => PdfTranslator.setSettings({ [key]: value }));
+  const selectModel = (model: ModelSnapshot) => safely(() => PdfTranslator.setSettings({ selectedModelId: model.id }), () => back());
   const persistOnboarding = async (value: OnboardingState) => { const saved = await PdfTranslator.setOnboarding(value); setOnboardingOverride(saved); };
 
   if (!bootComplete) return <View style={{ flex: 1, backgroundColor: activeTheme === 'dark' ? '#171717' : '#F7F6F3', justifyContent: 'center', alignItems: 'center', paddingTop: insets.top }}><StatusBar barStyle={activeTheme === 'dark' ? 'light-content' : 'dark-content'} /><View style={{ width: 62, height: 62, borderRadius: 20, backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center', marginBottom: 15 }}><Text style={{ fontSize: 28, fontWeight: '900', color: colors.onAccent }}>P</Text></View><Text style={{ color: colors.text, fontSize: 20, fontWeight: '800' }}>{t('appName')}</Text><Text style={{ color: colors.muted, marginTop: 7 }}>{t('loading')}</Text></View>;
@@ -179,21 +181,38 @@ function AppContent() {
   </>;
 
   const renderModel = () => <>
-    {screenHeader(t('useModel'), t(snapshot.device.recommendationVerified ? 'recommended' : 'qualityPending'))}
+    {screenHeader(t('useModel'), t('modelChoiceBody'))}
     <ScrollView contentContainerStyle={{ padding: 20, gap: 15 }}>
       <Card colors={colors}>
-        <Row style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}><View style={{ flex: 1, gap: 8 }}><Text style={{ color: colors.text, fontWeight: '800', fontSize: 20 }}>{snapshot.device.recommendedModelId || t('model')}</Text><Text style={{ color: colors.muted, lineHeight: 20 }}>{snapshot.device.recommendationReason}</Text></View><Label colors={colors} tone={snapshot.device.recommendedModelAvailable ? 'success' : 'muted'}>{snapshot.device.recommendationVerified ? t('recommended') : t('modelStrong')}</Label></Row>
         <View style={{ flexDirection: 'row', gap: 14 }}><View style={{ flex: 1 }}><Text style={{ color: colors.muted, fontSize: 12 }}>{t('freeMemory')}</Text><Text style={{ color: colors.text, fontWeight: '800', marginTop: 4 }}>{formatBytes(snapshot.device.availableMemoryBytes)}</Text></View><View style={{ flex: 1 }}><Text style={{ color: colors.muted, fontSize: 12 }}>{t('totalMemory')}</Text><Text style={{ color: colors.text, fontWeight: '800', marginTop: 4 }}>{formatBytes(snapshot.device.totalMemoryBytes)}</Text></View><View style={{ flex: 1 }}><Text style={{ color: colors.muted, fontSize: 12 }}>{t('freeDisk')}</Text><Text style={{ color: colors.text, fontWeight: '800', marginTop: 4 }}>{formatBytes(snapshot.device.availableDiskBytes)}</Text></View></View>
       </Card>
       {snapshot.models.length === 0 ? <Card colors={colors}><Text style={{ color: colors.text, fontWeight: '700' }}>{t('unsupportedTitle')}</Text><Text style={{ color: colors.muted, lineHeight: 20 }}>{t('unsupportedBody')}</Text></Card> : snapshot.models.map(model => {
         const downloading = model.status === 'downloading' || model.status === 'verifying';
+        const canDownload = modelCanBeInstalled(model, snapshot.device);
+        const canSelect = modelCanTranslate(model, snapshot.device);
+        const resourceReason = modelResourceReason(model, snapshot.device, model.status !== 'ready');
+        const isSelected = selectedModel?.id === model.id;
+        const requiresTermsAcceptance = model.licenseUrl === 'https://ai.google.dev/gemma/terms';
+        const showsTermsAcceptance = requiresTermsAcceptance && !['ready', 'downloading', 'verifying', 'paused'].includes(model.status);
+        const tierKey: MessageKey = model.tier === 'quality' ? 'modelTierQuality' : model.tier === 'balanced' ? 'modelTierBalanced' : 'modelTierCompact';
+        const tradeoffKey: MessageKey = model.tier === 'quality' ? 'modelTierTradeoffQuality' : model.tier === 'balanced' ? 'modelTierTradeoffBalanced' : 'modelTierTradeoffCompact';
         return <Card key={model.id} colors={colors}>
-          <Row style={{ justifyContent: 'space-between' }}><Text style={{ flex: 1, color: colors.text, fontSize: 17, fontWeight: '800' }}>{model.label}</Text><Label colors={colors} tone={model.status === 'ready' ? 'success' : model.status === 'error' ? 'accent' : 'muted'}>{t(modelStatusKeys[model.status])}</Label></Row>
-          <Text style={{ color: colors.muted }}>{t('fileSize')}: {formatBytes(model.bytes)}  ·  {t('modelRevision')}: {model.revision}</Text>
-          <Text style={{ color: colors.muted, fontSize: 11 }}>{t('checksum')}: {model.sha256.slice(0, 16)}…</Text>
-          <Text style={{ color: colors.muted, fontSize: 12 }}>{model.verified ? t('qualityVerified') : t(model.translationEnabled ? 'qualityPending' : 'modelSmaller')}</Text>
+          <Row style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}><Text style={{ flex: 1, color: colors.text, fontSize: 17, fontWeight: '800' }}>{model.label}</Text><View style={{ alignItems: 'flex-end', gap: 5 }}><Label colors={colors} tone={model.status === 'ready' ? 'success' : model.status === 'error' ? 'accent' : 'muted'}>{t(modelStatusKeys[model.status])}</Label>{isSelected ? <Label colors={colors} tone="accent">{t('selectedModel')}</Label> : null}</View></Row>
+          <Label colors={colors} tone="accent">{t(tierKey)}</Label>
+          <Text style={{ color: colors.muted, fontSize: 13, lineHeight: 19 }}>{t(tradeoffKey)}</Text>
+          {model.evaluation && Number.isInteger(model.evaluation.acceptableCases) && Number.isInteger(model.evaluation.totalCases) && model.evaluation.totalCases > 0 && model.evaluation.acceptableCases >= 0 && model.evaluation.acceptableCases <= model.evaluation.totalCases ? <View accessibilityRole="text"><Text style={{ color: colors.text, fontSize: 13, fontWeight: '700' }}>{t('modelEvidenceLine', { acceptable: model.evaluation.acceptableCases, total: model.evaluation.totalCases })}</Text><Text style={{ color: colors.muted, fontSize: 12 }}>{t('modelEvidenceCaveat')}</Text></View> : null}
+          <View style={{ flexDirection: wide ? 'row' : 'column', gap: 6 }}>
+            <Text style={{ color: colors.muted, flex: 1, fontSize: 12 }}>{t('fileSize')}: {formatBytes(model.bytes)}</Text>
+            <Text style={{ color: colors.muted, flex: 1, fontSize: 12 }}>{t('modelMemoryEstimate')}: {model.requiredMemoryBytes ? formatBytes(model.requiredMemoryBytes) : '—'}</Text>
+          </View>
           {downloading ? <><ProgressBar colors={colors} value={model.bytes ? model.downloadedBytes / model.bytes : 0} label={t('downloaded')} /><Text style={{ color: colors.muted, fontSize: 12 }}>{t('downloaded')}: {formatBytes(model.downloadedBytes)} / {formatBytes(model.bytes)}</Text></> : null}
-          <View style={{ flexDirection: 'row', gap: 9 }}>{model.status === 'ready' ? <Button label={t('delete')} variant="danger" onPress={() => void deleteModel(model)} colors={colors} disabled={busy} /> : model.status === 'downloading' || model.status === 'verifying' ? <Button label={model.status === 'verifying' ? t('verifying') : t('pause')} onPress={() => void pauseDownload(model)} colors={colors} disabled={busy} /> : model.status === 'paused' ? <Button label={t('resume')} onPress={() => void startDownload(model)} colors={colors} disabled={busy || !modelCanBeInstalled(model, snapshot.device)} /> : <Button label={t('download')} onPress={() => void startDownload(model)} colors={colors} loading={busy} disabled={!modelCanBeInstalled(model, snapshot.device)} />}</View>
+          {model.licenseUrl ? <Pressable accessibilityRole="link" accessibilityLabel={`${t('licenses')}: ${model.label}`} onPress={() => void safely(() => Linking.openURL(model.licenseUrl!))}><Text style={{ color: colors.accent, textDecorationLine: 'underline', paddingVertical: 5 }}>{t('licenses')}</Text></Pressable> : null}
+          {showsTermsAcceptance ? <Notice colors={colors} text={t('gemmaTermsNotice')} /> : null}
+          <View style={{ flexDirection: 'row', gap: 9, flexWrap: 'wrap' }}>
+            {model.status === 'ready' ? <><Button label={t('useThisModel')} accessibilityLabel={`${t('useThisModel')}: ${model.label}`} onPress={() => void selectModel(model)} colors={colors} disabled={busy || !canSelect || isSelected} /><Button label={t('delete')} variant="danger" onPress={() => void deleteModel(model)} colors={colors} disabled={busy} /></> : model.status === 'downloading' || model.status === 'verifying' ? <Button label={model.status === 'verifying' ? t('verifying') : t('pause')} onPress={() => void pauseDownload(model)} colors={colors} disabled={busy} /> : <Button label={model.status === 'paused' ? t('resume') : requiresTermsAcceptance ? t('acceptAndDownload') : t('download')} onPress={() => void startDownload(model)} colors={colors} loading={busy} disabled={busy || !canDownload} />}
+          </View>
+          {!canSelect && model.status === 'ready' ? <Notice text={t(resourceReasonKeys[resourceReason])} colors={colors} /> : null}
+          {!canDownload && model.status !== 'ready' && !downloading ? <Notice text={t(resourceReasonKeys[modelResourceReason(model, snapshot.device, true)])} colors={colors} /> : null}
           {model.error ? <Notice text={model.error} colors={colors} /> : null}
         </Card>;
       })}
@@ -204,6 +223,7 @@ function AppContent() {
   const renderPrepare = () => <>
     {screenHeader(t('prepareTitle'))}
     <ScrollView contentContainerStyle={{ padding: 20, gap: 15 }}>
+      {selectedModel && snapshot.glossary.length > 0 && selectedModel.supportsGlossary === false ? <Notice colors={colors} text={t('modelGlossaryUnsupported')} /> : null}
       {selectedDocument ? <Card colors={colors}><Label colors={colors} tone="accent">{t('languagePair')}</Label><Text style={{ color: colors.text, fontSize: 19, fontWeight: '800' }}>{selectedDocument.name}</Text><Text style={{ color: colors.muted }}>{selectedDocument.pageCount} {t('pages')}</Text></Card> : null}
       <Card colors={colors}>
         <Text style={{ color: colors.text, fontSize: 18, fontWeight: '800' }}>{t('terms')}</Text><Text style={{ color: colors.muted, lineHeight: 20 }}>{t('termsBody')}</Text>
@@ -214,10 +234,10 @@ function AppContent() {
         }} colors={colors} variant="secondary" disabled={busy || !glossarySource.trim() || !glossaryTarget.trim()} />
         {snapshot.glossary.length === 0 ? <Text style={{ color: colors.muted, fontSize: 13 }}>{t('noGlossary')}</Text> : snapshot.glossary.map(entry => <Row key={entry.id} style={{ paddingVertical: 6, borderTopWidth: 1, borderTopColor: colors.border, justifyContent: 'space-between' }}><Pressable accessibilityRole="button" accessibilityLabel={`${t('editTerm')}: ${entry.source}`} onPress={() => { setGlossarySource(entry.source); setGlossaryTarget(entry.target); setEditingGlossaryId(entry.id); }} style={{ flex: 1, paddingVertical: 4 }}><Text style={{ color: colors.text }}>{entry.source}  →  {entry.target}</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={t('removeTerm')} onPress={() => void safely(() => PdfTranslator.deleteGlossaryEntry(entry.id))}><Text style={{ color: colors.accent, padding: 7 }}>×</Text></Pressable></Row>)}
       </Card>
-      {!selectedModel || !modelCanTranslate(selectedModel, snapshot.device) ? <Card colors={colors}><Text style={{ color: colors.text, fontWeight: '800' }}>{t('noModel')}</Text><Button label={t('chooseModel')} onPress={() => go('model')} colors={colors} /></Card> : <Card colors={colors}><Text style={{ color: colors.muted }}>{t('model')}: {selectedModel.label}</Text><Notice colors={colors} tone="info" text={Platform.OS === 'ios' ? t('iosBackground') : t('androidBackground')} /><Notice colors={colors} tone="info" text={selectedModel.verified ? t('qualityVerified') : t('qualityPending')} /><Button label={t('translate')} onPress={() => {
+      {!selectedModel || !modelCanTranslate(selectedModel, snapshot.device) ? <Card colors={colors}><Text style={{ color: colors.text, fontWeight: '800' }}>{t('noModel')}</Text><Button label={t('chooseModel')} onPress={() => go('model')} colors={colors} /></Card> : <Card colors={colors}><Text style={{ color: colors.muted }}>{t('model')}: {selectedModel.label}</Text><Notice colors={colors} tone="info" text={Platform.OS === 'ios' ? t('iosBackground') : t('androidBackground')} /><Notice colors={colors} tone="info" text={t('modelVerifyOriginal')} /><Button label={t('translate')} onPress={() => {
         if (!selectedDocument || !selectedModel) return;
         void safely(() => PdfTranslator.startJob({ documentId: selectedDocument.id, sourceLanguage: 'en', targetLanguage: 'ru', modelId: selectedModel.id }), job => { setSelectedJobId(job.id); setSelectedPage(0); go('job'); });
-      }} colors={colors} loading={busy} /></Card>}
+      }} colors={colors} loading={busy} disabled={busy || (snapshot.glossary.length > 0 && selectedModel.supportsGlossary === false)} /></Card>}
       {inlineError ? <Notice text={inlineError} colors={colors} /> : null}
     </ScrollView>
   </>;
@@ -245,7 +265,7 @@ function AppContent() {
           <Text style={{ fontSize: 21, color: colors.text, fontWeight: '800' }}>{t(stageKeys[job.stage])}</Text>
           <ProgressBar colors={colors} value={ratio} label={t('progress')} />
           <Row style={{ justifyContent: 'space-between' }}><Text style={{ color: colors.text, fontWeight: '700' }}>{t('pageProgress')}</Text><Text style={{ color: colors.muted }}>{job.completedPages} / {job.totalPages}</Text></Row>
-          <Text style={{ color: colors.muted, fontSize: 12 }}>{job.currentPage != null ? `${t('page')} ${job.currentPage + 1}` : t('stageQueued')}</Text>
+          {job.currentPage != null || job.status === 'queued' ? <Text style={{ color: colors.muted, fontSize: 12 }}>{job.currentPage != null ? `${t('page')} ${job.currentPage + 1}` : t('stageQueued')}</Text> : null}
           {job.completedBlocks !== undefined || job.discoveredBlocks !== undefined ? <Text style={{ color: colors.muted, fontSize: 12 }}>{t('blocksCompleted')}: {job.completedBlocks ?? 0}{job.totalBlocks != null ? ` / ${job.totalBlocks}` : job.discoveredBlocks != null ? ` · ${t('blocksDiscovered')}: ${job.discoveredBlocks}` : ''}</Text> : null}
           {etaRange ? <Text style={{ color: colors.muted, fontSize: 12 }}>{t('eta')}: ~{formatDuration(etaRange.min, key => t(key))}–{formatDuration(etaRange.max, key => t(key))}</Text> : eta != null ? <Text style={{ color: colors.muted, fontSize: 12 }}>{t('eta')}: ~{formatDuration(eta, key => t(key))}</Text> : null}
           {job.error ? <Notice text={job.error} colors={colors} /> : null}

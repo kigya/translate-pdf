@@ -56,3 +56,5 @@ coverage/
 *.profdata
 __pycache__/
 *.pyc
+
+/android/.kotlin/

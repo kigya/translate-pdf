@@ -35,13 +35,18 @@ final class ModelDownloadCoordinator: NSObject, URLSessionDownloadDelegate {
     _ = restoredTasks.wait(timeout:.now()+5)
     lock.lock();defer{lock.unlock()}
     deleting.remove(model.id)
-    if tasks[model.id] != nil { return model.snapshot(status:"downloading",downloadedBytes:partialLength(model)) }
+    if tasks[model.id] != nil { return model.snapshot(status:"downloading",downloadedBytes:downloadedLength(model)) }
     if try isReady(model) {
       try store.updateModel(model.id,status:"ready",bytes:model.bytes)
       return model.snapshot(status:"ready",downloadedBytes:model.bytes)
     }
+    if try store.modelState(model.id)?["status"] as? String == "ready" {
+      try store.updateModel(model.id,status:"error",bytes:partialLength(model),error:"The installed model failed its pinned size or SHA-256 check and must be downloaded again.")
+    }
     let free = try AppPaths.models.resourceValues(forKeys:[.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? 0
-    guard free >= model.bytes + model.bytes / 10 else { throw NSError(domain:"PdfTranslator",code:20,userInfo:[NSLocalizedDescriptionKey:"Not enough free storage for the model and a temporary verification copy."]) }
+    let remainingBytes = max(0,model.bytes-downloadedLength(model))
+    let requiredFree = remainingBytes > Int64.max - 512 * 1_048_576 ? Int64.max : remainingBytes + 512 * 1_048_576
+    guard free >= requiredFree else { throw NSError(domain:"PdfTranslator",code:20,userInfo:[NSLocalizedDescriptionKey:"Not enough free storage for the remaining model download and 512 MiB work reserve."]) }
     let task:URLSessionDownloadTask
     if FileManager.default.fileExists(atPath:model.resumeURL.path),let data=try? Data(contentsOf:model.resumeURL),!data.isEmpty {
       task=session.downloadTask(withResumeData:data)
@@ -51,23 +56,24 @@ final class ModelDownloadCoordinator: NSObject, URLSessionDownloadDelegate {
     }
     task.taskDescription=model.id
     tasks[model.id]=task
-    try store.updateModel(model.id,status:"downloading",bytes:partialLength(model))
+    try store.updateModel(model.id,status:"downloading",bytes:downloadedLength(model))
     task.resume()
-    return model.snapshot(status:"downloading",downloadedBytes:partialLength(model))
+    return model.snapshot(status:"downloading",downloadedBytes:downloadedLength(model))
   }
 
   func pause(_ model:ModelDefinition) throws -> [String:Any] {
     lock.lock();let task=tasks.removeValue(forKey:model.id);lock.unlock()
+    let knownBytes=downloadedLength(model)
     if let task {
       task.cancel(byProducingResumeData:{[weak self] data in
         guard let self else { return }
         if let data, !data.isEmpty { try? data.write(to:model.resumeURL,options:.atomic) }
-        try? self.store.updateModel(model.id,status:"paused",bytes:self.partialLength(model))
+        try? self.store.updateModel(model.id,status:"paused",bytes:max(knownBytes,self.partialLength(model)))
       })
     } else {
-      try store.updateModel(model.id,status:"paused",bytes:partialLength(model))
+      try store.updateModel(model.id,status:"paused",bytes:downloadedLength(model))
     }
-    return model.snapshot(status:"paused",downloadedBytes:partialLength(model))
+    return model.snapshot(status:"paused",downloadedBytes:downloadedLength(model))
   }
 
   func delete(_ model:ModelDefinition) throws {
@@ -82,6 +88,11 @@ final class ModelDownloadCoordinator: NSObject, URLSessionDownloadDelegate {
   }
 
   func partialLength(_ model:ModelDefinition)->Int64 { ((try? FileManager.default.attributesOfItem(atPath:model.partialURL.path)[.size]) as? NSNumber)?.int64Value ?? 0 }
+
+  private func downloadedLength(_ model:ModelDefinition)->Int64 {
+    let persisted=(try? store.modelState(model.id)?["downloaded_bytes"] as? Int64) ?? 0
+    return min(model.bytes,max(persisted,partialLength(model)))
+  }
 
   func urlSession(_ session:URLSession,downloadTask:URLSessionDownloadTask,didWriteData bytesWritten:Int64,totalBytesWritten:Int64,totalBytesExpectedToWrite:Int64) {
     guard let id=downloadTask.taskDescription, ModelCatalog.models.contains(where: { $0.id == id }) else { return }
@@ -107,7 +118,7 @@ final class ModelDownloadCoordinator: NSObject, URLSessionDownloadDelegate {
       try store.updateModel(id,status:"ready",bytes:model.bytes)
     } catch {
       try? FileManager.default.removeItem(at:model.partialURL)
-      try? store.updateModel(id,status:"error",bytes:partialLength(model),error:error.localizedDescription)
+      try? store.updateModel(id,status:"error",bytes:downloadedLength(model),error:error.localizedDescription)
     }
     lock.lock();tasks.removeValue(forKey:id);lastPersisted.removeValue(forKey:id);lock.unlock()
   }
@@ -118,9 +129,9 @@ final class ModelDownloadCoordinator: NSObject, URLSessionDownloadDelegate {
     if let error {
       let ns=error as NSError
       if ns.code == NSURLErrorCancelled {
-        try? store.updateModel(id,status:"paused",bytes:partialLength(model))
+        try? store.updateModel(id,status:"paused",bytes:downloadedLength(model))
       } else {
-        try? store.updateModel(id,status:"error",bytes:partialLength(model),error:error.localizedDescription)
+        try? store.updateModel(id,status:"error",bytes:downloadedLength(model),error:error.localizedDescription)
       }
       lock.lock();tasks.removeValue(forKey:id);lock.unlock()
     }

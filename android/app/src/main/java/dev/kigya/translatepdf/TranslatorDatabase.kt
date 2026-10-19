@@ -4,14 +4,16 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import java.io.File
+import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
 
 internal class TranslatorDatabase(context: Context) :
-  SQLiteOpenHelper(context, "translator-private.db", null, 2) {
+  SQLiteOpenHelper(context, "translator-private.db", null, 3) {
 
   companion object {
-    const val PIPELINE_VERSION = 2
+    const val PIPELINE_VERSION = 3
   }
 
   override fun onConfigure(db: SQLiteDatabase) {
@@ -23,7 +25,7 @@ internal class TranslatorDatabase(context: Context) :
     db.execSQL("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     db.execSQL("CREATE TABLE documents (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, pages INTEGER NOT NULL, source_sha256 TEXT NOT NULL, imported_at INTEGER NOT NULL)")
     db.execSQL("CREATE TABLE models (id TEXT PRIMARY KEY, status TEXT NOT NULL, downloaded_bytes INTEGER NOT NULL DEFAULT 0, error TEXT)")
-    db.execSQL("CREATE TABLE jobs (id TEXT PRIMARY KEY, document_id TEXT NOT NULL, model_id TEXT NOT NULL, model_revision TEXT NOT NULL, source_sha256 TEXT NOT NULL, glossary_snapshot TEXT NOT NULL, pipeline_version INTEGER NOT NULL, source_lang TEXT NOT NULL, target_lang TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL, completed_pages INTEGER NOT NULL DEFAULT 0, total_pages INTEGER NOT NULL, current_page INTEGER, glossary_id TEXT, error TEXT, observed_block_ms INTEGER NOT NULL DEFAULT 0, observed_block_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE)")
+    db.execSQL("CREATE TABLE jobs (id TEXT PRIMARY KEY, document_id TEXT NOT NULL, model_id TEXT NOT NULL, model_revision TEXT NOT NULL, model_profile TEXT NOT NULL, source_sha256 TEXT NOT NULL, glossary_snapshot TEXT NOT NULL, pipeline_version INTEGER NOT NULL, source_lang TEXT NOT NULL, target_lang TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL, completed_pages INTEGER NOT NULL DEFAULT 0, total_pages INTEGER NOT NULL, current_page INTEGER, glossary_id TEXT, error TEXT, observed_block_ms INTEGER NOT NULL DEFAULT 0, observed_block_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE)")
     db.execSQL("CREATE INDEX jobs_document_id ON jobs(document_id)")
     db.execSQL("CREATE TABLE pages (job_id TEXT NOT NULL, page_index INTEGER NOT NULL, status TEXT NOT NULL, blocks_json TEXT NOT NULL, width REAL NOT NULL DEFAULT 0, height REAL NOT NULL DEFAULT 0, expected_blocks INTEGER, error TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY(job_id, page_index), FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)")
     db.execSQL("CREATE TABLE glossary (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL, created_at INTEGER NOT NULL)")
@@ -36,6 +38,7 @@ internal class TranslatorDatabase(context: Context) :
       db.execSQL("ALTER TABLE jobs ADD COLUMN observed_block_count INTEGER NOT NULL DEFAULT 0")
       db.execSQL("ALTER TABLE pages ADD COLUMN expected_blocks INTEGER")
     }
+    if (oldVersion < 3) db.execSQL("ALTER TABLE jobs ADD COLUMN model_profile TEXT NOT NULL DEFAULT 'hy-mt2'")
   }
 
   fun setting(key: String, fallback: String): String = readableDatabase.rawQuery(
@@ -46,6 +49,21 @@ internal class TranslatorDatabase(context: Context) :
     writableDatabase.insertWithOnConflict("settings", null, ContentValues().apply {
       put("key", key); put("value", value)
     }, SQLiteDatabase.CONFLICT_REPLACE)
+  }
+
+  fun selectedModelId(initialId: String): String {
+    fun valid(id: String) = ModelCatalog.models.any { it.id == id && it.translationEnabled }
+    require(valid(initialId))
+    val saved = setting("selectedModelId", "")
+    if (valid(saved)) return saved
+    val db = writableDatabase
+    db.beginTransaction()
+    return try {
+      val current = setting("selectedModelId", "")
+      val selected = if (valid(current)) current else initialId.also { setSetting("selectedModelId", it) }
+      db.setTransactionSuccessful()
+      selected
+    } finally { db.endTransaction() }
   }
 
   fun upsertDocument(id: String, name: String, path: String, pages: Int, sourceSha256: String): JSONObject {
@@ -95,12 +113,13 @@ internal class TranslatorDatabase(context: Context) :
     val sourceSha = readableDatabase.rawQuery("SELECT source_sha256 FROM documents WHERE id=?", arrayOf(documentId)).use {
       if (it.moveToFirst()) it.getString(0) else throw IllegalArgumentException("The source document was not found.")
     }
-    val modelRevision = ModelCatalog.get(input.getString("modelId")).revision
+    val model = ModelCatalog.get(input.getString("modelId"))
+    val modelRevision = model.revision
     val glossaryId = input.optString("glossaryId").takeIf(String::isNotBlank)
     val glossarySnapshot = glossaryText(glossaryId)
     writableDatabase.insertOrThrow("jobs", null, ContentValues().apply {
       put("id", id); put("document_id", documentId); put("model_id", input.getString("modelId"))
-      put("model_revision", modelRevision); put("source_sha256", sourceSha); put("glossary_snapshot", glossarySnapshot)
+      put("model_revision", modelRevision); put("model_profile", model.profile); put("source_sha256", sourceSha); put("glossary_snapshot", glossarySnapshot)
       put("pipeline_version", PIPELINE_VERSION)
       put("source_lang", input.getString("sourceLanguage")); put("target_lang", input.getString("targetLanguage"))
       put("status", "queued"); put("stage", "queued"); put("completed_pages", 0); put("total_pages", pages)
@@ -112,7 +131,7 @@ internal class TranslatorDatabase(context: Context) :
   }
 
   fun jobJson(id: String): JSONObject? = readableDatabase.rawQuery(
-    "SELECT j.id,j.document_id,d.name,j.model_id,j.source_lang,j.target_lang,j.status,j.stage,j.completed_pages,j.total_pages,j.current_page,j.error,j.created_at,j.updated_at FROM jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=?",
+    "SELECT j.id,j.document_id,d.name,j.model_id,j.source_lang,j.target_lang,j.status,j.stage,j.completed_pages,j.total_pages,j.current_page,j.error,j.created_at,j.updated_at,j.model_revision,j.source_sha256,j.pipeline_version,j.model_profile FROM jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=?",
     arrayOf(id),
   ).use { c ->
     if (!c.moveToFirst()) null else {
@@ -123,6 +142,8 @@ internal class TranslatorDatabase(context: Context) :
       .put("totalPages", c.getInt(9)).put("currentPage", if (c.isNull(10)) JSONObject.NULL else c.getInt(10))
       .put("error", if (c.isNull(11)) JSONObject.NULL else c.getString(11))
       .put("createdAt", c.getLong(12)).put("updatedAt", c.getLong(13))
+      .put("modelRevision", c.getString(14)).put("sourceSHA256", c.getString(15))
+      .put("pipelineVersion", c.getInt(16)).put("modelProfile", c.getString(17))
       val stats = blockProgress(id)
       job.put("completedBlocks", stats.first).put("discoveredBlocks", stats.second)
       val knownTotal = knownBlockTotal(id, c.getInt(9))
@@ -184,6 +205,22 @@ internal class TranslatorDatabase(context: Context) :
       it.moveToFirst() && it.getInt(0) == PIPELINE_VERSION
     }
     check(compatible) { "This job uses an older processing pipeline. Start a new job; its saved pages remain available for review." }
+  }
+
+  fun validateJobSnapshot(id: String, model: ModelDefinition) {
+    requireCurrentPipeline(id)
+    val job = jobJson(id) ?: error("Translation job was not found.")
+    check(job.getString("modelId") == model.id && job.getString("modelRevision") == model.revision && job.getString("modelProfile") == model.profile) {
+      "This job's model or processing profile changed. Start a new job to use the current inputs."
+    }
+    val file = File(jobDocumentPath(id) ?: error("The saved source document is unavailable."))
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+      val buffer = ByteArray(1024 * 1024)
+      while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+    }
+    val actual = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    check(actual == job.getString("sourceSHA256")) { "This job's source changed. Start a new job to use the current document." }
   }
 
   fun hasActiveJob(exceptId: String? = null): Boolean {
@@ -298,7 +335,7 @@ internal class TranslatorDatabase(context: Context) :
   ).use { c -> buildString {
     while (c.moveToNext()) {
       if (isNotEmpty()) append('\n')
-      append(c.getString(0)).append(" => ").append(c.getString(1))
+      append(c.getString(0)).append(" translates to ").append(c.getString(1))
     }
   } }
 

@@ -7,6 +7,8 @@ export type ModelStatus = 'not_downloaded' | 'downloading' | 'paused' | 'verifyi
 export type JobStatus = 'queued' | 'running' | 'paused' | 'completed' | 'partial' | 'failed' | 'canceled';
 export type JobStage = 'queued' | 'copying' | 'extracting' | 'ocr' | 'translating' | 'layout' | 'exporting' | 'complete';
 export type BlockStatus = 'pending' | 'translated' | 'partial' | 'failed' | 'skipped';
+export type ModelTier = 'compact' | 'balanced' | 'quality';
+export type ModelResourceReason = 'available' | 'memory' | 'disk' | 'lowMemory' | 'unsupported';
 
 export interface DeviceSnapshot {
   manufacturer: string;
@@ -41,6 +43,18 @@ export interface ModelSnapshot {
   translationEnabled: boolean;
   status: ModelStatus;
   downloadedBytes: number;
+  /** Relative tier label for the current comparison; it is not a safety certification. */
+  tier?: ModelTier;
+  /** Full-pipeline estimate excluding the system reserve. */
+  requiredMemoryBytes?: number;
+  memoryEstimateEligible?: boolean;
+  diskEstimateEligible?: boolean;
+  resourceEstimateEligible?: boolean;
+  resourceReason?: ModelResourceReason;
+  licenseUrl?: string;
+  supportsGlossary?: boolean;
+  /** Counts from the local fixed text sample; not a safety or production rating. */
+  evaluation?: { acceptableCases: number; totalCases: number };
   error?: string;
 }
 
@@ -110,7 +124,7 @@ export interface GlossaryEntry {
 export interface BootstrapSnapshot {
   schemaVersion: number;
   device: DeviceSnapshot;
-  preferences: { theme: ThemePreference; language: LanguagePreference };
+  preferences: { theme: ThemePreference; language: LanguagePreference; selectedModelId?: string };
   onboarding: { version: number; page: number; done: boolean };
   models: ModelSnapshot[];
   documents: DocumentSnapshot[];
@@ -134,7 +148,7 @@ export interface StartJobInput {
   glossaryId?: string;
 }
 export interface OnboardingState { version: number; page: number; done: boolean }
-export interface SettingsUpdate { theme?: ThemePreference; language?: LanguagePreference }
+export interface SettingsUpdate { theme?: ThemePreference; language?: LanguagePreference; selectedModelId?: string }
 
 interface NativePdfTranslatorModule {
   bootstrap(): Promise<string>;

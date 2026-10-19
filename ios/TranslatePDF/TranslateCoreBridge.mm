@@ -27,8 +27,8 @@ static NSString *TPString(const std::string &value) {
   CGDataProviderRelease(provider);
   return png;
 }
-+ (NSString *)loadModel:(NSString *)path context:(NSInteger)context threads:(NSInteger)threads {
-  return TPString(translatepdf::loadModel(path.UTF8String ?: "", (int)context, (int)threads));
++ (NSString *)loadModel:(NSString *)path context:(NSInteger)context threads:(NSInteger)threads profile:(NSString *)profile {
+  return TPString(translatepdf::loadModel(path.UTF8String ?: "", (int)context, (int)threads, profile.UTF8String ?: ""));
 }
 + (NSString *)translate:(NSString *)text glossary:(NSString *)glossary context:(NSString *)context {
   return TPString(translatepdf::translate(text.UTF8String ?: "", glossary.UTF8String ?: "", context.UTF8String ?: ""));

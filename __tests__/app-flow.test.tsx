@@ -55,11 +55,11 @@ const snapshot = (overrides: Record<string, unknown> = {}) => ({
     availableMemoryBytes: 5_000_000_000, availableDiskBytes: 5_000_000_000, reservedMemoryBytes: 1_000_000_000,
     recommendedModelAvailable: true, recommendedModelId: 'model-q4', recommendationReason: 'Ready for local work.', recommendationVerified: false,
   },
-  preferences: { theme: 'system', language: 'system' },
+  preferences: { theme: 'system', language: 'system', selectedModelId: undefined as string | undefined },
   onboarding: { version: 1, page: 4, done: true },
   models: [{ id: 'model-q4', label: 'Q4 candidate', revision: 'pinned', bytes: 1_000_000, sha256: '0123456789abcdef0123456789abcdef', verified: false, checksumPinned: true, translationEnabled: true, status: 'ready', downloadedBytes: 1_000_000 }],
   documents: [{ id: 'doc-1', name: 'manual.pdf', pageCount: 12, importedAt: 1 }],
-  jobs: [], glossary: [],
+  jobs: [] as Array<Record<string, unknown>>, glossary: [],
   ...overrides,
 });
 
@@ -114,12 +114,138 @@ describe('native-backed app flows', () => {
     expect(await screen.findByText('Compact candidate')).toBeOnTheScreen();
   });
 
+  it('persists a ready model choice and starts a new job with that selected model', async () => {
+    const model = snapshot().models[0];
+    const models = [
+      { ...model, id: 'model-compact', label: 'Compact candidate', status: 'ready', tier: 'compact', requiredMemoryBytes: 1_000, memoryEstimateEligible: true, diskEstimateEligible: true, resourceEstimateEligible: true, resourceReason: 'available', licenseUrl: 'https://example.org/compact-license' },
+      { ...model, id: 'model-balanced', label: 'Balanced candidate', status: 'ready', tier: 'balanced', requiredMemoryBytes: 2_000, memoryEstimateEligible: true, diskEstimateEligible: false, resourceEstimateEligible: false, resourceReason: 'disk' },
+      { ...model, id: 'model-quality', label: 'Quality candidate', status: 'ready', tier: 'quality', requiredMemoryBytes: 3_000, memoryEstimateEligible: true, diskEstimateEligible: true, resourceEstimateEligible: true, resourceReason: 'available', evaluation: { acceptableCases: 29, totalCases: 44 } },
+    ];
+    let data = snapshot({ models, preferences: { theme: 'system', language: 'system', selectedModelId: 'model-compact' }, device: { ...snapshot().device, recommendedModelId: 'model-compact' } });
+    native.bootstrap.mockImplementation(async () => data);
+    native.setSettings.mockImplementation(async (settings: Record<string, string>) => {
+      data = { ...data, preferences: { ...data.preferences, ...settings } };
+      return data.preferences;
+    });
+    await renderApp(data);
+    native.bootstrap.mockImplementation(async () => data);
+    fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
+
+    expect(await screen.findByText('Compact tier')).toBeOnTheScreen();
+    expect(await screen.findByText('Balanced tier')).toBeOnTheScreen();
+    expect(screen.getByText('Quality tier')).toBeOnTheScreen();
+    expect(screen.getByText('Meaning preserved in 29 of 44 test passages')).toBeOnTheScreen();
+    expect(screen.getByText('Technical English→Russian sample; results vary by document.')).toBeOnTheScreen();
+    expect(screen.getByRole('link', { name: 'Licenses: Compact candidate' })).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Use this model: Balanced candidate' }));
+    await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ selectedModelId: 'model-balanced' }));
+    expect(data.preferences.selectedModelId).toBe('model-balanced');
+
+    fireEvent.press(screen.getByText('manual.pdf'));
+    expect(await screen.findByText(/Translation model: Balanced candidate/)).toBeOnTheScreen();
+    native.startJob.mockResolvedValue({ id: 'job-new', documentId: 'doc-1', documentName: 'manual.pdf', modelId: 'model-balanced', sourceLanguage: 'en', targetLanguage: 'ru', status: 'queued', stage: 'queued', completedPages: 0, totalPages: 12, currentPage: null, createdAt: 1, updatedAt: 1 });
+    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
+    await waitFor(() => expect(native.startJob).toHaveBeenCalledWith({ documentId: 'doc-1', sourceLanguage: 'en', targetLanguage: 'ru', modelId: 'model-balanced' }));
+  });
+
+  it('disables downloading when model memory is insufficient and shows the resource reason', async () => {
+    const blocked = { ...snapshot().models[0], id: 'model-blocked', label: 'Blocked candidate', status: 'not_downloaded', tier: 'compact', memoryEstimateEligible: false, diskEstimateEligible: true, resourceEstimateEligible: false, resourceReason: 'memory' };
+    await renderApp(snapshot({ models: [blocked], device: { ...snapshot().device, recommendedModelId: 'model-q4' } }));
+    fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
+
+    expect(await screen.findByText('Not enough available memory for this model and pipeline.')).toBeOnTheScreen();
+    expect(screen.getByRole('button', { name: 'Download model' })).toBeDisabled();
+    fireEvent.press(screen.getByRole('button', { name: 'Download model' }));
+    expect(native.startModelDownload).not.toHaveBeenCalled();
+  });
+
+  it('shows zero bytes downloaded as a measured zero rather than an unavailable value', async () => {
+    const downloading = { ...snapshot().models[0], status: 'downloading', bytes: 1_000_000_000, downloadedBytes: 0 };
+    await renderApp(snapshot({ models: [downloading] }));
+    fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
+
+    expect(await screen.findByText('Downloaded: 0 B / 1.00 GB')).toBeOnTheScreen();
+    expect(screen.queryByText(/Meaning preserved in/)).not.toBeOnTheScreen();
+  });
+
+  it('formats package sizes in decimal units at KB, MB, and GB boundaries', async () => {
+    const sizes = [999, 1_000, 999_499, 1_000_000, 999_499_999, 1_000_000_000];
+    const models = sizes.map((bytes, index) => ({ ...snapshot().models[0], id: `size-${index}`, label: `Size ${index}`, status: 'not_downloaded', bytes }));
+    await renderApp(snapshot({ models }));
+    fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
+
+    expect(await screen.findByText('Package size: 999 B')).toBeOnTheScreen();
+    expect(screen.getByText('Package size: 1 KB')).toBeOnTheScreen();
+    expect(screen.getByText('Package size: 999 KB')).toBeOnTheScreen();
+    expect(screen.getByText('Package size: 1 MB')).toBeOnTheScreen();
+    expect(screen.getByText('Package size: 999 MB')).toBeOnTheScreen();
+    expect(screen.getByText('Package size: 1.00 GB')).toBeOnTheScreen();
+  });
+
+  it('shows Gemma license acceptance before a new download while keeping resume distinct', async () => {
+    const base = snapshot().models[0];
+    const gemma = { ...base, id: 'gemma-new', label: 'TranslateGemma', status: 'not_downloaded', licenseUrl: 'https://ai.google.dev/gemma/terms', memoryEstimateEligible: true, diskEstimateEligible: true, resourceEstimateEligible: true, resourceReason: 'available' };
+    const paused = { ...gemma, id: 'gemma-paused', label: 'Paused Gemma', status: 'paused' };
+    await renderApp(snapshot({ models: [gemma, paused], device: { ...snapshot().device, recommendedModelId: gemma.id } }));
+    fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
+
+    expect(await screen.findAllByText('Downloading this model accepts its license and use restrictions.')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Accept and download' })).toBeOnTheScreen();
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeOnTheScreen();
+    expect(screen.getByRole('link', { name: 'Licenses: TranslateGemma' })).toBeOnTheScreen();
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Accept and download' }));
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+    expect(native.startModelDownload).toHaveBeenCalledWith('gemma-new');
+  });
+
+  it('blocks preparation before job creation when the chosen model cannot use saved glossary terms', async () => {
+    const unsupported = {
+      ...snapshot().models[0], status: 'ready', supportsGlossary: false,
+      memoryEstimateEligible: true, resourceEstimateEligible: true, resourceReason: 'available',
+    };
+    await renderApp(snapshot({ models: [unsupported], glossary: [{ id: 'g1', source: 'bearing', target: 'подшипник', createdAt: 1 }] }));
+    fireEvent.press(screen.getByText('manual.pdf'));
+
+    expect(await screen.findByText('This model cannot use your saved glossary. Choose a model that supports it or remove the glossary terms before translating.')).toBeOnTheScreen();
+    expect(screen.getByRole('button', { name: 'Translate PDF' })).toBeDisabled();
+    expect(native.startJob).not.toHaveBeenCalled();
+  });
+
+  it('keeps a stored job model unchanged when the new-job selection changes', async () => {
+    const model = snapshot().models[0];
+    const job = { id: 'job-legacy', documentId: 'doc-1', documentName: 'manual.pdf', modelId: 'model-q4', sourceLanguage: 'en', targetLanguage: 'ru', status: 'paused', stage: 'translating', completedPages: 2, totalPages: 12, currentPage: 2, createdAt: 1, updatedAt: 2 };
+    const models = [
+      { ...model, id: 'model-q4', label: 'Existing job model', status: 'ready', tier: 'balanced', memoryEstimateEligible: true, resourceEstimateEligible: true, resourceReason: 'available' },
+      { ...model, id: 'model-new', label: 'New job model', status: 'ready', tier: 'quality', memoryEstimateEligible: true, resourceEstimateEligible: true, resourceReason: 'available' },
+    ];
+    let data = snapshot({ models, jobs: [job], preferences: { theme: 'system', language: 'system', selectedModelId: 'model-q4' } });
+    native.bootstrap.mockImplementation(async () => data);
+    native.setSettings.mockImplementation(async (settings: Record<string, string>) => {
+      data = { ...data, preferences: { ...data.preferences, ...settings } };
+      return data.preferences;
+    });
+    native.resumeJob.mockResolvedValue({ ...job, status: 'running' });
+    await renderApp(data);
+    native.bootstrap.mockImplementation(async () => data);
+    fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Use this model: New job model' }));
+    await waitFor(() => expect(data.preferences.selectedModelId).toBe('model-new'));
+    fireEvent.press(screen.getByText('manual.pdf'));
+    fireEvent.press(await screen.findByRole('button', { name: 'Resume' }));
+
+    await waitFor(() => expect(native.resumeJob).toHaveBeenCalledWith('job-legacy'));
+    expect(data.jobs[0].modelId).toBe('model-q4');
+    expect(native.startJob).not.toHaveBeenCalled();
+  });
+
   it('explains a device without an installable model instead of presenting download controls', async () => {
     await renderApp(snapshot({ models: [], device: { ...snapshot().device, recommendedModelAvailable: false, recommendationReason: 'This device has insufficient free memory.' } }));
     fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
 
     expect(screen.getByText('Android preview')).toBeOnTheScreen();
-    expect(screen.getByText('This device has insufficient free memory.')).toBeOnTheScreen();
+    expect(screen.getByText('Choose by sample result and download size.')).toBeOnTheScreen();
     expect(screen.queryByRole('button', { name: 'Download' })).toBeNull();
     expect(native.startModelDownload).not.toHaveBeenCalled();
   });
@@ -428,7 +554,7 @@ describe('native-backed app flows', () => {
     native.deleteModel.mockResolvedValue(undefined);
     await renderApp(snapshot({ models: [downloading] }));
     fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
-    expect(screen.getByText(/439 KB \/ 977 KB/)).toBeOnTheScreen();
+    expect(screen.getByText(/450 KB \/ 1 MB/)).toBeOnTheScreen();
     native.bootstrap.mockResolvedValue(snapshot({ models: [{ ...downloading, status: 'ready', downloadedBytes: downloading.bytes }] }));
     fireEvent.press(screen.getByRole('button', { name: 'Pause' }));
     await waitFor(() => expect(native.pauseModelDownload).toHaveBeenCalledWith('model-q4'));

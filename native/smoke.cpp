@@ -7,7 +7,18 @@
 int main(int argc,char**argv){
  if(argc<3)return 2;std::string op=argv[1];
  if(op=="inspect")std::cout<<translatepdf::inspect(argv[2]);
+ else if(op=="model-configuration"){
+  auto first=nlohmann::json::parse(translatepdf::loadModel(argv[2],1024,1));
+  auto second=nlohmann::json::parse(translatepdf::loadModel(argv[2],2048,2));
+  auto cached=nlohmann::json::parse(translatepdf::loadModel(argv[2],2048,2));
+  std::cout<<nlohmann::json{{"first",first},{"second",second},{"cached",cached}};translatepdf::releaseModel();
+ }
  else if(op=="page")std::cout<<translatepdf::readPage(argv[2],argc>3?std::stoi(argv[3]):0);
+ else if(op=="translate-profile"&&argc>4){
+  auto loaded=nlohmann::json::parse(translatepdf::loadModel(argv[2],2048,2,argv[3]));
+  if(loaded.contains("error")){std::cout<<loaded<<"\n";return 1;}
+  std::cout<<translatepdf::translate(argv[4],argc>5?argv[5]:"","");translatepdf::releaseModel();
+ }
  else if(op=="translate"){std::cerr<<translatepdf::loadModel(argv[2],2048,4)<<"\n";std::cout<<translatepdf::translate(argc>3?argv[3]:"Do not remove the head restraint.","head restraint translates to подголовник","");translatepdf::releaseModel();}
  else if(op=="cancel-translate"){
   std::cerr<<translatepdf::loadModel(argv[2],2048,4)<<"\n";

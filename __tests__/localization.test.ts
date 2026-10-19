@@ -38,6 +38,11 @@ describe('30-locale interface catalogs', () => {
     }
   });
 
+  it('formats optional model evaluation counts in the selected interface language', () => {
+    expect(createTranslator('en')('modelEvidenceLine', { acceptable: 17, total: 44 })).toBe('Meaning preserved in 17 of 44 test passages');
+    expect(createTranslator('ru')('modelEvidenceLine', { acceptable: 17, total: 44 })).toBe('Смысл сохранён в 17 из 44 проверенных фрагментов');
+  });
+
   it('normalizes BCP-47 and legacy native locale tags', () => {
     expect(normalizeLocale(undefined)).toBe('en');
     expect(normalizeLocale(null)).toBe('en');

@@ -320,6 +320,44 @@ describe('native-backed app flows', () => {
     expect(native.requestNotificationPermission).not.toHaveBeenCalled();
   });
 
+  it('offers the saved job exact model for redownload after cleanup without resuming or changing its model', async () => {
+    const model = { ...snapshot().models[0], status: 'not_downloaded' };
+    const job = { id: 'paused-cleanup', documentId: 'doc-1', documentName: 'manual.pdf', modelId: model.id, sourceLanguage: 'en', targetLanguage: 'ru', status: 'paused', stage: 'translating', completedPages: 1, totalPages: 12, currentPage: 1, createdAt: 1, updatedAt: 2 };
+    const data = snapshot({ models: [model], jobs: [job] });
+    native.startModelDownload.mockResolvedValue({ ...model, status: 'downloading' });
+    await renderApp(data);
+    fireEvent.press(screen.getByRole('button', { name: 'manual.pdf' }));
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
+    await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Download model' })); });
+    await waitFor(() => expect(native.startModelDownload).toHaveBeenCalledWith(model.id));
+    expect(screen.getByText('Model settings')).toBeOnTheScreen();
+    expect(native.resumeJob).not.toHaveBeenCalled();
+    expect(native.startJob).not.toHaveBeenCalled();
+    expect(data.jobs[0].modelId).toBe(model.id);
+  });
+
+  it('opens a saved job active model transfer without starting a duplicate download', async () => {
+    const model = { ...snapshot().models[0], status: 'downloading' };
+    const job = { id: 'paused-transfer', documentId: 'doc-1', documentName: 'manual.pdf', modelId: model.id, sourceLanguage: 'en', targetLanguage: 'ru', status: 'paused', stage: 'translating', completedPages: 1, totalPages: 12, currentPage: 1, createdAt: 1, updatedAt: 2 };
+    await renderApp(snapshot({ models: [model], jobs: [job] }));
+    fireEvent.press(screen.getByRole('button', { name: 'manual.pdf' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
+    expect(screen.getByText('Model settings')).toBeOnTheScreen();
+    expect(native.startModelDownload).not.toHaveBeenCalled();
+    expect(native.resumeJob).not.toHaveBeenCalled();
+  });
+
+  it('resumes export-only saved work without requiring deleted model weights again', async () => {
+    const model = { ...snapshot().models[0], status: 'not_downloaded' };
+    const job = { id: 'paused-export', documentId: 'doc-1', documentName: 'manual.pdf', modelId: model.id, sourceLanguage: 'en', targetLanguage: 'ru', status: 'paused', stage: 'exporting', completedPages: 12, totalPages: 12, currentPage: 11, createdAt: 1, updatedAt: 2 };
+    native.resumeJob.mockResolvedValue(job);
+    await renderApp(snapshot({ models: [model], jobs: [job] }));
+    fireEvent.press(screen.getByRole('button', { name: 'manual.pdf' }));
+    await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Resume' })); });
+    expect(native.resumeJob).toHaveBeenCalledWith('paused-export');
+    expect(native.startModelDownload).not.toHaveBeenCalled();
+  });
+
   it('offers retry for a failed job while keeping pause, cancel, and completed-preview controls hidden', async () => {
     const failedJob = { id: 'failed-1', documentId: 'doc-1', documentName: 'manual.pdf', modelId: 'model-q4', sourceLanguage: 'en', targetLanguage: 'ru', status: 'failed', stage: 'translating', completedPages: 1, totalPages: 12, currentPage: 0, error: 'The model file could not be read.', createdAt: 1, updatedAt: 2 };
     await renderApp(snapshot({ jobs: [failedJob] }));

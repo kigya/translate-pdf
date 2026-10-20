@@ -749,6 +749,16 @@ function AppContent() {
       job.etaSeconds >= 0
         ? job.etaSeconds
         : null;
+    const pinnedModel = snapshot.models.find(model => model.id === job.modelId);
+    const missingPinnedModel =
+      job.completedPages < job.totalPages &&
+      pinnedModel?.translationEnabled !== false &&
+      pinnedModel?.status !== 'ready'
+        ? pinnedModel
+        : undefined;
+    const redownloading =
+      missingPinnedModel?.status === 'downloading' ||
+      missingPinnedModel?.status === 'verifying';
     const controls = (
       <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
         {job.status === 'running' || job.status === 'queued' ? (
@@ -761,8 +771,19 @@ function AppContent() {
           />
         ) : job.status === 'paused' || job.status === 'failed' ? (
           <Button
-            label={t(job.status === 'failed' ? 'retry' : 'resume')}
-            onPress={() => void safely(() => PdfTranslator.resumeJob(job.id))}
+            label={
+              missingPinnedModel
+                ? t(redownloading ? 'useModel' : 'download')
+                : t(job.status === 'failed' ? 'retry' : 'resume')
+            }
+            onPress={() => {
+              if (missingPinnedModel) {
+                go('model');
+                if (!redownloading) void startDownload(missingPinnedModel);
+              } else {
+                void safely(() => PdfTranslator.resumeJob(job.id));
+              }
+            }}
             colors={colors}
             disabled={busy}
           />

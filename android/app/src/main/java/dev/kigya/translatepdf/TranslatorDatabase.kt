@@ -10,10 +10,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 internal class TranslatorDatabase(context: Context) :
-  SQLiteOpenHelper(context, "translator-private.db", null, 3) {
+  SQLiteOpenHelper(context, "translator-private.db", null, 4) {
 
   companion object {
-    const val PIPELINE_VERSION = 3
+    const val PIPELINE_VERSION = 4
   }
 
   override fun onConfigure(db: SQLiteDatabase) {
@@ -28,7 +28,7 @@ internal class TranslatorDatabase(context: Context) :
     db.execSQL("CREATE TABLE jobs (id TEXT PRIMARY KEY, document_id TEXT NOT NULL, model_id TEXT NOT NULL, model_revision TEXT NOT NULL, model_profile TEXT NOT NULL, source_sha256 TEXT NOT NULL, glossary_snapshot TEXT NOT NULL, pipeline_version INTEGER NOT NULL, source_lang TEXT NOT NULL, target_lang TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL, completed_pages INTEGER NOT NULL DEFAULT 0, total_pages INTEGER NOT NULL, current_page INTEGER, glossary_id TEXT, error TEXT, observed_block_ms INTEGER NOT NULL DEFAULT 0, observed_block_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE)")
     db.execSQL("CREATE INDEX jobs_document_id ON jobs(document_id)")
     db.execSQL("CREATE TABLE pages (job_id TEXT NOT NULL, page_index INTEGER NOT NULL, status TEXT NOT NULL, blocks_json TEXT NOT NULL, width REAL NOT NULL DEFAULT 0, height REAL NOT NULL DEFAULT 0, expected_blocks INTEGER, error TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY(job_id, page_index), FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)")
-    db.execSQL("CREATE TABLE glossary (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL, created_at INTEGER NOT NULL)")
+    db.execSQL("CREATE TABLE glossary (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL, source_lang TEXT NOT NULL DEFAULT 'en', target_lang TEXT NOT NULL DEFAULT 'ru', created_at INTEGER NOT NULL)")
     db.execSQL("CREATE TABLE exports (id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL)")
   }
 
@@ -39,11 +39,26 @@ internal class TranslatorDatabase(context: Context) :
       db.execSQL("ALTER TABLE pages ADD COLUMN expected_blocks INTEGER")
     }
     if (oldVersion < 3) db.execSQL("ALTER TABLE jobs ADD COLUMN model_profile TEXT NOT NULL DEFAULT 'hy-mt2'")
+    if (oldVersion < 4) {
+      db.execSQL("ALTER TABLE glossary ADD COLUMN source_lang TEXT NOT NULL DEFAULT 'en'")
+      db.execSQL("ALTER TABLE glossary ADD COLUMN target_lang TEXT NOT NULL DEFAULT 'ru'")
+    }
   }
 
   fun setting(key: String, fallback: String): String = readableDatabase.rawQuery(
     "SELECT value FROM settings WHERE key=?", arrayOf(key),
   ).use { if (it.moveToFirst()) it.getString(0) else fallback }
+
+  fun selectedLanguagePair(): Pair<String, String> {
+    var source = setting("sourceLanguage", "en")
+    var target = setting("targetLanguage", "ru")
+    if (!LanguagePair.isValidCode(source) || !LanguagePair.isValidCode(target) || source == target) {
+      source = "en"; target = "ru"
+    }
+    setSetting("sourceLanguage", source)
+    setSetting("targetLanguage", target)
+    return source to target
+  }
 
   fun setSetting(key: String, value: String) {
     writableDatabase.insertWithOnConflict("settings", null, ContentValues().apply {
@@ -116,12 +131,13 @@ internal class TranslatorDatabase(context: Context) :
     val model = ModelCatalog.get(input.getString("modelId"))
     val modelRevision = model.revision
     val glossaryId = input.optString("glossaryId").takeIf(String::isNotBlank)
-    val glossarySnapshot = glossaryText(glossaryId)
+    val (sourceLanguage, targetLanguage) = LanguagePair.fromJson(input).also { LanguagePair.requireValid(it.first, it.second) }
+    val glossarySnapshot = glossaryText(glossaryId, sourceLanguage, targetLanguage)
     writableDatabase.insertOrThrow("jobs", null, ContentValues().apply {
       put("id", id); put("document_id", documentId); put("model_id", input.getString("modelId"))
       put("model_revision", modelRevision); put("model_profile", model.profile); put("source_sha256", sourceSha); put("glossary_snapshot", glossarySnapshot)
       put("pipeline_version", PIPELINE_VERSION)
-      put("source_lang", input.getString("sourceLanguage")); put("target_lang", input.getString("targetLanguage"))
+      put("source_lang", sourceLanguage); put("target_lang", targetLanguage)
       put("status", "queued"); put("stage", "queued"); put("completed_pages", 0); put("total_pages", pages)
       putNull("current_page"); put("glossary_id", glossaryId)
       putNull("error"); put("observed_block_ms", 0); put("observed_block_count", 0)
@@ -315,29 +331,35 @@ internal class TranslatorDatabase(context: Context) :
   fun deleteModel(id: String) { writableDatabase.delete("models", "id=?", arrayOf(id)) }
 
   fun glossaryJson(): JSONArray = readableDatabase.rawQuery(
-    "SELECT id,source,target,created_at FROM glossary ORDER BY source COLLATE NOCASE", null,
+    "SELECT id,source,target,source_lang,target_lang,created_at FROM glossary ORDER BY source COLLATE NOCASE", null,
   ).use { c -> JSONArray().also { out -> while (c.moveToNext()) out.put(JSONObject()
-    .put("id", c.getString(0)).put("source", c.getString(1)).put("target", c.getString(2)).put("createdAt", c.getLong(3))) } }
+    .put("id", c.getString(0)).put("source", c.getString(1)).put("target", c.getString(2))
+    .put("sourceLanguage", c.getString(3)).put("targetLanguage", c.getString(4)).put("createdAt", c.getLong(5))) } }
 
-  fun saveGlossary(id: String, source: String, target: String): JSONObject {
+  fun saveGlossary(id: String, source: String, target: String, sourceLanguage: String, targetLanguage: String): JSONObject {
     require(source.isNotBlank() && target.isNotBlank()) { "Both glossary terms are required." }
+    LanguagePair.requireValid(sourceLanguage, targetLanguage)
     val created = System.currentTimeMillis()
     writableDatabase.insertWithOnConflict("glossary", null, ContentValues().apply {
-      put("id", id); put("source", source.trim()); put("target", target.trim()); put("created_at", created)
+      put("id", id); put("source", source.trim()); put("target", target.trim())
+      put("source_lang", sourceLanguage); put("target_lang", targetLanguage); put("created_at", created)
     }, SQLiteDatabase.CONFLICT_REPLACE)
-    return JSONObject().put("id", id).put("source", source.trim()).put("target", target.trim()).put("createdAt", created)
+    return JSONObject().put("id", id).put("source", source.trim()).put("target", target.trim())
+      .put("sourceLanguage", sourceLanguage).put("targetLanguage", targetLanguage).put("createdAt", created)
   }
 
-  fun glossaryText(id: String?): String = readableDatabase.rawQuery(
-    if (id == null) "SELECT source,target FROM glossary ORDER BY source COLLATE NOCASE"
-    else "SELECT source,target FROM glossary WHERE id=?",
-    if (id == null) null else arrayOf(id),
-  ).use { c -> buildString {
-    while (c.moveToNext()) {
-      if (isNotEmpty()) append('\n')
-      append(c.getString(0)).append(" translates to ").append(c.getString(1))
-    }
-  } }
+  fun glossaryText(id: String?, sourceLanguage: String, targetLanguage: String): String {
+    LanguagePair.requireValid(sourceLanguage, targetLanguage)
+    val sql = if (id == null) "SELECT source,target FROM glossary WHERE source_lang=? AND target_lang=? ORDER BY source COLLATE NOCASE"
+      else "SELECT source,target FROM glossary WHERE id=? AND source_lang=? AND target_lang=?"
+    val args = if (id == null) arrayOf(sourceLanguage, targetLanguage) else arrayOf(id, sourceLanguage, targetLanguage)
+    return readableDatabase.rawQuery(sql, args).use { c -> buildString {
+      while (c.moveToNext()) {
+        if (isNotEmpty()) append('\n')
+        append(c.getString(0)).append(" translates to ").append(c.getString(1))
+      }
+    } }
+  }
 
   fun deleteGlossaryEntry(id: String) { writableDatabase.delete("glossary", "id=?", arrayOf(id)) }
 

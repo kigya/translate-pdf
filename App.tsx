@@ -7,7 +7,9 @@ import { localeOptions, normalizeLocale, createTranslator, localeDirection, Mess
 import { resolveTheme, palettes } from './src/ui/theme';
 import { Button, Card, Field, Header, Label, Notice, ProgressBar, Row, Screen, SectionTitle } from './src/ui/components';
 import { ONBOARDING_VERSION, OnboardingScreen } from './src/onboarding/OnboardingScreen';
-import { modelCanBeInstalled, modelCanTranslate, modelResourceReason } from './src/domain/modelEligibility';
+import { modelCanBeInstalled, modelCanTranslate, modelResourceReason, modelHasMemoryWarning } from './src/domain/modelEligibility';
+
+import { resolveTranslationPair, translationLanguageName, translationLanguages, TranslationLanguage } from './src/domain/translationLanguages';
 
 type Route = 'home' | 'model' | 'prepare' | 'job' | 'preview' | 'settings' | 'privacy' | 'licenses';
 const BASE_ONBOARDING: OnboardingState = { version: ONBOARDING_VERSION, page: 0, done: false };
@@ -45,6 +47,7 @@ function AppContent() {
   const [glossarySource, setGlossarySource] = useState('');
   const [glossaryTarget, setGlossaryTarget] = useState('');
   const [editingGlossaryId, setEditingGlossaryId] = useState<string | null>(null);
+  const [languagePicker, setLanguagePicker] = useState<'source' | 'target' | null>(null);
 
   const preferenceTheme = snapshot?.preferences.theme ?? 'system';
   const activeTheme = useMemo(() => resolveTheme(preferenceTheme, scheme as ColorSchemeName), [preferenceTheme, scheme]);
@@ -59,6 +62,10 @@ function AppContent() {
   const selectedJob = snapshot?.jobs.find(job => job.id === selectedJobId) ?? snapshot?.jobs.find(job => job.status === 'running' || job.status === 'paused') ?? null;
   const recommendedModel = snapshot?.models.find(model => model.id === snapshot.device.recommendedModelId) ?? null;
   const selectedModel = snapshot?.models.find(model => model.id === snapshot.preferences.selectedModelId && model.translationEnabled) ?? (recommendedModel?.status === 'ready' && recommendedModel.translationEnabled ? recommendedModel : null) ?? snapshot?.models.find(model => model.status === 'ready' && model.translationEnabled) ?? recommendedModel;
+
+  const { sourceLanguage, targetLanguage } = resolveTranslationPair(snapshot?.preferences.sourceLanguage, snapshot?.preferences.targetLanguage);
+  const pairLabel = (source: TranslationLanguage, target: TranslationLanguage) => `${translationLanguageName(source)} → ${translationLanguageName(target)}`;
+  const pairGlossary = snapshot?.glossary.filter(entry => (entry.sourceLanguage ?? 'en') === sourceLanguage && (entry.targetLanguage ?? 'ru') === targetLanguage) ?? [];
 
   const refresh = useCallback(async () => {
     const fresh = await PdfTranslator.bootstrap();
@@ -135,6 +142,7 @@ function AppContent() {
   const deleteModel = (model: ModelSnapshot) => safely(() => PdfTranslator.deleteModel(model.id));
   const setPreference = (key: 'theme' | 'language' | 'selectedModelId', value: string) => safely(() => PdfTranslator.setSettings({ [key]: value }));
   const selectModel = (model: ModelSnapshot) => safely(() => PdfTranslator.setSettings({ selectedModelId: model.id }), () => back());
+  const setTranslationPair = (source: TranslationLanguage, target: TranslationLanguage) => safely(() => PdfTranslator.setSettings({ sourceLanguage: source, targetLanguage: target }), preferences => { setSnapshot(current => current ? { ...current, preferences: { ...current.preferences, ...preferences } } : current); setLanguagePicker(null); setGlossarySource(''); setGlossaryTarget(''); setEditingGlossaryId(null); });
   const persistOnboarding = async (value: OnboardingState) => { const saved = await PdfTranslator.setOnboarding(value); setOnboardingOverride(saved); };
 
   if (!bootComplete) return <View style={{ flex: 1, backgroundColor: activeTheme === 'dark' ? '#171717' : '#F7F6F3', justifyContent: 'center', alignItems: 'center', paddingTop: insets.top }}><StatusBar barStyle={activeTheme === 'dark' ? 'light-content' : 'dark-content'} /><View style={{ width: 62, height: 62, borderRadius: 20, backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center', marginBottom: 15 }}><Text style={{ fontSize: 28, fontWeight: '900', color: colors.onAccent }}>P</Text></View><Text style={{ color: colors.text, fontSize: 20, fontWeight: '800' }}>{t('appName')}</Text><Text style={{ color: colors.muted, marginTop: 7 }}>{t('loading')}</Text></View>;
@@ -200,7 +208,8 @@ function AppContent() {
           <Row style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}><Text style={{ flex: 1, color: colors.text, fontSize: 17, fontWeight: '800' }}>{model.label}</Text><View style={{ alignItems: 'flex-end', gap: 5 }}><Label colors={colors} tone={model.status === 'ready' ? 'success' : model.status === 'error' ? 'accent' : 'muted'}>{t(modelStatusKeys[model.status])}</Label>{isSelected ? <Label colors={colors} tone="accent">{t('selectedModel')}</Label> : null}</View></Row>
           <Label colors={colors} tone="accent">{t(tierKey)}</Label>
           <Text style={{ color: colors.muted, fontSize: 13, lineHeight: 19 }}>{t(tradeoffKey)}</Text>
-          {model.evaluation && Number.isInteger(model.evaluation.acceptableCases) && Number.isInteger(model.evaluation.totalCases) && model.evaluation.totalCases > 0 && model.evaluation.acceptableCases >= 0 && model.evaluation.acceptableCases <= model.evaluation.totalCases ? <View accessibilityRole="text"><Text style={{ color: colors.text, fontSize: 13, fontWeight: '700' }}>{t('modelEvidenceLine', { acceptable: model.evaluation.acceptableCases, total: model.evaluation.totalCases })}</Text><Text style={{ color: colors.muted, fontSize: 12 }}>{t('modelEvidenceCaveat')}</Text></View> : null}
+          {sourceLanguage === 'en' && targetLanguage === 'ru' && model.evaluation && Number.isInteger(model.evaluation.acceptableCases) && Number.isInteger(model.evaluation.totalCases) && model.evaluation.totalCases > 0 && model.evaluation.acceptableCases >= 0 && model.evaluation.acceptableCases <= model.evaluation.totalCases ? <View accessibilityRole="text"><Text style={{ color: colors.text, fontSize: 13, fontWeight: '700' }}>{t('modelEvidenceLine', { acceptable: model.evaluation.acceptableCases, total: model.evaluation.totalCases })}</Text><Text style={{ color: colors.muted, fontSize: 12 }}>{t('modelEvidenceCaveat')}</Text></View> : null}
+          {sourceLanguage !== 'en' || targetLanguage !== 'ru' ? <Text style={{ color: colors.muted, fontSize: 12 }}>{t('modelPairUnrated')}</Text> : null}
           <View style={{ flexDirection: wide ? 'row' : 'column', gap: 6 }}>
             <Text style={{ color: colors.muted, flex: 1, fontSize: 12 }}>{t('fileSize')}: {formatBytes(model.bytes)}</Text>
             <Text style={{ color: colors.muted, flex: 1, fontSize: 12 }}>{t('modelMemoryEstimate')}: {model.requiredMemoryBytes ? formatBytes(model.requiredMemoryBytes) : '—'}</Text>
@@ -213,6 +222,7 @@ function AppContent() {
           </View>
           {!canSelect && model.status === 'ready' ? <Notice text={t(resourceReasonKeys[resourceReason])} colors={colors} /> : null}
           {!canDownload && model.status !== 'ready' && !downloading ? <Notice text={t(resourceReasonKeys[modelResourceReason(model, snapshot.device, true)])} colors={colors} /> : null}
+          {modelHasMemoryWarning(model, snapshot.device) ? <Notice colors={colors} tone="info" text={t('modelMemoryWarning')} /> : null}
           {model.error ? <Notice text={model.error} colors={colors} /> : null}
         </Card>;
       })}
@@ -223,21 +233,32 @@ function AppContent() {
   const renderPrepare = () => <>
     {screenHeader(t('prepareTitle'))}
     <ScrollView contentContainerStyle={{ padding: 20, gap: 15 }}>
-      {selectedModel && snapshot.glossary.length > 0 && selectedModel.supportsGlossary === false ? <Notice colors={colors} text={t('modelGlossaryUnsupported')} /> : null}
-      {selectedDocument ? <Card colors={colors}><Label colors={colors} tone="accent">{t('languagePair')}</Label><Text style={{ color: colors.text, fontSize: 19, fontWeight: '800' }}>{selectedDocument.name}</Text><Text style={{ color: colors.muted }}>{selectedDocument.pageCount} {t('pages')}</Text></Card> : null}
+      <Card colors={colors}>
+        {(['source', 'target'] as const).map(kind => <View key={kind} style={{ gap: 6 }}>
+          <Button label={`${t(kind === 'source' ? 'sourceLanguage' : 'targetLanguage')}: ${translationLanguageName(kind === 'source' ? sourceLanguage : targetLanguage)}`} onPress={() => setLanguagePicker(languagePicker === kind ? null : kind)} colors={colors} variant="secondary" disabled={busy} />
+          {languagePicker === kind ? <View accessibilityRole="radiogroup" style={{ gap: 4 }}>{translationLanguages.map(([code, name]) => <Pressable key={code} accessibilityRole="radio" accessibilityLabel={name} accessibilityState={{ checked: code === (kind === 'source' ? sourceLanguage : targetLanguage), disabled: busy }} disabled={busy} onPress={() => {
+            const source = kind === 'source' ? code : code === sourceLanguage ? targetLanguage : sourceLanguage;
+            const target = kind === 'target' ? code : code === targetLanguage ? sourceLanguage : targetLanguage;
+            void setTranslationPair(source, target);
+          }} style={{ minHeight: 48, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 12, backgroundColor: code === (kind === 'source' ? sourceLanguage : targetLanguage) ? colors.softAccent : colors.surface }}><Text style={{ color: colors.text }}>{name}</Text></Pressable>)}</View> : null}
+        </View>)}
+        <Button label={t('swapLanguages')} onPress={() => void setTranslationPair(targetLanguage, sourceLanguage)} colors={colors} variant="quiet" disabled={busy} />
+      </Card>
+      {selectedModel && pairGlossary.length > 0 && selectedModel.supportsGlossary === false ? <Notice colors={colors} text={t('modelGlossaryUnsupported')} /> : null}
+      {selectedDocument ? <Card colors={colors}><Label colors={colors} tone="accent">{pairLabel(sourceLanguage, targetLanguage)}</Label><Text style={{ color: colors.text, fontSize: 19, fontWeight: '800' }}>{selectedDocument.name}</Text><Text style={{ color: colors.muted }}>{selectedDocument.pageCount} {t('pages')}</Text></Card> : null}
       <Card colors={colors}>
         <Text style={{ color: colors.text, fontSize: 18, fontWeight: '800' }}>{t('terms')}</Text><Text style={{ color: colors.muted, lineHeight: 20 }}>{t('termsBody')}</Text>
         <View style={{ flexDirection: wide ? 'row' : 'column', gap: 10 }}><View style={{ flex: 1 }}><Field label={t('sourceTerm')} value={glossarySource} onChangeText={setGlossarySource} colors={colors} /></View><View style={{ flex: 1 }}><Field label={t('targetTerm')} value={glossaryTarget} onChangeText={setGlossaryTarget} colors={colors} /></View></View>
         <Button label={t(editingGlossaryId ? 'saveGlossary' : 'addTerm')} onPress={() => {
           if (!glossarySource.trim() || !glossaryTarget.trim()) return;
-          void safely(() => PdfTranslator.saveGlossaryEntry({ id: editingGlossaryId ?? `${Date.now()}`, source: glossarySource.trim(), target: glossaryTarget.trim() }), () => { setGlossarySource(''); setGlossaryTarget(''); setEditingGlossaryId(null); });
+          void safely(() => PdfTranslator.saveGlossaryEntry({ id: editingGlossaryId ?? `${Date.now()}`, source: glossarySource.trim(), target: glossaryTarget.trim(), sourceLanguage, targetLanguage }), () => { setGlossarySource(''); setGlossaryTarget(''); setEditingGlossaryId(null); });
         }} colors={colors} variant="secondary" disabled={busy || !glossarySource.trim() || !glossaryTarget.trim()} />
-        {snapshot.glossary.length === 0 ? <Text style={{ color: colors.muted, fontSize: 13 }}>{t('noGlossary')}</Text> : snapshot.glossary.map(entry => <Row key={entry.id} style={{ paddingVertical: 6, borderTopWidth: 1, borderTopColor: colors.border, justifyContent: 'space-between' }}><Pressable accessibilityRole="button" accessibilityLabel={`${t('editTerm')}: ${entry.source}`} onPress={() => { setGlossarySource(entry.source); setGlossaryTarget(entry.target); setEditingGlossaryId(entry.id); }} style={{ flex: 1, paddingVertical: 4 }}><Text style={{ color: colors.text }}>{entry.source}  →  {entry.target}</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={t('removeTerm')} onPress={() => void safely(() => PdfTranslator.deleteGlossaryEntry(entry.id))}><Text style={{ color: colors.accent, padding: 7 }}>×</Text></Pressable></Row>)}
+        {pairGlossary.length === 0 ? <Text style={{ color: colors.muted, fontSize: 13 }}>{t('noGlossary')}</Text> : pairGlossary.map(entry => <Row key={entry.id} style={{ paddingVertical: 6, borderTopWidth: 1, borderTopColor: colors.border, justifyContent: 'space-between' }}><Pressable accessibilityRole="button" accessibilityLabel={`${t('editTerm')}: ${entry.source}`} onPress={() => { setGlossarySource(entry.source); setGlossaryTarget(entry.target); setEditingGlossaryId(entry.id); }} style={{ flex: 1, paddingVertical: 4 }}><Text style={{ color: colors.text }}>{entry.source}  →  {entry.target}</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={t('removeTerm')} onPress={() => void safely(() => PdfTranslator.deleteGlossaryEntry(entry.id))}><Text style={{ color: colors.accent, padding: 7 }}>×</Text></Pressable></Row>)}
       </Card>
-      {!selectedModel || !modelCanTranslate(selectedModel, snapshot.device) ? <Card colors={colors}><Text style={{ color: colors.text, fontWeight: '800' }}>{t('noModel')}</Text><Button label={t('chooseModel')} onPress={() => go('model')} colors={colors} /></Card> : <Card colors={colors}><Text style={{ color: colors.muted }}>{t('model')}: {selectedModel.label}</Text><Notice colors={colors} tone="info" text={Platform.OS === 'ios' ? t('iosBackground') : t('androidBackground')} /><Notice colors={colors} tone="info" text={t('modelVerifyOriginal')} /><Button label={t('translate')} onPress={() => {
+      {!selectedModel || !modelCanTranslate(selectedModel, snapshot.device) ? <Card colors={colors}><Text style={{ color: colors.text, fontWeight: '800' }}>{t('noModel')}</Text><Button label={t('chooseModel')} onPress={() => go('model')} colors={colors} /></Card> : <Card colors={colors}><Text style={{ color: colors.muted }}>{t('model')}: {selectedModel.label}</Text><Notice colors={colors} tone="info" text={Platform.OS === 'ios' ? t('iosBackground') : t('androidBackground')} /><Notice colors={colors} tone="info" text={t('modelVerifyOriginal')} />{modelHasMemoryWarning(selectedModel, snapshot.device) ? <Notice colors={colors} text={t('modelMemoryWarning')} /> : null}<Button label={t('translate')} onPress={() => {
         if (!selectedDocument || !selectedModel) return;
-        void safely(() => PdfTranslator.startJob({ documentId: selectedDocument.id, sourceLanguage: 'en', targetLanguage: 'ru', modelId: selectedModel.id }), job => { setSelectedJobId(job.id); setSelectedPage(0); go('job'); });
-      }} colors={colors} loading={busy} disabled={busy || (snapshot.glossary.length > 0 && selectedModel.supportsGlossary === false)} /></Card>}
+        void safely(() => PdfTranslator.startJob({ documentId: selectedDocument.id, sourceLanguage, targetLanguage, modelId: selectedModel.id }), job => { setSelectedJobId(job.id); setSelectedPage(0); go('job'); });
+      }} colors={colors} loading={busy} disabled={busy || (pairGlossary.length > 0 && selectedModel.supportsGlossary === false)} /></Card>}
       {inlineError ? <Notice text={inlineError} colors={colors} /> : null}
     </ScrollView>
   </>;
@@ -261,7 +282,7 @@ function AppContent() {
       {screenHeader(t('progress'), job.documentName)}
       <ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
         <Card colors={colors} style={{ padding: 22 }}>
-          <Row style={{ justifyContent: 'space-between' }}><Label colors={colors} tone={job.status === 'failed' ? 'accent' : done ? 'success' : 'muted'}>{t(statusKeys[job.status])}</Label><Text style={{ color: colors.muted, fontSize: 12 }}>{t('languagePair')}</Text></Row>
+          <Row style={{ justifyContent: 'space-between' }}><Label colors={colors} tone={job.status === 'failed' ? 'accent' : done ? 'success' : 'muted'}>{t(statusKeys[job.status])}</Label><Text style={{ color: colors.muted, fontSize: 12 }}>{pairLabel(job.sourceLanguage, job.targetLanguage)}</Text></Row>
           <Text style={{ fontSize: 21, color: colors.text, fontWeight: '800' }}>{t(stageKeys[job.stage])}</Text>
           <ProgressBar colors={colors} value={ratio} label={t('progress')} />
           <Row style={{ justifyContent: 'space-between' }}><Text style={{ color: colors.text, fontWeight: '700' }}>{t('pageProgress')}</Text><Text style={{ color: colors.muted }}>{job.completedPages} / {job.totalPages}</Text></Row>
@@ -279,7 +300,7 @@ function AppContent() {
   };
 
   const renderPreview = () => <>
-    {screenHeader(t('previewTitle'))}
+    {screenHeader(t('previewTitle'), details?.job.id === selectedJobId ? pairLabel(details.job.sourceLanguage, details.job.targetLanguage) : undefined)}
     <View style={{ flexDirection: 'row', paddingHorizontal: 18, paddingTop: 8, gap: 10 }}><Button label={t('original')} colors={colors} variant={previewOriginal ? 'primary' : 'secondary'} onPress={() => setPreviewOriginal(true)} /><Button label={t('translated')} colors={colors} variant={!previewOriginal ? 'primary' : 'secondary'} onPress={() => setPreviewOriginal(false)} /></View>
     <View style={{ flex: 1, flexDirection: wide ? 'row' : 'column' }}>
       <ScrollView style={{ flex: wide ? 1.15 : undefined }} contentContainerStyle={{ padding: 18, gap: 14 }}>

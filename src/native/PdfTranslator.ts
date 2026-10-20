@@ -1,4 +1,6 @@
 import { NativeModules } from 'react-native';
+import type { TranslationLanguage } from '../domain/translationLanguages';
+export type { TranslationLanguage } from '../domain/translationLanguages';
 
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type LanguagePreference = 'system' | string;
@@ -70,8 +72,8 @@ export interface JobSnapshot {
   documentId: string;
   documentName: string;
   modelId: string;
-  sourceLanguage: 'en';
-  targetLanguage: 'ru';
+  sourceLanguage: TranslationLanguage;
+  targetLanguage: TranslationLanguage;
   status: JobStatus;
   stage: JobStage;
   completedPages: number;
@@ -119,12 +121,14 @@ export interface GlossaryEntry {
   source: string;
   target: string;
   createdAt: number;
+  sourceLanguage: TranslationLanguage;
+  targetLanguage: TranslationLanguage;
 }
 
 export interface BootstrapSnapshot {
   schemaVersion: number;
   device: DeviceSnapshot;
-  preferences: { theme: ThemePreference; language: LanguagePreference; selectedModelId?: string };
+  preferences: { theme: ThemePreference; language: LanguagePreference; selectedModelId?: string; sourceLanguage?: TranslationLanguage; targetLanguage?: TranslationLanguage };
   onboarding: { version: number; page: number; done: boolean };
   models: ModelSnapshot[];
   documents: DocumentSnapshot[];
@@ -142,13 +146,13 @@ export interface ImportedDocument extends DocumentSnapshot {}
 export interface ExportedPdf { id: string; uri: string; displayName: string }
 export interface StartJobInput {
   documentId: string;
-  sourceLanguage: 'en';
-  targetLanguage: 'ru';
+  sourceLanguage: TranslationLanguage;
+  targetLanguage: TranslationLanguage;
   modelId: string;
   glossaryId?: string;
 }
 export interface OnboardingState { version: number; page: number; done: boolean }
-export interface SettingsUpdate { theme?: ThemePreference; language?: LanguagePreference; selectedModelId?: string }
+export interface SettingsUpdate { theme?: ThemePreference; language?: LanguagePreference; selectedModelId?: string; sourceLanguage?: TranslationLanguage; targetLanguage?: TranslationLanguage }
 
 interface NativePdfTranslatorModule {
   bootstrap(): Promise<string>;
@@ -261,7 +265,7 @@ export const PdfTranslator = {
   async setSettings(settings: SettingsUpdate): Promise<BootstrapSnapshot['preferences']> {
     return parseJson(await requireNativeModule().setSettings(JSON.stringify(settings)), 'setSettings');
   },
-  async saveGlossaryEntry(entry: Pick<GlossaryEntry, 'id' | 'source' | 'target'>): Promise<GlossaryEntry> {
+  async saveGlossaryEntry(entry: Pick<GlossaryEntry, 'id' | 'source' | 'target' | 'sourceLanguage' | 'targetLanguage'>): Promise<GlossaryEntry> {
     return parseJson(await requireNativeModule().saveGlossaryEntry(JSON.stringify(entry)), 'saveGlossaryEntry');
   },
   async deleteGlossaryEntry(entryId: string): Promise<void> {

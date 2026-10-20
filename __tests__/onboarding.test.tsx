@@ -248,7 +248,7 @@ describe('four-scene introduction', () => {
     expect(screen.getByText('Original text')).toBeOnTheScreen();
     expect(screen.getByText('OUTLET')).toBeOnTheScreen();
     fireEvent.press(screen.getByRole('button', { name: 'Tap to show translation' }));
-    expect(screen.getByText('Russian text')).toBeOnTheScreen();
+    expect(screen.getByText('Translated text')).toBeOnTheScreen();
     expect(screen.getByText('ВЫХОД')).toBeOnTheScreen();
     hidden.unmount();
   });

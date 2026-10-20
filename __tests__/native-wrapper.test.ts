@@ -77,7 +77,7 @@ describe('typed native bridge boundary', () => {
   it('serializes preferences and glossary data and forwards void actions', async () => {
     const onboarding = { version: 1, page: 4, done: true };
     const preferences = { theme: 'dark' as const, language: 'ar' };
-    const entry = { id: 'term-1', source: 'coolant', target: 'охлаждающая жидкость' };
+    const entry = { id: 'term-1', source: 'coolant', target: 'охлаждающая жидкость', sourceLanguage: 'en' as const, targetLanguage: 'ru' as const };
     const savedEntry = { ...entry, createdAt: 42 };
     bridge.setOnboarding.mockResolvedValue(JSON.stringify(onboarding));
     bridge.setSettings.mockResolvedValue(JSON.stringify(preferences));

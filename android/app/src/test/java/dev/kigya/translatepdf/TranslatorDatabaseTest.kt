@@ -1,6 +1,7 @@
 package dev.kigya.translatepdf
 
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
 import android.app.Application
 import java.io.File
 import java.security.MessageDigest
@@ -65,7 +66,7 @@ class TranslatorDatabaseTest {
     val saved = JSONArray().put(JSONObject().put("id", "old-line").put("sourceText", "Do not")
       .put("translatedText", "Не").put("status", "translated"))
     database.savePage("pipeline-job", 0, "running", saved.toString(), expectedBlocks = 1)
-    database.writableDatabase.execSQL("UPDATE jobs SET pipeline_version=2 WHERE id='pipeline-job'")
+    database.writableDatabase.execSQL("UPDATE jobs SET pipeline_version=3 WHERE id='pipeline-job'")
     val failure = runCatching { database.requireCurrentPipeline("pipeline-job") }.exceptionOrNull()
     assertTrue(failure is IllegalStateException)
     assertTrue(failure!!.message!!.contains("Start a new job"))
@@ -84,7 +85,7 @@ class TranslatorDatabaseTest {
       .put("sourceLanguage", "en").put("targetLanguage", "ru").put("modelId", model.id), 1)
     assertEquals(model.id, job.getString("modelId"))
     assertEquals(model.profile, job.getString("modelProfile"))
-    assertEquals(3, job.getInt("pipelineVersion"))
+    assertEquals(4, job.getInt("pipelineVersion"))
     database.validateJobSnapshot("frozen-job", model)
     database.setSetting("selectedModelId", ModelCatalog.models.last().id)
     database.validateJobSnapshot("frozen-job", model)
@@ -94,6 +95,63 @@ class TranslatorDatabaseTest {
     file.writeText("source two")
     assertTrue(runCatching { database.validateJobSnapshot("frozen-job", model) }.isFailure)
     assertTrue(database.jobJson("frozen-job") != null)
+    file.delete()
+  }
+
+  @Test
+  fun languagePairValidationAllowsExactlyTheThirtyDirectionalPairs() {
+    assertEquals(listOf("ru", "zh-Hans", "fr", "en", "de", "es"), LanguagePair.codes)
+    var validPairs = 0
+    for (source in LanguagePair.codes) for (target in LanguagePair.codes) {
+      val valid = source != target
+      assertEquals(valid, runCatching { LanguagePair.requireValid(source, target) }.isSuccess)
+      if (valid) validPairs++
+    }
+    assertEquals(30, validPairs)
+    assertTrue(runCatching { LanguagePair.requireValid("zh", "en") }.isFailure)
+  }
+
+  @Test
+  fun languagePairPreferencesPersistWithEnglishRussianDefaults() {
+    assertEquals("en" to "ru", database.selectedLanguagePair())
+    database.setSetting("sourceLanguage", "zh-Hans")
+    database.setSetting("targetLanguage", "fr")
+    assertEquals("zh-Hans" to "fr", database.selectedLanguagePair())
+  }
+
+  @Test
+  fun existingGlossaryRowsMigrateToEnglishRussian() {
+    database.close()
+    val legacy = SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath("translator-private.db"), null)
+    legacy.execSQL("CREATE TABLE glossary (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL, created_at INTEGER NOT NULL)")
+    legacy.execSQL("INSERT INTO glossary(id,source,target,created_at) VALUES('legacy','wheel nut','гайка',1)")
+    legacy.version = 3
+    legacy.close()
+    database = TranslatorDatabase(context)
+
+    val entry = database.glossaryJson().getJSONObject(0)
+    assertEquals("en", entry.getString("sourceLanguage"))
+    assertEquals("ru", entry.getString("targetLanguage"))
+    assertEquals("wheel nut translates to гайка", database.glossaryText(null, "en", "ru"))
+    assertTrue(database.glossaryText(null, "ru", "en").isBlank())
+  }
+
+  @Test
+  fun newJobFreezesOnlyGlossaryEntriesForItsDirection() {
+    val file = File(context.filesDir, "direction-source.pdf").apply { writeText("source") }
+    val hash = MessageDigest.getInstance("SHA-256").digest(file.readBytes()).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    database.upsertDocument("direction-doc", "source.pdf", file.absolutePath, 1, hash)
+    database.saveGlossary("en-ru", "bolt", "болт", "en", "ru")
+    database.saveGlossary("ru-en", "болт", "bolt", "ru", "en")
+
+    val job = database.addJob("direction-job", JSONObject().put("documentId", "direction-doc")
+      .put("sourceLanguage", "en").put("targetLanguage", "ru").put("modelId", ModelCatalog.RECOMMENDED_ID), 1)
+    database.saveGlossary("en-ru", "bolt", "винт", "en", "ru")
+
+    assertEquals("en", job.getString("sourceLanguage"))
+    assertEquals("ru", job.getString("targetLanguage"))
+    assertEquals("bolt translates to болт", database.jobGlossaryText("direction-job"))
+    assertEquals(4, job.getInt("pipelineVersion"))
     file.delete()
   }
 
@@ -148,7 +206,7 @@ class TranslatorDatabaseTest {
   private fun createJob(id: String): JSONObject {
     database.upsertDocument(id = "doc-$id", name = "sample.pdf", path = "/private/sample.pdf", pages = 2,
       sourceSha256 = "a".repeat(64))
-    database.saveGlossary("glossary-1", "wheel nut", "колесная гайка")
+    database.saveGlossary("glossary-1", "wheel nut", "колесная гайка", "en", "ru")
     return database.addJob(id, JSONObject()
       .put("documentId", "doc-$id").put("sourceLanguage", "en").put("targetLanguage", "ru")
       .put("modelId", ModelCatalog.RECOMMENDED_ID).put("glossaryId", "glossary-1"), pages = 2)

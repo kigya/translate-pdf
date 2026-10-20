@@ -30,6 +30,8 @@ final class TranslatorStore {
     try ensureColumn("jobs","glossary_snapshot","TEXT NOT NULL DEFAULT ''")
     try ensureColumn("jobs","pipeline_version","INTEGER NOT NULL DEFAULT 1")
     try ensureColumn("jobs","model_profile","TEXT NOT NULL DEFAULT ''")
+    try ensureColumn("glossary","source_lang","TEXT NOT NULL DEFAULT 'en'")
+    try ensureColumn("glossary","target_lang","TEXT NOT NULL DEFAULT 'ru'")
     try migrateSnapshots()
   }
 
@@ -84,20 +86,36 @@ final class TranslatorStore {
     try execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", [key, value])
   }
 
+  func languagePreferences() throws -> (sourceLanguage: String, targetLanguage: String) {
+    lock.lock(); defer { lock.unlock() }
+    let source = try setting("source_language", fallback: "")
+    let target = try setting("target_language", fallback: "")
+    if (try? TranslationLanguage.pair(source: source, target: target)) != nil {
+      return (source, target)
+    }
+    try setLanguagePreferences(sourceLanguage: "en", targetLanguage: "ru")
+    return ("en", "ru")
+  }
+
+  func setLanguagePreferences(sourceLanguage: String, targetLanguage: String) throws {
+    _ = try TranslationLanguage.pair(source: sourceLanguage, target: targetLanguage)
+    try execute("INSERT OR REPLACE INTO settings(key,value) VALUES('source_language',?),( 'target_language',?)", [sourceLanguage, targetLanguage])
+  }
+
   func selectedModelId() throws -> String {
-    try resolveSelectedModelId(recommended: ModelCatalog.recommendedId, installedMemoryEligible: [])
+    try resolveSelectedModelId(recommended: ModelCatalog.recommendedId, installedModelIds: [])
   }
 
   /// Atomically initializes/repairs the preference, while keeping every valid saved choice
   /// stable when device-resource recommendations change between bootstrap calls.
-  func resolveSelectedModelId(recommended: String, installedMemoryEligible: [String]) throws -> String {
+  func resolveSelectedModelId(recommended: String, installedModelIds: [String]) throws -> String {
     lock.lock(); defer { lock.unlock() }
     let saved = try setting("selected_model_id", fallback: "")
     if let definition = try? ModelCatalog.get(saved), definition.translationEnabled {
       return definition.id
     }
 
-    let installedIds = Set(installedMemoryEligible)
+    let installedIds = Set(installedModelIds)
     let preferredInstalled = ModelCatalog.models.reversed().first {
       installedIds.contains($0.id) && $0.translationEnabled
     }
@@ -152,10 +170,15 @@ final class TranslatorStore {
       let definition=try? ModelCatalog.get(modelId),let sourceSHA256=try documentSHA256(documentId),!sourceSHA256.isEmpty else {
       throw NSError(domain:"PdfTranslator",code:5,userInfo:[NSLocalizedDescriptionKey:"The source file or pinned model metadata is unavailable."])
     }
+    guard let sourceLanguage = input["sourceLanguage"] as? String,
+          let targetLanguage = input["targetLanguage"] as? String else {
+      throw NSError(domain:"PdfTranslator",code:30,userInfo:[NSLocalizedDescriptionKey:"A source and target language are required."])
+    }
+    _ = try TranslationLanguage.pair(source:sourceLanguage,target:targetLanguage)
     let glossaryId=input["glossaryId"] as? String
-    let glossarySnapshot=try glossaryText(glossaryId)
+    let glossarySnapshot=try glossaryText(glossaryId,sourceLanguage:sourceLanguage,targetLanguage:targetLanguage)
     guard definition.supportsGlossary || glossarySnapshot.isEmpty else { throw NSError(domain:"PdfTranslator",code:11,userInfo:[NSLocalizedDescriptionKey:"The selected model profile does not support glossary instructions. Clear the glossary or choose a glossary-compatible model before creating the job."]) }
-    try execute("INSERT INTO jobs(id,document_id,model_id,model_revision,source_sha256,glossary_snapshot,pipeline_version,model_profile,source_lang,target_lang,status,stage,completed_pages,total_pages,current_page,glossary_id,error,created_at,updated_at) VALUES(?,?,?,?,?,?,3,?,?,?,'queued','queued',0,?,NULL,?,NULL,?,?)", [id,documentId,modelId,definition.revision,sourceSHA256,glossarySnapshot,definition.profile,input["sourceLanguage"] as! String,input["targetLanguage"] as! String,pageCount,glossaryId ?? NSNull(),now,now])
+    try execute("INSERT INTO jobs(id,document_id,model_id,model_revision,source_sha256,glossary_snapshot,pipeline_version,model_profile,source_lang,target_lang,status,stage,completed_pages,total_pages,current_page,glossary_id,error,created_at,updated_at) VALUES(?,?,?,?,?,?,4,?,?,?,'queued','queued',0,?,NULL,?,NULL,?,?)", [id,documentId,modelId,definition.revision,sourceSHA256,glossarySnapshot,definition.profile,sourceLanguage,targetLanguage,pageCount,glossaryId ?? NSNull(),now,now])
     return try job(id) ?? [:]
   }
 
@@ -169,11 +192,19 @@ final class TranslatorStore {
   func jobGlossaryText(_ id: String) throws -> String { try query("SELECT glossary_snapshot FROM jobs WHERE id=?", [id]).first?["glossary_snapshot"] as? String ?? "" }
 
   func validateJobSnapshot(_ id:String,model:ModelDefinition)throws {
+    try validateJobSnapshot(id,model:model,requiresCurrentPipeline:true)
+  }
+
+  func validateJobForExport(_ id:String,model:ModelDefinition)throws {
+    try validateJobSnapshot(id,model:model,requiresCurrentPipeline:false)
+  }
+
+  private func validateJobSnapshot(_ id:String,model:ModelDefinition,requiresCurrentPipeline:Bool)throws {
     guard let row=try query("SELECT model_id,model_revision,model_profile,source_sha256,pipeline_version FROM jobs WHERE id=?",[id]).first,
       row["model_id"] as? String == model.id,
       row["model_revision"] as? String == model.revision,
       row["model_profile"] as? String == model.profile,
-      row["pipeline_version"] as? Int64 == 3,
+      (!requiresCurrentPipeline || row["pipeline_version"] as? Int64 == 4),
       let expected=row["source_sha256"] as? String,!expected.isEmpty,
       let source=try jobSource(id),try sha256(at:URL(fileURLWithPath:source)) == expected else {
       throw NSError(domain:"PdfTranslator",code:6,userInfo:[NSLocalizedDescriptionKey:"This job's source, model or processing version no longer matches its saved checkpoint. Start a new job to use the current inputs."])
@@ -211,14 +242,19 @@ final class TranslatorStore {
 
   func deleteJob(_ id: String) throws { try execute("DELETE FROM jobs WHERE id=?", [id]) }
   func deleteDocument(_ id: String) throws { try execute("DELETE FROM documents WHERE id=?", [id]) }
-  func glossary() throws -> [[String: Any]] { try query("SELECT id,source,target,created_at FROM glossary ORDER BY source COLLATE NOCASE").map { ["id":$0["id"]!,"source":$0["source"]!,"target":$0["target"]!,"createdAt":$0["created_at"]!] } }
-  func saveGlossary(_ id: String, source: String, target: String) throws -> [String: Any] {
+  func glossary() throws -> [[String: Any]] { try query("SELECT id,source,target,source_lang,target_lang,created_at FROM glossary ORDER BY source_lang,target_lang,source COLLATE NOCASE").map { ["id":$0["id"]!,"source":$0["source"]!,"target":$0["target"]!,"sourceLanguage":$0["source_lang"]!,"targetLanguage":$0["target_lang"]!,"createdAt":$0["created_at"]!] } }
+  func saveGlossary(_ id: String, source: String, target: String, sourceLanguage: String, targetLanguage: String) throws -> [String: Any] {
+    _ = try TranslationLanguage.pair(source:sourceLanguage,target:targetLanguage)
     let now = Int64(Date().timeIntervalSince1970 * 1000)
-    try execute("INSERT OR REPLACE INTO glossary(id,source,target,created_at) VALUES(?,?,?,?)", [id,source.trimmingCharacters(in:.whitespacesAndNewlines),target.trimmingCharacters(in:.whitespacesAndNewlines),now])
-    return ["id":id,"source":source.trimmingCharacters(in:.whitespacesAndNewlines),"target":target.trimmingCharacters(in:.whitespacesAndNewlines),"createdAt":now]
+    let cleanSource=source.trimmingCharacters(in:.whitespacesAndNewlines),cleanTarget=target.trimmingCharacters(in:.whitespacesAndNewlines)
+    try execute("INSERT OR REPLACE INTO glossary(id,source,target,source_lang,target_lang,created_at) VALUES(?,?,?,?,?,?)", [id,cleanSource,cleanTarget,sourceLanguage,targetLanguage,now])
+    return ["id":id,"source":cleanSource,"target":cleanTarget,"sourceLanguage":sourceLanguage,"targetLanguage":targetLanguage,"createdAt":now]
   }
-  func glossaryText(_ id: String?) throws -> String {
-    let rows = try id == nil ? query("SELECT source,target FROM glossary ORDER BY source COLLATE NOCASE") : query("SELECT source,target FROM glossary WHERE id=?", [id!])
+  func glossaryText(_ id: String?, sourceLanguage: String = "en", targetLanguage: String = "ru") throws -> String {
+    _ = try TranslationLanguage.pair(source:sourceLanguage,target:targetLanguage)
+    let rows = try id == nil
+      ? query("SELECT source,target FROM glossary WHERE source_lang=? AND target_lang=? ORDER BY source COLLATE NOCASE", [sourceLanguage,targetLanguage])
+      : query("SELECT source,target FROM glossary WHERE id=? AND source_lang=? AND target_lang=?", [id!,sourceLanguage,targetLanguage])
     return rows.compactMap { guard let source = $0["source"] as? String, let target = $0["target"] as? String else { return nil }; return "\(source) translates to \(target)" }.joined(separator:"\n")
   }
   func deleteGlossary(_ id: String) throws { try execute("DELETE FROM glossary WHERE id=?", [id]) }
@@ -255,13 +291,14 @@ final class TranslatorStore {
       guard let id=row["id"] as? String,let path=row["path"] as? String,FileManager.default.fileExists(atPath:path),let digest=try? sha256(at:URL(fileURLWithPath:path)) else{continue}
       try execute("UPDATE documents SET source_sha256=? WHERE id=?",[digest,id])
     }
-    for row in try query("SELECT id,document_id,model_id,glossary_id FROM jobs WHERE model_revision='' OR source_sha256='' OR glossary_snapshot=''") {
+    for row in try query("SELECT id,document_id,model_id,glossary_id,source_lang,target_lang FROM jobs WHERE model_revision='' OR source_sha256='' OR glossary_snapshot=''") {
       guard let id=row["id"] as? String,let documentId=row["document_id"] as? String,let modelId=row["model_id"] as? String,
         let definition=try? ModelCatalog.get(modelId) else{continue}
       let source=try documentSHA256(documentId) ?? ""
       let glossaryId=row["glossary_id"] as? String
-      let glossary=try glossaryText(glossaryId)
-      try execute("UPDATE jobs SET model_revision=CASE WHEN model_revision='' THEN ? ELSE model_revision END,source_sha256=CASE WHEN source_sha256='' THEN ? ELSE source_sha256 END,glossary_snapshot=CASE WHEN glossary_snapshot='' THEN ? ELSE glossary_snapshot END WHERE id=?",[definition.revision,source,glossary,id])
+      let sourceLanguage=row["source_lang"] as? String ?? "en",targetLanguage=row["target_lang"] as? String ?? "ru"
+      let glossary=try? glossaryText(glossaryId,sourceLanguage:sourceLanguage,targetLanguage:targetLanguage)
+      try execute("UPDATE jobs SET model_revision=CASE WHEN model_revision='' THEN ? ELSE model_revision END,source_sha256=CASE WHEN source_sha256='' THEN ? ELSE source_sha256 END,glossary_snapshot=CASE WHEN glossary_snapshot='' THEN ? ELSE glossary_snapshot END WHERE id=?",[definition.revision,source,glossary ?? "",id])
     }
   }
 }

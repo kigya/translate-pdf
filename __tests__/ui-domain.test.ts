@@ -38,10 +38,12 @@ describe('interface preferences', () => {
     expect(modelCanBeInstalled(independentlyEligible, { ...device, recommendedModelAvailable: false })).toBe(true);
   });
 
-  it('blocks a model that does not fit memory and reports the resource reason', () => {
+  it('permits an attempt below the estimated envelope while retaining the warning', () => {
     const blocked = { ...model, memoryEstimateEligible: false, resourceEstimateEligible: false, resourceReason: 'memory' as const };
-    expect(modelCanBeInstalled(blocked, device)).toBe(false);
-    expect(modelCanTranslate({ ...blocked, status: 'ready' }, device)).toBe(false);
+    expect(modelCanBeInstalled(blocked, device)).toBe(true);
+    expect(modelCanTranslate({ ...blocked, status: 'ready' }, device)).toBe(true);
+    expect(modelResourceReason(blocked, device, false)).toBe('memory');
+    expect(modelCanTranslate({ ...blocked, status: 'ready' }, { ...device, systemLowMemory: true })).toBe(false);
   });
 
   it('does not require full package disk headroom again for an installed model', () => {

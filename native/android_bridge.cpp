@@ -13,10 +13,10 @@ extern "C" {
 JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_inspect(JNIEnv*e,jobject,jstring p){return result(e,translatepdf::inspect(str(e,p)));}
 JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_readPage(JNIEnv*e,jobject,jstring p,jint i){return result(e,translatepdf::readPage(str(e,p),i));}
 JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_loadModel(JNIEnv*e,jobject,jstring p,jint c,jint t,jstring profile){return result(e,translatepdf::loadModel(str(e,p),c,t,str(e,profile)));}
-JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_translate(JNIEnv*e,jobject,jstring p,jstring g,jstring c){return result(e,translatepdf::translate(str(e,p),str(e,g),str(e,c)));}
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_translate(JNIEnv*e,jobject,jstring p,jstring g,jstring c,jstring s,jstring t){return result(e,translatepdf::translate(str(e,p),str(e,g),str(e,c),str(e,s),str(e,t)));}
 JNIEXPORT void JNICALL Java_dev_kigya_translatepdf_NativeCore_releaseModel(JNIEnv*,jobject){translatepdf::releaseModel();}
 JNIEXPORT void JNICALL Java_dev_kigya_translatepdf_NativeCore_cancel(JNIEnv*,jobject){translatepdf::cancel();}
-JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_exportPage(JNIEnv*e,jobject,jstring p,jint i,jstring b,jstring d,jstring f){return result(e,translatepdf::exportPage(str(e,p),i,str(e,b),str(e,d),str(e,f)));}
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_exportPage(JNIEnv*e,jobject,jstring p,jint i,jstring b,jstring d,jstring f,jstring cjk){return result(e,translatepdf::exportPage(str(e,p),i,str(e,b),str(e,d),str(e,f),str(e,cjk)));}
 JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_mergePdf(JNIEnv*e,jobject,jstring p,jstring d){return result(e,translatepdf::mergePdf(str(e,p),str(e,d)));}
 JNIEXPORT jobject JNICALL Java_dev_kigya_translatepdf_NativeCore_render(JNIEnv*e,jobject,jstring p,jint i,jint w){try{
  auto r=translatepdf::render(str(e,p),i,w);auto cls=e->FindClass("android/graphics/Bitmap");auto cfgcls=e->FindClass("android/graphics/Bitmap$Config");auto config=e->GetStaticObjectField(cfgcls,e->GetStaticFieldID(cfgcls,"ARGB_8888","Landroid/graphics/Bitmap$Config;"));auto create=e->GetStaticMethodID(cls,"createBitmap","(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;");auto bitmap=e->CallStaticObjectMethod(cls,create,r.width,r.height,config);if(e->ExceptionCheck()||!bitmap)return nullptr;

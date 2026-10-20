@@ -15,16 +15,18 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
-/** Bundled, offline English OCR. All recognized text stays in the caller's private process. */
-internal class OcrEngine(context: Context) : AutoCloseable {
+/** Bundled, offline OCR for one validated source language. */
+internal class OcrEngine(context: Context, sourceLanguage: String = "en") : AutoCloseable {
   private val api = TessBaseAPI()
   @Volatile private var closed = false
+  private val trainedData = DATA_BY_PRODUCT_LANGUAGE[sourceLanguage]
 
   init {
     try {
-      val data = ensureEnglishData(context)
-      check(api.init(data.parentFile!!.parentFile!!.absolutePath, LANGUAGE)) {
-        "The bundled English OCR data could not be initialized."
+      val selectedData = trainedData ?: throw IllegalArgumentException("No bundled OCR data is available for $sourceLanguage.")
+      val data = ensureData(context, selectedData)
+      check(api.init(data.parentFile!!.parentFile!!.absolutePath, selectedData.nameWithoutExtension)) {
+        "The bundled ${selectedData.nameWithoutExtension} OCR data could not be initialized."
       }
       api.setPageSegMode(TessBaseAPI.PageSegMode.PSM_AUTO)
     } catch (error: Exception) {
@@ -89,26 +91,26 @@ internal class OcrEngine(context: Context) : AutoCloseable {
     runCatching { api.recycle() }
   }
 
-  private fun ensureEnglishData(context: Context): File {
+  private fun ensureData(context: Context, trainedData: TrainedData): File {
     val directory = File(context.filesDir, "$DATA_DIRECTORY/tessdata").apply { mkdirs() }
-    val target = File(directory, "$LANGUAGE.traineddata")
-    if (target.isFile && sha256(target) == EXPECTED_SHA256) return target
+    val target = File(directory, trainedData.assetName)
+    if (target.isFile && sha256(target) == trainedData.sha256) return target
 
     val temporary = File(directory, "${target.name}.tmp")
     temporary.delete()
-    context.assets.open(ASSET_PATH).use { input ->
+    context.assets.open("tessdata/${trainedData.assetName}").use { input ->
       FileOutputStream(temporary).use { output ->
         input.copyTo(output)
         output.fd.sync()
       }
     }
-    check(sha256(temporary) == EXPECTED_SHA256) { "The bundled English OCR data failed its integrity check." }
+    check(sha256(temporary) == trainedData.sha256) { "The bundled ${trainedData.assetName} OCR data failed its integrity check." }
     try {
       Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
     } catch (_: AtomicMoveNotSupportedException) {
       Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
     }
-    check(target.isFile && sha256(target) == EXPECTED_SHA256) { "The English OCR data could not be installed safely." }
+    check(target.isFile && sha256(target) == trainedData.sha256) { "The ${trainedData.assetName} OCR data could not be installed safely." }
     return target
   }
 
@@ -126,9 +128,18 @@ internal class OcrEngine(context: Context) : AutoCloseable {
   }
 
   private companion object {
-    const val ASSET_PATH = "tessdata/eng.traineddata"
     const val DATA_DIRECTORY = "tesseract"
-    const val EXPECTED_SHA256 = "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
-    const val LANGUAGE = "eng"
+    val DATA_BY_PRODUCT_LANGUAGE = mapOf(
+      "en" to TrainedData("eng.traineddata", "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"),
+      "ru" to TrainedData("rus.traineddata", "e16e5e036cce1d9ec2b00063cf8b54472625b9e14d893a169e2b0dedeb4df225"),
+      "zh-Hans" to TrainedData("chi_sim.traineddata", "a5fcb6f0db1e1d6d8522f39db4e848f05984669172e584e8d76b6b3141e1f730"),
+      "fr" to TrainedData("fra.traineddata", "ced037562e8c80c13122dece28dd477d399af80911a28791a66a63ac1e3445ca"),
+      "de" to TrainedData("deu.traineddata", "19d219bbb6672c869d20a9636c6816a81eb9a71796cb93ebe0cb1530e2cdb22d"),
+      "es" to TrainedData("spa.traineddata", "6f2e04d02774a18f01bed44b1111f2cd7f3ba7ac9dc4373cd3f898a40ea6b464"),
+    )
   }
+}
+
+private data class TrainedData(val assetName: String, val sha256: String) {
+  val nameWithoutExtension: String get() = assetName.removeSuffix(".traineddata")
 }

@@ -63,10 +63,9 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     val availableDisk = stat.availableBlocksLong * stat.blockSizeLong
     val downloaded = ModelCatalog.models.associate { it.id to if (downloader.isInstalled(it.id)) it.bytes else downloader.partialLength(it.id) }
     val recommendation = MemoryPolicy.recommend(info.totalMem, info.availMem, info.threshold, info.lowMemory, availableDisk, downloaded)
-    val initialSelection = ModelCatalog.models.asReversed().firstOrNull {
-      downloader.isInstalled(it.id) && MemoryPolicy.resources(it, info.totalMem, info.availMem, info.threshold, info.lowMemory, availableDisk, it.bytes).memoryEligible
-    }?.id ?: recommendation.recommendedModelId
+    val initialSelection = ModelCatalog.models.asReversed().firstOrNull { downloader.isInstalled(it.id) }?.id ?: recommendation.recommendedModelId
     val selectedModelId = database.selectedModelId(initialSelection)
+    val selectedPair = database.selectedLanguagePair()
     val models = database.modelsJson()
     for (index in 0 until models.length()) {
       val value = models.getJSONObject(index)
@@ -98,6 +97,8 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
       .put("preferences", JSONObject()
         .put("theme", database.setting("theme", "system"))
         .put("language", database.setting("language", "system"))
+        .put("sourceLanguage", selectedPair.first)
+        .put("targetLanguage", selectedPair.second)
         .put("selectedModelId", selectedModelId))
       .put("onboarding", JSONObject()
         .put("version", database.setting("onboarding_version", "1").toIntOrNull() ?: 1)
@@ -180,12 +181,11 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     val modelId = input.getString("modelId")
     val path = database.documentPath(documentId) ?: throw IllegalArgumentException("The selected document is no longer available.")
     require(File(path).isFile) { "The imported document is no longer available." }
-    require(input.optString("sourceLanguage") == "en" && input.optString("targetLanguage") == "ru") {
-      "Only English to Russian translation is available in this prototype."
-    }
+    val pair = LanguagePair.fromJson(input)
+    LanguagePair.requireValid(pair.first, pair.second)
     val definition = ModelCatalog.get(modelId)
     require(definition.translationEnabled) { "This model is unavailable in the current runtime." }
-    require(definition.supportsGlossary || database.glossaryText(null).isBlank()) { "This model uses direct translation without a glossary. Choose Hy-MT2 to use saved terms." }
+    require(definition.supportsGlossary || database.glossaryText(null, pair.first, pair.second).isBlank()) { "This model uses direct translation without a glossary. Choose Hy-MT2 to use saved terms." }
     if (!downloader.isInstalled(modelId)) throw IllegalStateException("Download and verify the selected model first.")
     val pageCount = database.documentInfo(documentId)?.second ?: throw IllegalArgumentException("The source document could not be inspected.")
     val id = UUID.randomUUID().toString()
@@ -231,6 +231,7 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
   fun resumeJob(jobId: String, promise: Promise) = runAsync(promise, "JOB_RESUME_FAILED") { synchronized(jobStartLock) {
     if (PdfTranslationService.isActive) throw IllegalStateException("Wait until the current background operation finishes before resuming translation.")
     val job = requireJob(jobId)
+    database.requireCurrentPipeline(jobId)
     require(job.optString("status") in setOf("paused", "queued", "failed")) { "This translation job cannot be resumed in its current state." }
     require(!database.hasActiveJob(jobId)) { "Finish, pause, or cancel the current translation before resuming another one." }
     val activity = context.currentActivity
@@ -285,7 +286,9 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     existingThumbnail("translated_$jobId", pageIndex, width) ?: run {
       val temporaryPdf = File(translatedPageDirectory, "$jobId-$pageIndex-${UUID.randomUUID()}.pdf")
       try {
-        val result = JSONObject(NativeCore.exportPage(source, pageIndex, page.getJSONArray("blocks").toString(), temporaryPdf.absolutePath, fontPath()))
+        val targetLanguage = job.getString("targetLanguage")
+        LanguagePair.requireValid(job.getString("sourceLanguage"), targetLanguage)
+        val result = JSONObject(NativeCore.exportPage(source, pageIndex, page.getJSONArray("blocks").toString(), temporaryPdf.absolutePath, fontPath(), cjkFontPath(targetLanguage)))
         if (result.has("error")) throw IllegalStateException(result.optString("error", "The translated page could not be rendered."))
         require(temporaryPdf.isFile && temporaryPdf.length() > 0) { "The PDF core did not create a translated page preview." }
         renderCachedPage("translated_$jobId", temporaryPdf.absolutePath, 0, width, pageIndex)
@@ -427,14 +430,22 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
       require(model.translationEnabled) { "This model is unavailable in the current runtime." }
       database.setSetting("selectedModelId", model.id)
     }
+    val currentPair = database.selectedLanguagePair()
+    val sourceLanguage = settings.optString("sourceLanguage", currentPair.first)
+    val targetLanguage = settings.optString("targetLanguage", currentPair.second)
+    LanguagePair.requireValid(sourceLanguage, targetLanguage)
+    database.setSetting("sourceLanguage", sourceLanguage)
+    database.setSetting("targetLanguage", targetLanguage)
     JSONObject().put("theme", database.setting("theme", "system")).put("language", database.setting("language", "system"))
+      .put("sourceLanguage", sourceLanguage).put("targetLanguage", targetLanguage)
       .put("selectedModelId", database.setting("selectedModelId", ModelCatalog.RECOMMENDED_ID)).toString()
   }
 
   @ReactMethod
   fun saveGlossaryEntry(entryJson: String, promise: Promise) = runAsync(promise, "GLOSSARY_SAVE_FAILED") {
     val entry = JSONObject(entryJson)
-    database.saveGlossary(entry.getString("id"), entry.getString("source"), entry.getString("target")).toString()
+    val pair = LanguagePair.fromJson(entry)
+    database.saveGlossary(entry.getString("id"), entry.getString("source"), entry.getString("target"), pair.first, pair.second).toString()
   }
 
   @ReactMethod
@@ -547,6 +558,12 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
   private fun fontPath(): String {
     val target = File(context.cacheDir, "NotoSans-Regular.ttf")
     return FontAsset.ensure(context, target).absolutePath
+  }
+
+  private fun cjkFontPath(targetLanguage: String): String {
+    if (targetLanguage != "zh-Hans") return ""
+    val target = File(context.cacheDir, "NotoSansSC-Regular.ttf")
+    return FontAsset.ensureCjk(context, target).absolutePath
   }
 
   private fun hasStorageFor(bytes: Long): Boolean {

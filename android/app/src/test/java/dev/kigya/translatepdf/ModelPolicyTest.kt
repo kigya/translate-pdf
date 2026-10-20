@@ -19,7 +19,8 @@ class ModelPolicyTest {
       assertTrue(enough.eligible)
       assertEquals("available", enough.reason)
       assertFalse(short.eligible)
-      assertEquals("memory", short.reason)
+      assertFalse(short.memoryEligible)
+      assertEquals("memoryEstimate", short.reason)
     }
   }
 
@@ -33,6 +34,7 @@ class ModelPolicyTest {
     assertEquals(headroom, MemoryPolicy.requiredDiskBytes(model.bytes, Long.MAX_VALUE))
     val low = MemoryPolicy.resources(model, 4L shl 30, 4L shl 30, 1L shl 30, true, model.bytes + headroom)
     assertFalse(low.eligible)
+    assertFalse(low.memoryEligible)
     assertEquals("lowMemory", low.reason)
     val diskLow = MemoryPolicy.resources(model, 8L shl 30, 8L shl 30, 0, false, headroom - 1, model.bytes)
     assertFalse(diskLow.diskEligible)
@@ -47,16 +49,6 @@ class ModelPolicyTest {
     assertTrue(result.recommendationAvailable)
     assertTrue(result.reason.contains("experimental"))
     assertTrue(ModelCatalog.models.all { MemoryPolicy.resources(it, 12L shl 30, 10L shl 30, 0, false, 20L shl 30).eligible })
-  }
-
-  @Test
-  fun boundedDebugProfileStillRequiresSystemReserveAndModelWorkingSet() {
-    val mib = 1024L * 1024L
-    val reserve = 600L * mib
-    val model = 1_100L * mib
-    assertTrue(MemoryPolicy.permitsBoundedDebugProfile(reserve + model + 256L * mib, reserve, false, model))
-    assertFalse(MemoryPolicy.permitsBoundedDebugProfile(reserve + model + 256L * mib - 1, reserve, false, model))
-    assertFalse(MemoryPolicy.permitsBoundedDebugProfile(reserve + model + 1L * mib, reserve, true, model))
   }
 
   @Test

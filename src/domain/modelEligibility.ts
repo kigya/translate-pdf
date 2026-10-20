@@ -14,26 +14,25 @@ function hasDiskCapacity(model: ModelSnapshot, device: DeviceSnapshot, forDownlo
   return model.id === device.recommendedModelId && device.recommendedModelAvailable;
 }
 
-/** Models can be downloaded when the pinned, enabled model fits both resource estimates. */
+/** Estimated RAM is advisory; download integrity and storage remain mandatory. */
 export function modelCanBeInstalled(model: ModelSnapshot, device: DeviceSnapshot): boolean {
-  const memoryEligible = hasMemoryCapacity(model, device);
-  const diskEligible = hasDiskCapacity(model, device, true);
-  const resourceEligible = model.resourceEstimateEligible ?? (memoryEligible && diskEligible);
-  return model.checksumPinned && model.translationEnabled && memoryEligible && diskEligible && resourceEligible;
+  return model.checksumPinned && model.translationEnabled && hasDiskCapacity(model, device, true);
 }
 
-/** Ready models need runtime memory eligibility, but not package-download headroom. */
+/** A ready package may be attempted unless the OS currently reports memory pressure. */
 export function modelCanTranslate(model: ModelSnapshot, device: DeviceSnapshot): boolean {
   if (model.status !== 'ready' || !model.checksumPinned || !model.translationEnabled) return false;
-  return hasMemoryCapacity(model, device);
+  return !device.systemLowMemory;
+}
+
+export function modelHasMemoryWarning(model: ModelSnapshot, device: DeviceSnapshot): boolean {
+  return !hasMemoryCapacity(model, device);
 }
 
 export function modelResourceReason(model: ModelSnapshot, device: DeviceSnapshot, forDownload: boolean): ModelResourceReason {
   if (!model.checksumPinned || !model.translationEnabled) return 'unsupported';
-  if (model.resourceReason && model.resourceReason !== 'available' && !(model.status === 'ready' && !forDownload && model.resourceReason === 'disk')) return model.resourceReason;
-  if (!hasMemoryCapacity(model, device)) return device.systemLowMemory ? 'lowMemory' : 'memory';
   if (forDownload && !hasDiskCapacity(model, device, true)) return 'disk';
-  if (!forDownload && model.status === 'ready') return 'available';
-  if (model.resourceEstimateEligible === false) return model.resourceReason && model.resourceReason !== 'available' ? model.resourceReason : 'unsupported';
+  if (!forDownload && device.systemLowMemory) return 'lowMemory';
+  if (!hasMemoryCapacity(model, device)) return 'memory';
   return 'available';
 }

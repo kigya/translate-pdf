@@ -30,13 +30,13 @@ static NSString *TPString(const std::string &value) {
 + (NSString *)loadModel:(NSString *)path context:(NSInteger)context threads:(NSInteger)threads profile:(NSString *)profile {
   return TPString(translatepdf::loadModel(path.UTF8String ?: "", (int)context, (int)threads, profile.UTF8String ?: ""));
 }
-+ (NSString *)translate:(NSString *)text glossary:(NSString *)glossary context:(NSString *)context {
-  return TPString(translatepdf::translate(text.UTF8String ?: "", glossary.UTF8String ?: "", context.UTF8String ?: ""));
++ (NSString *)translate:(NSString *)text glossary:(NSString *)glossary context:(NSString *)context sourceLanguage:(NSString *)sourceLanguage targetLanguage:(NSString *)targetLanguage {
+  return TPString(translatepdf::translate(text.UTF8String ?: "", glossary.UTF8String ?: "", context.UTF8String ?: "", sourceLanguage.UTF8String ?: "en", targetLanguage.UTF8String ?: "ru"));
 }
 + (void)releaseModel { translatepdf::releaseModel(); }
 + (void)cancel { translatepdf::cancel(); }
-+ (NSString *)exportPage:(NSString *)source index:(NSInteger)index blocksJSON:(NSString *)blocksJSON destination:(NSString *)destination fontPath:(NSString *)fontPath {
-  return TPString(translatepdf::exportPage(source.UTF8String ?: "", (int)index, blocksJSON.UTF8String ?: "[]", destination.UTF8String ?: "", fontPath.UTF8String ?: ""));
++ (NSString *)exportPage:(NSString *)source index:(NSInteger)index blocksJSON:(NSString *)blocksJSON destination:(NSString *)destination fontPath:(NSString *)fontPath cjkFontPath:(NSString *)cjkFontPath {
+  return TPString(translatepdf::exportPage(source.UTF8String ?: "", (int)index, blocksJSON.UTF8String ?: "[]", destination.UTF8String ?: "", fontPath.UTF8String ?: "", cjkFontPath.UTF8String ?: ""));
 }
 + (NSString *)mergePDF:(NSString *)pagesJSON destination:(NSString *)destination {
   return TPString(translatepdf::mergePdf(pagesJSON.UTF8String ?: "[]", destination.UTF8String ?: ""));

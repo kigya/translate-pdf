@@ -35,20 +35,32 @@ class NativeSliceQaActivity : Activity() {
     }
     val modelId = intent.getStringExtra(EXTRA_MODEL_ID).orEmpty()
     val glossaryId = intent.getStringExtra(EXTRA_GLOSSARY_ID).orEmpty()
+    val sourceLanguage = intent.getStringExtra(EXTRA_SOURCE_LANGUAGE) ?: DEFAULT_SOURCE_LANGUAGE
+    val targetLanguage = intent.getStringExtra(EXTRA_TARGET_LANGUAGE) ?: DEFAULT_TARGET_LANGUAGE
+    try {
+      LanguagePair.requireValid(sourceLanguage, targetLanguage)
+    } catch (_: IllegalArgumentException) {
+      finish(); return
+    }
+    if (intent.getBooleanExtra(EXTRA_OCR_ONLY, false)) {
+      worker.execute { runOcrOnly(sourceLanguage) }
+      return
+    }
     if (intent.getBooleanExtra(EXTRA_ENQUEUE_NORMAL_JOB, false)) {
-      worker.execute { enqueueAndWaitForNormalJob(modelId, glossaryId) }
-    } else worker.execute { runCheck(modelId) }
+      worker.execute { enqueueAndWaitForNormalJob(modelId, glossaryId, sourceLanguage, targetLanguage) }
+    } else worker.execute { runCheck(modelId, sourceLanguage, targetLanguage) }
   }
 
   /** Enqueue the fixed private QA fixture through the same SQLite/foreground-service path as the app. */
-  private fun enqueueAndWaitForNormalJob(modelId: String, rawGlossaryId: String) {
+  private fun enqueueAndWaitForNormalJob(modelId: String, rawGlossaryId: String, sourceLanguage: String, targetLanguage: String) {
     val outputDirectory = File(filesDir, "qa").apply { mkdirs() }
     val input = File(outputDirectory, "source.pdf")
     val resultFile = File(outputDirectory, "result.json")
     var database: TranslatorDatabase? = null
     val metadata = JSONObject().put("startedAt", System.currentTimeMillis()).put("status", "running")
       .put("mode", "foreground-service-job").put("phase", "enqueue")
-      .put("modelId", modelId).put("input", "files/qa/source.pdf")
+      .put("modelId", modelId).put("sourceLanguage", sourceLanguage).put("targetLanguage", targetLanguage)
+      .put("input", "files/qa/source.pdf")
     try {
       writeAtomically(resultFile, metadata.toString(2))
       require(modelId in ModelCatalog.models.map { it.id }) { "Pass a catalog model ID with --es modelId <id>." }
@@ -65,14 +77,16 @@ class NativeSliceQaActivity : Activity() {
       require(pageCount in 1..5) { "The normal-job QA fixture must contain one to five pages." }
       val glossaryDb = TranslatorDatabase(this)
       database = glossaryDb
-      if (glossaryId != null) require(glossaryDb.glossaryText(glossaryId).isNotBlank()) { "The requested saved glossary entry was not found." }
+      if (glossaryId != null) require(glossaryDb.glossaryText(glossaryId, sourceLanguage, targetLanguage).isNotBlank()) {
+        "The requested saved glossary entry was not found for ${LanguagePair.displayLabel(sourceLanguage, targetLanguage)}."
+      }
       val inputSha256 = sha256(input)
       val documentId = "qa-document-${UUID.randomUUID()}"
       glossaryDb.upsertDocument(documentId, "QA fixture.pdf", input.absolutePath, pageCount, inputSha256)
       glossaryDb.modelStatus(modelId, "ready", model.bytes)
       val jobId = "qa-${UUID.randomUUID()}"
-      val jobInput = JSONObject().put("documentId", documentId).put("sourceLanguage", "en")
-        .put("targetLanguage", "ru").put("modelId", modelId)
+      val jobInput = JSONObject().put("documentId", documentId).put("sourceLanguage", sourceLanguage)
+        .put("targetLanguage", targetLanguage).put("modelId", modelId)
       if (glossaryId != null) jobInput.put("glossaryId", glossaryId)
       glossaryDb.addJob(jobId, jobInput, pageCount)
       getSharedPreferences(QA_PROFILE_PREFS, MODE_PRIVATE).edit()
@@ -107,12 +121,15 @@ class NativeSliceQaActivity : Activity() {
           "completed", "partial", "failed", "canceled", "paused" -> {
             if (job.optString("status") == "completed" || job.optString("status") == "partial") {
               val font = File(cacheDir, "NotoSans-Regular.ttf").also { FontAsset.ensure(this, it) }
+              val cjkFontPath = if (targetLanguage == "zh-Hans") {
+                FontAsset.ensureCjk(this, File(cacheDir, "NotoSansSC-Regular.ttf")).absolutePath
+              } else ""
               val shards = JSONArray()
               var partial = job.optString("status") == "partial"
               for (pageIndex in 0 until pageCount) {
                 val page = glossaryDb.page(jobId, pageIndex) ?: continue
                 val shard = File(outputDirectory, "normal-job-page-$pageIndex.pdf")
-                val exported = JSONObject(NativeCore.exportPage(input.absolutePath, pageIndex, page.getJSONArray("blocks").toString(), shard.absolutePath, font.absolutePath))
+                val exported = JSONObject(NativeCore.exportPage(input.absolutePath, pageIndex, page.getJSONArray("blocks").toString(), shard.absolutePath, font.absolutePath, cjkFontPath))
                   .throwOnNativeError("Final QA page export failed.")
                 if (exported.optBoolean("partial")) partial = true
                 shards.put(shard.absolutePath)
@@ -149,7 +166,7 @@ class NativeSliceQaActivity : Activity() {
     }
   }
 
-  private fun runCheck(modelId: String) {
+  private fun runCheck(modelId: String, sourceLanguage: String, targetLanguage: String) {
     val outputDirectory = File(filesDir, "qa").apply { mkdirs() }
     val input = File(outputDirectory, "source.pdf")
     val resultFile = File(outputDirectory, "result.json")
@@ -161,6 +178,7 @@ class NativeSliceQaActivity : Activity() {
       .put("status", "running")
       .put("phase", "validation")
       .put("modelId", modelId)
+      .put("sourceLanguage", sourceLanguage).put("targetLanguage", targetLanguage)
       .put("input", "files/qa/source.pdf")
       .put("output", "files/qa/translated-first-page.pdf")
       .put("phaseDurationsMs", JSONObject())
@@ -203,7 +221,7 @@ class NativeSliceQaActivity : Activity() {
       val width = page.getDouble("width").toFloat()
       val height = page.getDouble("height").toFloat()
       require(width > 0 && height > 0) { "The test page has invalid geometry." }
-      val ocr = OcrEngine(this)
+      val ocr = OcrEngine(this, sourceLanguage)
       activeOcrEngine = ocr
       markPhase("ocr")
       val blocks = try { combineNativeAndOcr(input.absolutePath, page, width, height, ocr) }
@@ -212,8 +230,8 @@ class NativeSliceQaActivity : Activity() {
       metadata.put("discoveredBlocks", blocks.length())
       val glossaryDatabase = TranslatorDatabase(this)
       val glossaryText = try {
-        if (glossaryId == null) "" else glossaryDatabase.glossaryText(glossaryId).also {
-          require(it.isNotBlank()) { "The requested saved glossary entry was not found." }
+        if (glossaryId == null) "" else glossaryDatabase.glossaryText(glossaryId, sourceLanguage, targetLanguage).also {
+          require(it.isNotBlank()) { "The requested saved glossary entry was not found for ${LanguagePair.displayLabel(sourceLanguage, targetLanguage)}." }
         }
       } finally { glossaryDatabase.close() }
       metadata.put("glossaryId", glossaryId ?: JSONObject.NULL).put("glossaryApplied", glossaryText.isNotBlank())
@@ -233,9 +251,7 @@ class NativeSliceQaActivity : Activity() {
         .put("memorySampleAdvisoryOnly", true)
         .put("externalMemoryMeasurementRequired", true)
         .put("memorySampleLimitation", "Use external dumpsys meminfo for process peak; sampled totalPss under-reported mapped/native model memory in the prior device run.")
-      require(recommendation.resourceEstimateEligible) {
-        "Device memory or free storage is below the provisional native pipeline reserve."
-      }
+      metadata.put("resourceEstimateBlocksTranslation", false)
       sampler = Thread({
         val manager = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
         while (!stopSampler.get()) {
@@ -251,7 +267,7 @@ class NativeSliceQaActivity : Activity() {
         }
       }, "native-qa-memory-sampler").apply { isDaemon = true; start() }
       markPhase("model_load")
-      val load = JSONObject(NativeCore.loadModel(modelFile.absolutePath, 2048, 4)).throwOnNativeError("Loading the model failed.")
+      val load = JSONObject(NativeCore.loadModel(modelFile.absolutePath, 2048, 4, model.profile)).throwOnNativeError("Loading the model failed.")
       metadata.put("modelLoad", load)
       markPhase("inference")
       metadata.put("currentBlockIndex", 0).put("blockMetrics", JSONArray())
@@ -264,7 +280,7 @@ class NativeSliceQaActivity : Activity() {
         val sourceText = block.optString("sourceText").trim()
         if (sourceText.isEmpty()) continue
         try {
-          val translation = JSONObject(NativeCore.translate(sourceText, glossaryText, page.optString("context").take(2_000)))
+          val translation = JSONObject(NativeCore.translate(sourceText, glossaryText, page.optString("context").take(2_000), sourceLanguage, targetLanguage))
             .throwOnNativeError("The model did not translate a block.")
           val text = translation.optString("text").trim()
           require(text.isNotEmpty()) { "The model returned an empty translation." }
@@ -285,8 +301,11 @@ class NativeSliceQaActivity : Activity() {
       }
       val font = File(cacheDir, "NotoSans-Regular.ttf")
       FontAsset.ensure(this, font)
+      val cjkFontPath = if (targetLanguage == "zh-Hans") {
+        FontAsset.ensureCjk(this, File(cacheDir, "NotoSansSC-Regular.ttf")).absolutePath
+      } else ""
       markPhase("export")
-      val export = JSONObject(NativeCore.exportPage(input.absolutePath, 0, blocks.toString(), translatedPage.absolutePath, font.absolutePath))
+      val export = JSONObject(NativeCore.exportPage(input.absolutePath, 0, blocks.toString(), translatedPage.absolutePath, font.absolutePath, cjkFontPath))
         .throwOnNativeError("Exporting the translated page failed.")
       markPhase("merge")
       val merge = JSONObject(NativeCore.mergePdf(JSONArray().put(translatedPage.absolutePath).toString(), merged.absolutePath))
@@ -315,6 +334,47 @@ class NativeSliceQaActivity : Activity() {
           "Native slice check ${metadata.optString("status")}. Private result: files/qa/result.json"
         } else "Native slice check failed: ${metadata.optString("error", "Check files/qa/result.json")}."
       }
+    }
+  }
+
+  /** OCR-only fixture route: validates the selected bundled language without loading inference weights. */
+  private fun runOcrOnly(sourceLanguage: String) {
+    val outputDirectory = File(filesDir, "qa").apply { mkdirs() }
+    val input = File(outputDirectory, "source.pdf")
+    val resultFile = File(outputDirectory, "result.json")
+    val metadata = JSONObject().put("startedAt", System.currentTimeMillis()).put("status", "running")
+      .put("mode", "ocr-only").put("phase", "validation").put("sourceLanguage", sourceLanguage)
+      .put("input", "files/qa/source.pdf").put("ocrLines", JSONArray())
+    try {
+      writeAtomically(resultFile, metadata.toString(2))
+      require(input.isFile && input.length() in 5..(20L * 1024L * 1024L)) {
+        "Copy a test PDF of at most 20 MiB to files/qa/source.pdf first."
+      }
+      metadata.put("inputBytes", input.length()).put("inputSha256", sha256(input))
+      val inspected = JSONObject(NativeCore.inspect(input.absolutePath)).throwOnNativeError("PDF inspect failed.")
+      val pageCount = inspected.optInt("pageCount")
+      require(pageCount > 0) { "The test PDF contains no readable pages." }
+      metadata.put("pageCount", pageCount)
+      val page = JSONObject(NativeCore.readPage(input.absolutePath, 0)).throwOnNativeError("Reading the first page failed.")
+      val pageWidth = page.optDouble("width").toFloat()
+      val pageHeight = page.optDouble("height").toFloat()
+      require(pageWidth > 0f && pageHeight > 0f) { "The test page has invalid geometry." }
+      metadata.put("phase", "ocr").put("phaseStartedAt", System.currentTimeMillis())
+      val bitmap = NativeCore.render(input.absolutePath, 0, 1800)
+      var engine: OcrEngine? = null
+      val lines = try {
+        OcrEngine(this, sourceLanguage).also { engine = it; activeOcrEngine = it }
+          .recognize(bitmap, pageWidth, pageHeight)
+      } finally {
+        engine?.close(); activeOcrEngine = null; bitmap.recycle()
+      }
+      metadata.put("ocrLines", lines).put("ocrLineCount", lines.length()).put("status", "completed")
+    } catch (error: Exception) {
+      metadata.put("status", "failed").put("error", error.message ?: "OCR-only QA failed.")
+    } finally {
+      metadata.put("finishedAt", System.currentTimeMillis())
+      runCatching { writeAtomically(resultFile, metadata.toString(2)) }
+      runOnUiThread { status.text = "OCR-only QA ${metadata.optString("status")}. Private result: files/qa/result.json" }
     }
   }
 
@@ -399,7 +459,12 @@ class NativeSliceQaActivity : Activity() {
     const val ACTION_RUN = "dev.kigya.translatepdf.DEBUG_NATIVE_QA"
     const val EXTRA_MODEL_ID = "modelId"
     const val EXTRA_GLOSSARY_ID = "glossaryId"
+    const val EXTRA_SOURCE_LANGUAGE = "sourceLanguage"
+    const val EXTRA_TARGET_LANGUAGE = "targetLanguage"
+    const val EXTRA_OCR_ONLY = "ocrOnly"
     const val EXTRA_ENQUEUE_NORMAL_JOB = "enqueueNormalJob"
+    private const val DEFAULT_SOURCE_LANGUAGE = "en"
+    private const val DEFAULT_TARGET_LANGUAGE = "ru"
     private const val QA_PROFILE_PREFS = "debug_native_qa_profile"
     private const val QA_PROFILE_REGISTERED_JOB = "registered_job_id"
     private const val QA_PROFILE_BYPASSED_JOB = "provisional_gate_bypassed_job_id"

@@ -49,9 +49,9 @@ class PdfExportTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def export(self):
+    def export(self, cjk_font=None):
         return run('export', self.source, 0, json.dumps(self.blocks, ensure_ascii=False), self.output,
-                   ROOT / 'assets/fonts/NotoSans-Regular.ttf')
+                   ROOT / 'assets/fonts/NotoSans-Regular.ttf', *([cjk_font] if cjk_font else []))
 
     def test_safe_native_text_is_replaced_with_extractable_cyrillic(self):
         result = self.export()
@@ -62,6 +62,20 @@ class PdfExportTest(unittest.TestCase):
         self.assertIn('Коротко.', text)
         self.assertNotIn('A short line.', text)
         self.assertFalse(Path(str(self.output) + '.part').exists())
+
+    @unittest.skipUnless((ROOT / 'assets/fonts/NotoSansSC-Regular.ttf').is_file(), 'CJK font asset is not present in this checkout')
+    def test_simplified_chinese_font_fallback_and_no_space_wrapping(self):
+        block = self.blocks[0]
+        block['translatedText'] = '中文测试，继续阅读中文说明，保存原始数字 128。'
+        block['fontSize'] = 10
+        block['bottom'] = block['top'] + 48
+        block['right'] = block['left'] + 72
+        result = self.export(ROOT / 'assets/fonts/NotoSansSC-Regular.ttf')
+        self.assertFalse(result['partial'])
+        text = ''.join(' '.join(item['text'] for item in run('page', self.output, 0)['blocks']).split())
+        for token in ('中文测试', '继续阅读', '128'):
+            self.assertIn(token, text)
+        self.assertIn('。', text)
 
     def test_image_text_fallback_retains_source_and_reports_exact_block(self):
         self.blocks[0]['source'] = 'ocr'

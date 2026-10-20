@@ -22,14 +22,14 @@ internal data class FinalizedJobPdf(
 
 internal interface JobPdfNativeOperations {
   fun inspect(path: String): String
-  fun exportPage(source: String, pageIndex: Int, blocksJson: String, destination: String, fontPath: String): String
+  fun exportPage(source: String, pageIndex: Int, blocksJson: String, destination: String, fontPath: String, cjkFontPath: String): String
   fun mergePdf(pagesJson: String, destination: String): String
 }
 
 private object NativeJobPdfOperations : JobPdfNativeOperations {
   override fun inspect(path: String): String = NativeCore.inspect(path)
-  override fun exportPage(source: String, pageIndex: Int, blocksJson: String, destination: String, fontPath: String): String =
-    NativeCore.exportPage(source, pageIndex, blocksJson, destination, fontPath)
+  override fun exportPage(source: String, pageIndex: Int, blocksJson: String, destination: String, fontPath: String, cjkFontPath: String): String =
+    NativeCore.exportPage(source, pageIndex, blocksJson, destination, fontPath, cjkFontPath)
   override fun mergePdf(pagesJson: String, destination: String): String = NativeCore.mergePdf(pagesJson, destination)
 }
 
@@ -39,6 +39,7 @@ internal class JobPdfExporter(
   private val database: TranslatorDatabase,
   private val native: JobPdfNativeOperations = NativeJobPdfOperations,
   private val fontProvider: (Context) -> File = { app -> File(app.cacheDir, "NotoSans-Regular.ttf").also { FontAsset.ensure(app, it) } },
+  private val cjkFontProvider: (Context) -> File = { app -> File(app.cacheDir, "NotoSansSC-Regular.ttf").also { FontAsset.ensureCjk(app, it) } },
 ) {
   fun getOrBuild(jobId: String, shouldCancel: () -> Boolean = { false }): FinalizedJobPdf {
     val lock = locks.computeIfAbsent(jobId) { Any() }
@@ -49,11 +50,15 @@ internal class JobPdfExporter(
       val exportId = exportId(jobId)
       val directory = File(context.filesDir, "exports").apply { mkdirs() }
       val output = File(directory, "$exportId.pdf")
-      val name = displayName(job.optString("documentName", "translated.pdf"))
+      val sourceLanguage = job.getString("sourceLanguage")
+      val targetLanguage = job.getString("targetLanguage")
+      LanguagePair.requireValid(sourceLanguage, targetLanguage)
+      val name = displayName(job.optString("documentName", "translated.pdf"), sourceLanguage, targetLanguage)
       val saved = database.export(exportId)
       if (saved?.first == output.absolutePath && isVerifiedPdf(output, pageCount)) {
+        if (saved.second != name) database.saveExport(exportId, output.absolutePath, name)
         val partial = hasPartialPages(jobId, pageCount)
-        return FinalizedJobPdf(output, exportId, saved.second, pageCount, partial)
+        return FinalizedJobPdf(output, exportId, name, pageCount, partial)
       }
 
       val source = database.jobDocumentPath(jobId) ?: throw IllegalStateException("The source document is unavailable.")
@@ -64,6 +69,7 @@ internal class JobPdfExporter(
       val pageFiles = JSONArray()
       var partial = false
       val font = fontProvider(context)
+      val cjkFontPath = if (targetLanguage == "zh-Hans") cjkFontProvider(context).absolutePath else ""
 
       try {
         for (pageIndex in 0 until pageCount) {
@@ -81,7 +87,7 @@ internal class JobPdfExporter(
             checkCanceled(shouldCancel)
             pageOutput.delete()
             val current = JSONObject(native.exportPage(
-              source, pageIndex, blocks.toString(), pageOutput.absolutePath, font.absolutePath,
+              source, pageIndex, blocks.toString(), pageOutput.absolutePath, font.absolutePath, cjkFontPath,
             ))
             throwOnNativeError(current, "A translated page could not be exported.")
             require(pageOutput.isFile && pageOutput.length() > 0L && isVerifiedPdf(pageOutput, 1)) {
@@ -158,10 +164,10 @@ internal class JobPdfExporter(
     if (result.has("error")) throw IllegalStateException(result.optString("error", fallback))
   }
 
-  private fun displayName(documentName: String): String {
+  private fun displayName(documentName: String, sourceLanguage: String, targetLanguage: String): String {
     val base = documentName.substringBeforeLast('.', documentName).trim()
       .replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").trim().take(100).ifBlank { "translated" }
-    return "$base-ru.pdf"
+    return "$base-$sourceLanguage-$targetLanguage.pdf"
   }
 
   private fun atomicReplace(source: File, target: File) {

@@ -57,6 +57,7 @@ class JobPdfExporterTest {
     assertEquals(1, first.pageCount)
     assertFalse(first.partial)
     assertEquals(first.exportId, cached.exportId)
+    assertEquals("sample-en-ru.pdf", first.displayName)
     assertEquals(first.file.absolutePath, database.export(first.exportId)?.first)
     assertEquals(1, native.mergeCalls)
   }
@@ -112,7 +113,18 @@ class JobPdfExporterTest {
     assertTrue(File(context.filesDir, "exports").listFiles().orEmpty().isEmpty())
   }
 
-  private fun exporter(native: FakePdfNative) = JobPdfExporter(context, database, native) { font }
+  @Test
+  fun legacyPipelineCheckpointRemainsExportableButCannotContinue() {
+    savePage("completed", JSONObject().put("id", "block-1").put("sourceText", "A line")
+      .put("translatedText", "Строка").put("status", "translated"))
+    database.writableDatabase.execSQL("UPDATE jobs SET pipeline_version=3 WHERE id='job-1'")
+
+    assertTrue(runCatching { database.requireCurrentPipeline("job-1") }.isFailure)
+    assertTrue(exporter(FakePdfNative()).getOrBuild("job-1").file.isFile)
+  }
+
+  private fun exporter(native: FakePdfNative) = JobPdfExporter(context, database, native,
+    fontProvider = { font }, cjkFontProvider = { font })
 
   private fun savePage(status: String, block: JSONObject) {
     database.savePage("job-1", 0, status, JSONArray().put(block).toString(), 612.0, 792.0, null, 1)
@@ -133,7 +145,7 @@ class JobPdfExporterTest {
       return JSONObject().put("pageCount", if (path in pagePaths) 1 else finalPageCount).toString()
     }
 
-    override fun exportPage(source: String, pageIndex: Int, blocksJson: String, destination: String, fontPath: String): String {
+    override fun exportPage(source: String, pageIndex: Int, blocksJson: String, destination: String, fontPath: String, cjkFontPath: String): String {
       pageExportCalls++
       File(destination).writeText("%PDF-1.7\npage")
       pagePaths.add(destination)

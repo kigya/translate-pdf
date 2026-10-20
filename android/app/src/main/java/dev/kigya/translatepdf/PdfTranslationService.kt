@@ -18,7 +18,6 @@ import org.json.JSONObject
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.io.File
 
@@ -129,6 +128,9 @@ internal class PdfTranslationService : Service() {
       val job = database.jobJson(id) ?: error("Translation job was not found.")
       val source = database.jobDocumentPath(id) ?: error("Source document is unavailable.")
       val modelId = job.getString("modelId")
+      val sourceLanguage = job.getString("sourceLanguage")
+      val targetLanguage = job.getString("targetLanguage")
+      LanguagePair.requireValid(sourceLanguage, targetLanguage)
       database.validateJobSnapshot(id, ModelCatalog.get(modelId))
       val pageCount = job.getInt("totalPages")
       var completed = database.completedPageCount(id)
@@ -137,34 +139,44 @@ internal class PdfTranslationService : Service() {
       val activityManager = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
       val memory = android.app.ActivityManager.MemoryInfo().also(activityManager::getMemoryInfo)
       val freeDisk = android.os.StatFs(filesDir.absolutePath).let { it.availableBlocksLong * it.blockSizeLong }
-      val recommendation = MemoryPolicy.recommend(memory.totalMem, memory.availMem, memory.threshold, memory.lowMemory, freeDisk)
-      val qaProfile = needsTranslation && isRegisteredBoundedDebugProfile(id, modelId, source, pageCount, memory.lowMemory, recommendation)
-      val definition = ModelCatalog.get(modelId)
-      val selectedResources = MemoryPolicy.resources(definition, memory.totalMem, memory.availMem, memory.threshold, memory.lowMemory, freeDisk, definition.bytes)
-      if (needsTranslation && !selectedResources.memoryEligible && !qaProfile) {
-        pauseForResources(id, "Free memory is below the selected model's estimated process memory plus the system reserve.")
+      if (needsTranslation && memory.lowMemory) {
+        pauseForResources(id, "Android reports low memory. The job is paused at its latest saved checkpoint.")
         return
       }
+      val definition = ModelCatalog.get(modelId)
       val outputSpaceReserve = File(source).length() * 2 + 256L * 1024L * 1024L
       if (freeDisk < outputSpaceReserve) {
         pauseForResources(id, "Free storage is below the source-sized checkpoint/export reserve.")
         return
       }
-      if (qaProfile) {
-        getSharedPreferences(QA_PROFILE_PREFS, MODE_PRIVATE).edit()
-          .putString(QA_PROFILE_BYPASSED_JOB, id).apply()
-      }
       database.updateJob(id, completedPages = completed)
       if (needsTranslation) {
-        try { ocrEngine = OcrEngine(this) }
-        catch (error: Exception) { ocrSetupFailure = error.message ?: "The bundled English OCR engine is unavailable." }
+        try { ocrEngine = OcrEngine(this, sourceLanguage) }
+        catch (error: Exception) { ocrSetupFailure = error.message ?: "The bundled OCR data for $sourceLanguage is unavailable." }
         activeOcrEngine = ocrEngine
         database.updateJob(id, status = "running", stage = "extracting", clearError = true)
-        val loadResult = JSONObject(NativeCore.loadModel(downloader.fileFor(modelId).absolutePath, 2048, 4, definition.profile))
-        if (loadResult.has("error")) error(loadResult.optString("error", "Model failed to load."))
+        val loadJson = try { NativeCore.loadModel(downloader.fileFor(modelId).absolutePath, 2048, 4, definition.profile) }
+        catch (error: Exception) {
+          if (isAllocationFailure(error.message.orEmpty())) {
+            pauseForResources(id, "The selected model could not allocate its working memory. The job is paused at its latest saved checkpoint.")
+            return
+          }
+          throw error
+        }
+        val loadResult = JSONObject(loadJson)
+        if (loadResult.has("error")) {
+          val message = loadResult.optString("error", "Model failed to load.")
+          if (isAllocationFailure(message)) { pauseForResources(id, "The selected model could not allocate its working memory. The job is paused at its latest saved checkpoint."); return }
+          error(message)
+        }
       } else database.updateJob(id, status = "running", stage = "exporting", clearError = true)
       for (pageIndex in 0 until pageCount) {
         if (stopped.get() || Thread.currentThread().isInterrupted) throw InterruptedException()
+        val currentMemory = android.app.ActivityManager.MemoryInfo().also(activityManager::getMemoryInfo)
+        if (needsTranslation && currentMemory.lowMemory) {
+          pauseForResources(id, "Android reports low memory. The job is paused at its latest saved checkpoint.")
+          return
+        }
         val saved = database.pageRows(id)
         val alreadyDone = (0 until saved.length()).any { idx ->
           val row = saved.getJSONObject(idx)
@@ -208,6 +220,12 @@ internal class PdfTranslationService : Service() {
         database.updateJob(id, stage = "translating", currentPage = pageIndex)
         for (index in 0 until blocks.length()) {
           if (stopped.get() || Thread.currentThread().isInterrupted) throw InterruptedException()
+          val blockMemory = android.app.ActivityManager.MemoryInfo().also(activityManager::getMemoryInfo)
+          if (blockMemory.lowMemory) {
+            database.savePage(id, pageIndex, "running", blocks.toString(), pageWidth.toDouble(), pageHeight.toDouble(), ocrFailure, blocks.length())
+            pauseForResources(id, "Android reports low memory. The job is paused at its latest saved checkpoint.")
+            return
+          }
           val block = blocks.getJSONObject(index)
           val sourceText = block.optString("sourceText", "").trim()
           if (sourceText.isEmpty()) continue
@@ -218,10 +236,17 @@ internal class PdfTranslationService : Service() {
           updateNotification("Translating page ${pageIndex + 1} of $pageCount · block ${index + 1}/${blocks.length()}")
           val blockStartedAt = android.os.SystemClock.elapsedRealtime()
           try {
-            val response = JSONObject(NativeCore.translate(sourceText, glossary, context))
+            val response = JSONObject(NativeCore.translate(sourceText, glossary, context, sourceLanguage, targetLanguage))
             if (response.has("error") || response.optString("text").isBlank()) {
+              val message = response.optString("error", "Translation was not produced.")
+              if (isAllocationFailure(message)) {
+                block.put("status", "failed").put("error", message)
+                database.savePage(id, pageIndex, "running", blocks.toString(), pageWidth.toDouble(), pageHeight.toDouble(), ocrFailure, blocks.length())
+                pauseForResources(id, "The model ran out of working memory. The job is paused at its latest saved checkpoint.")
+                return
+              }
               block.put("translatedText", JSONObject.NULL).put("status", "failed")
-                .put("error", response.optString("error", "Translation was not produced."))
+                .put("error", message)
               partial = true
             } else {
               val translatedText = response.getString("text")
@@ -233,15 +258,28 @@ internal class PdfTranslationService : Service() {
             }
           } catch (error: Exception) {
             if (stopped.get() || Thread.currentThread().isInterrupted) throw InterruptedException()
+            if (isAllocationFailure(error.message.orEmpty())) {
+              block.put("translatedText", JSONObject.NULL).put("status", "failed")
+                .put("error", error.message ?: "Android could not allocate working memory.")
+              database.savePage(id, pageIndex, "running", blocks.toString(), pageWidth.toDouble(), pageHeight.toDouble(), ocrFailure, blocks.length())
+              pauseForResources(id, "The model could not allocate working memory. The job is paused at its latest saved checkpoint.")
+              return
+            }
             block.put("translatedText", JSONObject.NULL).put("status", "failed")
               .put("error", error.message ?: "Translation failed.")
             partial = true
+          } catch (error: OutOfMemoryError) {
+            block.put("translatedText", JSONObject.NULL).put("status", "failed")
+              .put("error", "Android could not allocate working memory.")
+            database.savePage(id, pageIndex, "running", blocks.toString(), pageWidth.toDouble(), pageHeight.toDouble(), ocrFailure, blocks.length())
+            pauseForResources(id, "Android could not allocate working memory. The job is paused at its latest saved checkpoint.")
+            return
           }
           database.recordBlockDuration(id, android.os.SystemClock.elapsedRealtime() - blockStartedAt)
           database.savePage(id, pageIndex, "running", blocks.toString(), pageWidth.toDouble(), pageHeight.toDouble(), ocrFailure, blocks.length())
         }
         database.updateJob(id, stage = "layout", currentPage = pageIndex)
-        val exportCheck = validatePageExport(source, pageIndex, blocks, id)
+        val exportCheck = validatePageExport(source, pageIndex, blocks, id, targetLanguage)
         if (exportCheck.partial) partial = true
         val pageStatus = if (partial) "partial" else "completed"
         val pageError = PageExportIssues.pageError(ocrFailure, blocks, partial, exportCheck.issues)
@@ -263,6 +301,8 @@ internal class PdfTranslationService : Service() {
     } catch (_: InterruptedException) {
       val status = database.jobJson(id)?.optString("status")
       if (status == "running") database.updateJob(id, status = "paused", error = "Paused after the latest saved page checkpoint.")
+    } catch (error: OutOfMemoryError) {
+      pauseForResources(id, "Android could not allocate working memory. The job is paused at its latest saved checkpoint.")
     } catch (error: Exception) {
       database.updateJob(id, status = "failed", error = error.message ?: "Local translation failed.")
       updateNotification("Translation stopped. Open the app to review the error.")
@@ -285,30 +325,11 @@ internal class PdfTranslationService : Service() {
     updateNotification("Translation paused to protect device resources. Open the app to resume.")
   }
 
-  private fun isRegisteredBoundedDebugProfile(
-    id: String,
-    modelId: String,
-    source: String,
-    pageCount: Int,
-    systemLowMemory: Boolean,
-    recommendation: MemoryRecommendation,
-  ): Boolean {
-    if (!BuildConfig.DEBUG || modelId != ModelCatalog.RECOMMENDED_ID || pageCount !in 1..5) return false
-    val preferences = getSharedPreferences(QA_PROFILE_PREFS, MODE_PRIVATE)
-    if (preferences.getString(QA_PROFILE_REGISTERED_JOB, null) != id) return false
-    val fixture = File(filesDir, "qa/source.pdf")
-    val sourceFile = File(source)
-    val boundedFixture = runCatching {
-      fixture.canonicalFile == sourceFile.canonicalFile && fixture.length() in 5..MAX_QA_SOURCE_BYTES
-    }.getOrDefault(false)
-    if (!boundedFixture) return false
-    return MemoryPolicy.permitsBoundedDebugProfile(
-      recommendation.availableMemoryBytes,
-      recommendation.reserveBytes,
-      systemLowMemory,
-      ModelCatalog.get(modelId).bytes,
-    )
-  }
+  private fun isAllocationFailure(message: String): Boolean =
+    message.contains("out of memory", ignoreCase = true) ||
+      message.contains("allocation failed", ignoreCase = true) ||
+      message.contains("bad_alloc", ignoreCase = true) ||
+      message.contains("cannot allocate", ignoreCase = true)
 
   private fun combineNativeAndOcr(nativeBlocks: JSONArray, bitmap: Bitmap?, pageWidth: Float, pageHeight: Float,
                                   ocrEngine: OcrEngine?): JSONArray {
@@ -343,19 +364,19 @@ internal class PdfTranslationService : Service() {
     return blocks
   }
 
-  private fun hasProtectedValueMismatch(source: String, translated: String): Boolean {
-    val protected = Regex("(?<![\\p{L}\\d])[-+]?\\d+(?:[.,]\\d+)?(?:\\s?(?:%|°[CF]|mm|cm|km|kg|mg|ml|MPa|kPa|V|A|W|Hz|rpm))?(?![\\p{L}\\d])|\\b[A-Z]{1,}[A-Z0-9._/-]*\\d[A-Z0-9._/-]*\\b")
-    return protected.findAll(source).map { it.value.lowercase(Locale.ROOT) }.sorted().toList() !=
-      protected.findAll(translated).map { it.value.lowercase(Locale.ROOT) }.sorted().toList()
-  }
+  private fun hasProtectedValueMismatch(source: String, translated: String): Boolean =
+    ProtectedValueGuard.hasMismatch(source, translated)
 
-  private fun validatePageExport(source: String, pageIndex: Int, blocks: JSONArray, jobId: String): PageExportCheck {
+  private fun validatePageExport(source: String, pageIndex: Int, blocks: JSONArray, jobId: String, targetLanguage: String): PageExportCheck {
     val validationDirectory = File(cacheDir, "page-validation").apply { mkdirs() }
     val destination = File(validationDirectory, "$jobId-$pageIndex.pdf")
     val font = File(cacheDir, "NotoSans-Regular.ttf")
     FontAsset.ensure(this, font)
+    val cjkFontPath = if (targetLanguage == "zh-Hans") {
+      FontAsset.ensureCjk(this, File(cacheDir, "NotoSansSC-Regular.ttf")).absolutePath
+    } else ""
     try {
-      val result = JSONObject(NativeCore.exportPage(source, pageIndex, blocks.toString(), destination.absolutePath, font.absolutePath))
+      val result = JSONObject(NativeCore.exportPage(source, pageIndex, blocks.toString(), destination.absolutePath, font.absolutePath, cjkFontPath))
       if (result.has("error")) throw IllegalStateException(result.optString("error", "Page layout validation failed."))
       require(destination.isFile && destination.length() > 0L) { "Page layout validation produced no PDF output." }
       val issues = result.optJSONArray("issues") ?: JSONArray()
@@ -461,8 +482,6 @@ internal class PdfTranslationService : Service() {
     const val CHANNEL_ID = "pdf_translation"
     private const val QA_PROFILE_PREFS = "debug_native_qa_profile"
     private const val QA_PROFILE_REGISTERED_JOB = "registered_job_id"
-    private const val QA_PROFILE_BYPASSED_JOB = "provisional_gate_bypassed_job_id"
-    private const val MAX_QA_SOURCE_BYTES = 20L * 1024L * 1024L
     private const val NOTIFICATION_ID = 8201
     private const val OCR_RENDER_WIDTH = 1400
   }

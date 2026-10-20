@@ -66,16 +66,76 @@ std::string objectText(FPDF_PAGEOBJECT obj,FPDF_TEXTPAGE tp) {
  while(!s.empty()&&(s.back()==0||s.back()==u'\r'||s.back()==u'\n'))s.pop_back();
  return utf8(s);
 }
-float textWidth(FPDF_FONT font,const std::u16string& text,float size) {
- float total=0;
- for(size_t i=0;i<text.size();++i){unsigned int c=text[i];if(c>=0xd800&&c<=0xdbff&&i+1<text.size()){c=0x10000+((c-0xd800)<<10)+(text[++i]-0xdc00);} float width=0; if(!FPDFFont_GetGlyphWidth(font,c,size,&width))throw std::runtime_error("Font lacks a required glyph");total+=width;}
- return total;
+struct GlyphUnit { std::u16string text; FPDF_FONT font; uint32_t codepoint; bool space; };
+struct TextSegment { std::u16string text; FPDF_FONT font; };
+using WrappedLine = std::vector<TextSegment>;
+uint16_t be16(const std::vector<unsigned char>& d,size_t p){return p+2<=d.size()?static_cast<uint16_t>((d[p]<<8)|d[p+1]):0;}
+uint32_t be32(const std::vector<unsigned char>& d,size_t p){return p+4<=d.size()?(static_cast<uint32_t>(d[p])<<24)|(static_cast<uint32_t>(d[p+1])<<16)|(static_cast<uint32_t>(d[p+2])<<8)|d[p+3]:0;}
+struct FontCoverage {
+ const std::vector<unsigned char>& data;size_t subtable=0;uint16_t format=0;
+ explicit FontCoverage(const std::vector<unsigned char>& bytes):data(bytes){
+  if(data.size()<12)return;const uint16_t count=be16(data,4);
+  for(size_t i=0;i<count;i++){size_t entry=12+i*16;if(entry+16>data.size())break;if(std::string(reinterpret_cast<const char*>(data.data()+entry),4)!="cmap")continue;
+   const size_t base=be32(data,entry+8);if(base+4>data.size())break;uint16_t records=be16(data,base+2);size_t best12=0,best4=0;
+   for(size_t j=0;j<records;j++){size_t record=base+4+j*8;if(record+8>data.size())break;uint16_t platform=be16(data,record),encoding=be16(data,record+2);size_t offset=base+be32(data,record+4);if(offset+2>data.size())continue;uint16_t f=be16(data,offset);
+    if(f==12&&(platform==0||(platform==3&&encoding==10)))best12=offset;
+    if(f==4&&(platform==0||(platform==3&&(encoding==1||encoding==0))))best4=offset;
+   }
+   if(best12){subtable=best12;format=12;}else if(best4){subtable=best4;format=4;}break;
+  }
+ }
+ bool has(uint32_t cp)const{
+  if(!subtable)return false;
+  if(format==12){uint32_t groups=be32(data,subtable+12);size_t lo=0,hi=groups;while(lo<hi){size_t mid=(lo+hi)/2,entry=subtable+16+mid*12;if(entry+12>data.size())return false;uint32_t start=be32(data,entry),end=be32(data,entry+4);if(cp<start)hi=mid;else if(cp>end)lo=mid+1;else return be32(data,entry+8)+(cp-start)!=0;}return false;}
+  if(format==4&&cp<=0xffff){uint16_t segments=be16(data,subtable+6)/2;size_t ends=subtable+14,starts=ends+segments*2+2,deltas=starts+segments*2,ranges=deltas+segments*2;
+   for(size_t i=0;i<segments;i++){uint16_t end=be16(data,ends+i*2),start=be16(data,starts+i*2);if(cp<start||cp>end)continue;uint16_t delta=be16(data,deltas+i*2),range=be16(data,ranges+i*2);if(range==0)return static_cast<uint16_t>(cp+delta)!=0;size_t glyphAt=ranges+i*2+range+(cp-start)*2;uint16_t glyph=be16(data,glyphAt);return glyph&&static_cast<uint16_t>(glyph+delta)!=0;} }
+  return false;
+ }
+};
+uint32_t codepointAt(const std::u16string& value,size_t& i) {
+ uint32_t c=value[i++];
+ if(c>=0xd800&&c<=0xdbff&&i<value.size()&&value[i]>=0xdc00&&value[i]<=0xdfff)c=0x10000+((c-0xd800)<<10)+(value[i++]-0xdc00);
+ return c;
 }
-std::vector<std::u16string> lines(FPDF_FONT font,const std::string& text,float size,float width) {
- std::u16string all=wide(text),line,word;std::vector<std::u16string> out;
- auto append=[&](){ if(word.empty())return;auto candidate=line+(line.empty()?u"":u" ")+word; if(textWidth(font,candidate,size)>width&&!line.empty()){out.push_back(line);line=word;}else line=candidate; if(textWidth(font,line,size)>width)throw std::runtime_error("Unbreakable text exceeds its original area");word.clear();};
- for(char16_t c:all){if(c==u' '||c==u'\n'||c==u'\r'||c==u'\t'){append();if(c==u'\n'){out.push_back(line);line.clear();}}else word+=c;}
- append();if(!line.empty())out.push_back(line);return out;
+bool combining(uint32_t c) { return (c>=0x0300&&c<=0x036f)||(c>=0x1ab0&&c<=0x1aff)||(c>=0x1dc0&&c<=0x1dff)||(c>=0x20d0&&c<=0x20ff)||(c>=0xfe20&&c<=0xfe2f); }
+bool cjk(uint32_t c) { return (c>=0x2e80&&c<=0x9fff)||(c>=0xf900&&c<=0xfaff)||(c>=0x20000&&c<=0x3134f)||(c>=0x3040&&c<=0x30ff)||(c>=0xac00&&c<=0xd7af); }
+bool openingPunctuation(uint32_t c) { return c=='('||c=='['||c=='{'||c==0x2018||c==0x201c||c==0x3008||c==0x300a||c==0x300c||c==0x300e||c==0x3010||c==0x3014||c==0x3016||c==0x3018||c==0x301a; }
+bool closingPunctuation(uint32_t c) { return c==')'||c==']'||c=='}'||c==','||c=='.'||c==':'||c==';'||c=='!'||c=='?'||c==0x2019||c==0x201d||c==0x3001||c==0x3002||c==0x3009||c==0x300b||c==0x300d||c==0x300f||c==0x3011||c==0x3015||c==0x3017||c==0x3019||c==0x301b; }
+float glyphWidth(const GlyphUnit& glyph,float size) { float w=0;if(!FPDFFont_GetGlyphWidth(glyph.font,glyph.codepoint,size,&w))throw std::runtime_error("Font lacks a required glyph");return w; }
+float textWidth(const std::vector<GlyphUnit>& glyphs,float size) { float sum=0;for(const auto& g:glyphs)sum+=glyphWidth(g,size);return sum; }
+std::vector<WrappedLine> lines(FPDF_FONT latin,FPDF_FONT cjkFont,const FontCoverage& latinCoverage,const FontCoverage* cjkCoverage,const std::string& text,float size,float maxWidth) {
+ const auto all=wide(text);std::vector<WrappedLine> output;std::vector<GlyphUnit> current;
+ auto emit=[&](size_t count){
+  if(count==0){output.emplace_back();return;}
+  WrappedLine line;for(size_t i=0;i<count;i++){const auto& g=current[i];if(!line.empty()&&line.back().font==g.font)line.back().text+=g.text;else line.push_back({g.text,g.font});}
+  output.push_back(std::move(line));current.erase(current.begin(),current.begin()+count);
+  while(!current.empty()&&current.front().space)current.erase(current.begin());
+ };
+ for(size_t pos=0;pos<all.size();) {
+  if(all[pos]==u'\n'||all[pos]==u'\r'){if(all[pos]==u'\r'&&pos+1<all.size()&&all[pos+1]==u'\n')++pos;emit(current.size());++pos;continue;}
+  size_t start=pos;uint32_t cp=codepointAt(all,pos);
+  // Preserve combining marks with their base, including marks in a no-space run.
+  if(combining(cp)&&!current.empty()){current.back().text.append(all.substr(start,pos-start));continue;}
+  FPDF_FONT chosen=nullptr;float ignored=0;
+  if(latinCoverage.has(cp))chosen=latin;
+  else if(cjkFont&&cjkCoverage&&cjkCoverage->has(cp))chosen=cjkFont;
+  if(!chosen||!FPDFFont_GetGlyphWidth(chosen,cp,size,&ignored))throw std::runtime_error("No embedded font has a required glyph");
+  std::u16string unit=all.substr(start,pos-start);
+  while(pos<all.size()){size_t next=pos;uint32_t mark=codepointAt(all,next);if(!combining(mark))break;unit.append(all.substr(pos,next-pos));pos=next;}
+  current.push_back({std::move(unit),chosen,cp,cp==' '||cp=='\t'});
+  while(!current.empty()&&textWidth(current,size)>maxWidth){
+   size_t boundary=0;
+   for(size_t i=current.size()-1;i>0;--i){
+    if(current[i-1].space){boundary=i-1;break;}
+    if((cjk(current[i-1].codepoint)||cjk(current[i].codepoint))&&!closingPunctuation(current[i].codepoint)&&!openingPunctuation(current[i-1].codepoint)){boundary=i;break;}
+   }
+   if(boundary==0||boundary>=current.size())throw std::runtime_error("Unbreakable text exceeds its original area");
+   emit(boundary);
+   if(current.empty())throw std::runtime_error("A glyph exceeds its original area");
+  }
+ }
+ if(!current.empty())emit(current.size());
+ return output;
 }
 void annotate(FPDF_PAGE page,const json& block,double height,const std::string& text){
  auto a=FPDFPage_CreateAnnot(page,FPDF_ANNOT_TEXT);if(!a)throw std::runtime_error("Cannot attach translated text");
@@ -94,6 +154,13 @@ void annotate(FPDF_PAGE page,const json& block,double height,const std::string& 
 }
 void unload(){if(ctx){llama_free(ctx);ctx=nullptr;}if(model){llama_model_free(model);model=nullptr;}loadedPath.clear();loadedProfile.clear();}
 bool abortInference(void*){return stopped.load();}
+bool supportedLanguage(const std::string& code){return code=="ru"||code=="zh-Hans"||code=="fr"||code=="en"||code=="de"||code=="es";}
+std::string languageName(const std::string& code){
+ if(code=="ru")return "Russian";if(code=="zh-Hans")return "Simplified Chinese";if(code=="fr")return "French";
+ if(code=="en")return "English";if(code=="de")return "German";if(code=="es")return "Spanish";
+ throw std::runtime_error("Unsupported language code");
+}
+std::string gemmaLanguageCode(const std::string& code){return code=="zh-Hans"?"zh":code;}
 
 struct TextRun {
  json block;
@@ -220,19 +287,26 @@ std::string loadModel(const std::string& path,int context,int threads,const std:
  ctx=llama_init_from_model(model,cp);if(!ctx){unload();throw std::runtime_error("Insufficient resources for the model context");}loadedPath=path;loadedProfile=profile;
  return json{{"loaded",true},{"context",llama_n_ctx(ctx)},{"threads",llama_n_threads(ctx)},{"modelBytes",llama_model_size(model)},{"templateAvailable",llama_model_chat_template(model,nullptr)!=nullptr}}.dump();
 }catch(const std::exception&e){return failure(e);}}
-std::string translate(const std::string& text,const std::string& glossary,const std::string& context){try{
+std::string translate(const std::string& text,const std::string& glossary,const std::string& context,const std::string& sourceLanguage,const std::string& targetLanguage){try{
  std::lock_guard<std::mutex> lock(modelMutex);if(!ctx||!model)throw std::runtime_error("Model is not loaded");if(stopped)throw std::runtime_error("Canceled");
- if(!std::regex_search(text,std::regex("[A-Za-z]")))return json{{"text",text},{"tokens",0},{"seconds",0},{"skipped",true}}.dump();
+ if(!supportedLanguage(sourceLanguage)||!supportedLanguage(targetLanguage))throw std::runtime_error("Unsupported language pair");
+ if(sourceLanguage==targetLanguage)throw std::runtime_error("Source and target languages must differ");
+ if(text.empty())return json{{"text",text},{"tokens",0},{"seconds",0},{"skipped",true}}.dump();
  if(loadedProfile!="hy-mt2"&&!glossary.empty())throw std::runtime_error("This model uses direct translation without a glossary. Choose a glossary-capable model to apply saved terms.");
+ const auto sourceName=languageName(sourceLanguage),targetName=languageName(targetLanguage);
  std::string instruction;
  if(!glossary.empty())instruction+="Reference the following translations:\n"+glossary+"\n\n";
  if(!context.empty())instruction+="[Background Information]\n"+context+"\n";
- instruction+="Translate the following text into Russian. Note that you should only output the translated result without any additional explanation:\n\n"+text;
+ if(sourceLanguage=="en"&&targetLanguage=="ru")
+  instruction+="Translate the following text into Russian. Note that you should only output the translated result without any additional explanation:\n\n"+text;
+ else
+  instruction+="Translate the following text from "+sourceName+" ("+sourceLanguage+") into "+targetName+" ("+targetLanguage+"). Only output the translation without additional explanation:\n\n"+text;
  const char* tmpl=llama_model_chat_template(model,nullptr);std::string prompt;
  if(loadedProfile=="translategemma"){
-  // Exact EN/RU specialization of the pinned model's embedded structured
-  // template. Context and glossary are never added to the text being translated.
-  prompt="<bos><start_of_turn>user\nYou are a professional English (en) to Russian (ru) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Russian grammar, vocabulary, and cultural sensitivities.\nProduce only the Russian translation, without any additional explanations or commentary. Please translate the following English text into Russian:\n\n\n"+text+"<end_of_turn>\n<start_of_turn>model\n";
+  // Preserve the pinned TranslateGemma structured template while specializing
+  // its exact language metadata for each supported direction.
+  const auto gemmaSource=gemmaLanguageCode(sourceLanguage),gemmaTarget=gemmaLanguageCode(targetLanguage);
+  prompt="<bos><start_of_turn>user\nYou are a professional "+sourceName+" ("+gemmaSource+") to "+targetName+" ("+gemmaTarget+") translator. Your goal is to accurately convey the meaning and nuances of the original "+sourceName+" text while adhering to "+targetName+" grammar, vocabulary, and cultural sensitivities.\nProduce only the "+targetName+" translation, without any additional explanations or commentary. Please translate the following "+sourceName+" text into "+targetName+":\n\n\n"+text+"<end_of_turn>\n<start_of_turn>model\n";
  }else {
   if(!tmpl)throw std::runtime_error("GGUF lacks a verified chat template");
   llama_chat_message message{"user",instruction.c_str()};std::vector<char> formatted(instruction.size()*3+8192);
@@ -280,38 +354,43 @@ std::string translate(const std::string& text,const std::string& glossary,const 
  }}catch(...){llama_sampler_free(sampler);throw;}llama_sampler_free(sampler);
  if(!ended)throw std::runtime_error("Translation exceeded context; output was not committed");
  if(output.empty())throw std::runtime_error("Model produced no translation");
- if(!preservesCriticalTokens(text,output))throw std::runtime_error("Translation changed a protected number, code or negation; original retained for review");
+ if(!preservesCriticalTokens(text,output,sourceLanguage,targetLanguage))throw std::runtime_error("Translation changed a protected number, code or negation; original retained for review");
  double seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
  return json{{"text",output},{"tokens",generated},{"seconds",seconds},{"tokensPerSecond",generated/std::max(seconds,0.001)}}.dump();
 }catch(const std::exception&e){return failure(e);}}
 void releaseModel(){std::lock_guard<std::mutex> lock(modelMutex);unload();}
 void cancel(){stopped=true;}
-std::string exportPage(const std::string& source,int index,const std::string& blocksJson,const std::string& destination,const std::string& fontPath){try{
+std::string exportPage(const std::string& source,int index,const std::string& blocksJson,const std::string& destination,const std::string& fontPath,const std::string& cjkFontPath){try{
  std::lock_guard<std::mutex> lock(pdfMutex);initPdf();Doc src(source);Doc dest(FPDF_CreateNewDocument());int ix=index;if(!FPDF_ImportPagesByIndex(dest.value,src.value,&ix,1,0))throw std::runtime_error("Cannot import original page");Page page(dest.value,0);
  std::ifstream f(fontPath,std::ios::binary);std::vector<unsigned char> data((std::istreambuf_iterator<char>(f)),{});if(data.empty())throw std::runtime_error("Cyrillic export font is missing");
  FPDF_FONT font=FPDFText_LoadFont(dest.value,data.data(),data.size(),FPDF_FONT_TRUETYPE,true);if(!font)throw std::runtime_error("Cannot embed Cyrillic font");
+ FPDF_FONT cjkFont=nullptr;std::vector<unsigned char> cjkData;
+ if(!cjkFontPath.empty()){std::ifstream cf(cjkFontPath,std::ios::binary);cjkData.assign(std::istreambuf_iterator<char>(cf),{});if(cjkData.empty()){FPDFFont_Close(font);throw std::runtime_error("Simplified Chinese export font is missing");}cjkFont=FPDFText_LoadFont(dest.value,cjkData.data(),cjkData.size(),FPDF_FONT_TRUETYPE,true);if(!cjkFont){FPDFFont_Close(font);throw std::runtime_error("Cannot embed Simplified Chinese font");}}
+ const FontCoverage latinCoverage(data);const FontCoverage cjkCoverage(cjkData);
  const auto input=json::parse(blocksJson);const auto blocks=input.is_array()?input:input.at("blocks");double height=FPDF_GetPageHeightF(page.value);int partial=0;json issues=json::array();std::vector<FPDF_PAGEOBJECT> remove;
  const auto issue=[&](const json& block,const std::string& reason,const std::string& message){partial++;issues.push_back(json{{"blockId",block.value("id",std::string{})},{"reason",reason},{"message",message}});};
  try{for(const auto& block:blocks){
   if(block.contains("translatedText")&&block["translatedText"].is_null()){issue(block,"missing_translation","No complete translation is available; the original text was retained.");continue;}
   std::string translated=block.value("translatedText",block.value("translation",std::string{}));if(translated.empty()){issue(block,"missing_translation","No complete translation is available; the original text was retained.");continue;}
-  double width=block.value("right",0.)-block.value("left",0.),boxHeight=block.value("bottom",0.)-block.value("top",0.);float original=block.value("fontSize",10.f),minimum=std::max(6.f,0.8f*original),size=std::max(minimum,original);std::vector<std::u16string> wrapped;bool fits=false;
+  double width=block.value("right",0.)-block.value("left",0.),boxHeight=block.value("bottom",0.)-block.value("top",0.);float original=block.value("fontSize",10.f),minimum=std::max(6.f,0.8f*original),size=std::max(minimum,original);std::vector<WrappedLine> wrapped;bool fits=false;
   if(block.value("source",std::string("native"))=="native"&&FPDFPage_GetRotation(page.value)==0&&width>0&&boxHeight>0&&block.value("status",std::string("translated"))!="partial"){
-   for(;size>=minimum-0.01f;size-=0.5f){try{wrapped=lines(font,translated,size,width);fits=!wrapped.empty()&&wrapped.size()*size*1.15<=boxHeight+size*0.35;}catch(...){fits=false;}if(fits)break;}
+   for(;size>=minimum-0.01f;size-=0.5f){try{wrapped=lines(font,cjkFont,latinCoverage,cjkFont?&cjkCoverage:nullptr,translated,size,width);fits=!wrapped.empty()&&wrapped.size()*size*1.15<=boxHeight+size*0.35;}catch(...){fits=false;}if(fits)break;}
   }
   if(!fits){annotate(page.value,block,height,translated);issue(block,"layout_fallback","The translation could not be placed safely at a readable size. The original remains with the full translation attached for review.");continue;}
   json indexes=block.value("objectIndices",json::array());if(indexes.empty()&&block.contains("objectIndex")&&block["objectIndex"].is_number_integer())indexes.push_back(block["objectIndex"]);
   bool safe=!indexes.empty();for(const auto& n:indexes){int oi=n.get<int>();auto obj=FPDFPage_GetObject(page.value,oi);if(!obj||FPDFPageObj_GetType(obj)!=FPDF_PAGEOBJ_TEXT){safe=false;break;}}
   if(!safe){annotate(page.value,block,height,translated);issue(block,"unsafe_text_object","The original text object could not be replaced safely. The translation is attached for review.");continue;}
   for(const auto& n:indexes)remove.push_back(FPDFPage_GetObject(page.value,n.get<int>()));
-  int row=0;for(const auto& line:wrapped){auto obj=FPDFPageObj_CreateTextObj(dest.value,font,size);if(!obj)throw std::runtime_error("Cannot create translated text");
-   if(!FPDFText_SetText(obj,reinterpret_cast<const unsigned short*>(line.c_str()))){FPDFPageObj_Destroy(obj);throw std::runtime_error("Cannot write translated glyphs");}
-   FPDFPageObj_SetFillColor(obj,25,25,28,255);FPDFPageObj_Transform(obj,1,0,0,1,block.value("left",0.),height-block.value("top",0.)-size-row*size*1.15);FPDFPage_InsertObject(page.value,obj);row++;
+  int row=0;for(const auto& line:wrapped){double x=block.value("left",0.);for(const auto& segment:line){auto obj=FPDFPageObj_CreateTextObj(dest.value,segment.font,size);if(!obj)throw std::runtime_error("Cannot create translated text");
+    if(!FPDFText_SetText(obj,reinterpret_cast<const unsigned short*>(segment.text.c_str()))){FPDFPageObj_Destroy(obj);throw std::runtime_error("Cannot write translated glyphs");}
+    FPDFPageObj_SetFillColor(obj,25,25,28,255);FPDFPageObj_Transform(obj,1,0,0,1,x,height-block.value("top",0.)-size-row*size*1.15);FPDFPage_InsertObject(page.value,obj);
+    for(size_t i=0;i<segment.text.size();){uint32_t cp=codepointAt(segment.text,i);float advance=0;if(!FPDFFont_GetGlyphWidth(segment.font,cp,size,&advance))throw std::runtime_error("Font lacks a required glyph");x+=advance;}
+   }row++;
   }
  }
  std::sort(remove.begin(),remove.end());remove.erase(std::unique(remove.begin(),remove.end()),remove.end());for(auto obj:remove){if(!FPDFPage_RemoveObject(page.value,obj))throw std::runtime_error("Cannot replace source text safely");FPDFPageObj_Destroy(obj);}
  if(!FPDFPage_GenerateContent(page.value))throw std::runtime_error("Cannot generate translated page content");save(dest.value,destination);
- }catch(...){FPDFFont_Close(font);throw;}FPDFFont_Close(font);
+ }catch(...){if(cjkFont)FPDFFont_Close(cjkFont);FPDFFont_Close(font);throw;}if(cjkFont)FPDFFont_Close(cjkFont);FPDFFont_Close(font);
  return json{{"path",destination},{"partial",partial>0},{"partialBlocks",partial},{"issues",issues},{"pageCount",1}}.dump();
 }catch(const std::exception&e){return failure(e);}}
 std::string mergePdf(const std::string& pagesJson,const std::string& destination){try{

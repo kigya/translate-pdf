@@ -75,13 +75,14 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
       let recommended=ModelCatalog.recommended(from:assessments)
       let recommendation=assessments[recommended.id]!
       let docs=try store.documents();let jobs=try store.jobs();let glossary=try store.glossary()
-      let installedEligibleModelIds=modelStates.compactMap { model -> String? in
-        guard model["status"] as? String == "ready", model["translationEnabled"] as? Bool == true,
-              model["memoryEstimateEligible"] as? Bool == true else { return nil }
+      let installedModelIds=modelStates.compactMap { model -> String? in
+        guard model["status"] as? String == "ready", model["translationEnabled"] as? Bool == true else { return nil }
         return model["id"] as? String
       }
       let theme=try store.setting("theme",fallback:"system"),language=try store.setting("language",fallback:"system")
-      let selectedModelId=try store.resolveSelectedModelId(recommended:recommended.id,installedMemoryEligible:installedEligibleModelIds)
+      let languagePreferences=try store.languagePreferences()
+      let sourceLanguage=languagePreferences.sourceLanguage,targetLanguage=languagePreferences.targetLanguage
+      let selectedModelId=try store.resolveSelectedModelId(recommended:recommended.id,installedModelIds:installedModelIds)
       let version=Int(try store.setting("onboarding_version",fallback:"1")) ?? 1
       let page=Int(try store.setting("onboarding_page",fallback:"0")) ?? 0
       let done=(try store.setting("onboarding_done",fallback:"false")) == "true"
@@ -96,7 +97,7 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
       device["resourceEstimateEligible"]=recommendation.resourceEstimateEligible
       device["recommendedModelAvailable"]=recommendation.resourceEstimateEligible;device["recommendedModelId"]=recommended.id
       device["recommendationReason"]=recommendation.reason;device["recommendationVerified"]=false
-      return try jsonString(["schemaVersion":1,"device":device,"preferences":["theme":theme,"language":language,"selectedModelId":selectedModelId],"onboarding":["version":version,"page":page,"done":done],"models":modelStates,"documents":docs,"jobs":jobs,"glossary":glossary])
+      return try jsonString(["schemaVersion":1,"device":device,"preferences":["theme":theme,"language":language,"sourceLanguage":sourceLanguage,"targetLanguage":targetLanguage,"selectedModelId":selectedModelId],"onboarding":["version":version,"page":page,"done":done],"models":modelStates,"documents":docs,"jobs":jobs,"glossary":glossary])
     }
   }
 
@@ -125,17 +126,18 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
     run(resolve,reject,"JOB_START_FAILED") {
       guard UIApplication.shared.applicationState == .active else { throw self.error("Return to the open app before starting translation.") }
       guard let input=try JSONSerialization.jsonObject(with:Data(inputJson.utf8)) as? [String:Any],let documentId=input["documentId"] as? String,let modelId=input["modelId"] as? String else { throw self.error("Translation request is invalid.") }
-      guard input["sourceLanguage"] as? String == "en",input["targetLanguage"] as? String == "ru" else { throw self.error("Only English to Russian translation is available.") }
+      guard let sourceLanguage=input["sourceLanguage"] as? String,let targetLanguage=input["targetLanguage"] as? String else { throw self.error("Choose a source and target language before starting translation.") }
+      _ = try TranslationLanguage.pair(source:sourceLanguage,target:targetLanguage)
       self.stateLock.lock();let alreadyRunning=self.activeJobID != nil;self.stateLock.unlock()
       guard !alreadyRunning else { throw self.error("Another local translation is already running. Pause or finish it before starting a second job.") }
       guard let path=try self.store.documentPath(documentId),FileManager.default.fileExists(atPath:path) else { throw self.error("The imported document is no longer available.") }
       let model=try ModelCatalog.get(modelId)
-      guard model.translationEnabled else { throw self.error("This compact model is a metadata-only candidate until device memory and translation quality are validated.") }
-      let glossary=try self.store.glossaryText(input["glossaryId"] as? String)
+      guard model.translationEnabled else { throw self.error("The selected model is not enabled for translation.") }
+      let glossary=try self.store.glossaryText(input["glossaryId"] as? String,sourceLanguage:sourceLanguage,targetLanguage:targetLanguage)
       guard model.supportsGlossary || glossary.isEmpty else { throw self.error("The selected model profile does not support glossary instructions. Clear the glossary or choose a glossary-compatible model before starting a job.") }
       guard try self.downloader.isReady(model) else { throw self.error("Download and verify the selected model first.") }
       let assessment=try self.assessment(for:model,status:"ready",downloadedBytes:model.bytes)
-      guard assessment.resourceEstimateEligible else { throw self.error("The selected model is currently unavailable: \(assessment.reason).") }
+      guard assessment.diskEstimateEligible else { throw self.error("The selected model is currently unavailable: \(assessment.reason).") }
       let info=try jsonObject(TranslateCoreBridge.inspect(path))
       if let problem=info["error"] as? String { throw self.error(problem) }
       let count=(info["pageCount"] as? NSNumber)?.intValue ?? 0
@@ -163,10 +165,11 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
       try self.store.validateJobSnapshot(jobId,model:model)
       let total=(job["totalPages"] as? NSNumber)?.intValue ?? 0
       if try self.requiresInference(jobId,totalPages:total) {
-        guard model.translationEnabled else{throw self.error("This compact model is not enabled for translation until device memory and translation quality are validated.")}
+        guard model.translationEnabled else{throw self.error("The selected model is not enabled for translation.")}
         guard try self.downloader.isReady(model) else{throw self.error("Download and verify the model before resuming.")}
         let assessment=try self.assessment(for:model,status:"ready",downloadedBytes:model.bytes)
-        guard assessment.memoryEstimateEligible else{throw self.error("The selected model is currently unavailable: \(assessment.reason).")}
+        // Estimated RAM remains a recommendation only. The runtime may still fail to allocate;
+        // that failure pauses from the latest durable checkpoint without switching models.
       }
       try self.store.updateJob(jobId,status:"queued",stage:"queued",clearError:true)
       job=try self.store.job(jobId) ?? job
@@ -208,7 +211,7 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
       let pageDirectory=AppPaths.pages.appendingPathComponent(jobId,isDirectory:true)
       try FileManager.default.createDirectory(at:pageDirectory,withIntermediateDirectories:true)
       let shard=pageDirectory.appendingPathComponent("translated-preview-\(index).pdf")
-      let rendered=TranslateCoreBridge.exportPage(source,index:index,blocksJSON:try jsonString(blocks),destination:shard.path,fontPath:self.fontPath())
+      let rendered=TranslateCoreBridge.exportPage(source,index:index,blocksJSON:try jsonString(blocks),destination:shard.path,fontPath:self.fontPath(),cjkFontPath:self.cjkFontPath())
       let exportResult=try jsonObject(rendered)
       if let message=exportResult["error"] as? String { throw self.error(message) }
       guard FileManager.default.fileExists(atPath:shard.path) else { throw self.error("The translated page preview could not be created.") }
@@ -239,10 +242,10 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
     run(resolve,reject,"ONBOARDING_SAVE_FAILED"){guard let state=try JSONSerialization.jsonObject(with:Data(stateJson.utf8)) as? [String:Any],let version=(state["version"] as? NSNumber)?.intValue,let page=(state["page"] as? NSNumber)?.intValue,let done=state["done"] as? Bool,version>0,(0...3).contains(page) else { throw self.error("Onboarding state is invalid.") };try self.store.setSetting("onboarding_version",String(version));try self.store.setSetting("onboarding_page",String(page));try self.store.setSetting("onboarding_done",String(done));return try jsonString(["version":version,"page":page,"done":done]) }
   }
   @objc func setSettings(_ settingsJson:String,resolver resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
-    run(resolve,reject,"SETTINGS_SAVE_FAILED"){guard let settings=try JSONSerialization.jsonObject(with:Data(settingsJson.utf8)) as? [String:Any] else { throw self.error("Settings are invalid.") };if let theme=settings["theme"] as? String { guard ["system","light","dark"].contains(theme) else { throw self.error("Theme selection is invalid.") };try self.store.setSetting("theme",theme) };if let language=settings["language"] as? String { guard language == "system" || language.range(of:"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",options:.regularExpression) != nil else { throw self.error("Language selection is invalid.") };try self.store.setSetting("language",language) };if let modelId=settings["selectedModelId"] as? String { _ = try self.store.setSelectedModelId(modelId) };return try jsonString(["theme":try self.store.setting("theme",fallback:"system"),"language":try self.store.setting("language",fallback:"system"),"selectedModelId":try self.store.selectedModelId()]) }
+    run(resolve,reject,"SETTINGS_SAVE_FAILED"){guard let settings=try JSONSerialization.jsonObject(with:Data(settingsJson.utf8)) as? [String:Any] else { throw self.error("Settings are invalid.") };if let theme=settings["theme"] as? String { guard ["system","light","dark"].contains(theme) else { throw self.error("Theme selection is invalid.") };try self.store.setSetting("theme",theme) };if let language=settings["language"] as? String { guard language == "system" || language.range(of:"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",options:.regularExpression) != nil else { throw self.error("Language selection is invalid.") };try self.store.setSetting("language",language) };let savedPair=try self.store.languagePreferences();let source=settings["sourceLanguage"] as? String ?? savedPair.sourceLanguage;let target=settings["targetLanguage"] as? String ?? savedPair.targetLanguage;if settings["sourceLanguage"] != nil || settings["targetLanguage"] != nil { try self.store.setLanguagePreferences(sourceLanguage:source,targetLanguage:target) };if let modelId=settings["selectedModelId"] as? String { _ = try self.store.setSelectedModelId(modelId) };return try jsonString(["theme":try self.store.setting("theme",fallback:"system"),"language":try self.store.setting("language",fallback:"system"),"sourceLanguage":source,"targetLanguage":target,"selectedModelId":try self.store.selectedModelId()]) }
   }
   @objc func saveGlossaryEntry(_ entryJson:String,resolver resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
-    run(resolve,reject,"GLOSSARY_SAVE_FAILED"){guard let item=try JSONSerialization.jsonObject(with:Data(entryJson.utf8)) as? [String:Any],let id=item["id"] as? String,let source=item["source"] as? String,let target=item["target"] as? String,!source.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,!target.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { throw self.error("Both glossary terms are required.") };return try jsonString(self.store.saveGlossary(id,source:source,target:target)) }
+    run(resolve,reject,"GLOSSARY_SAVE_FAILED"){guard let item=try JSONSerialization.jsonObject(with:Data(entryJson.utf8)) as? [String:Any],let id=item["id"] as? String,let source=item["source"] as? String,let target=item["target"] as? String,let sourceLanguage=item["sourceLanguage"] as? String,let targetLanguage=item["targetLanguage"] as? String,!source.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,!target.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { throw self.error("Both glossary terms and their language pair are required.") };return try jsonString(self.store.saveGlossary(id,source:source,target:target,sourceLanguage:sourceLanguage,targetLanguage:targetLanguage)) }
   }
   @objc func deleteGlossaryEntry(_ entryId:String,resolver resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){run(resolve,reject,"GLOSSARY_DELETE_FAILED"){try self.store.deleteGlossary(entryId);return NSNull()}}
 
@@ -314,7 +317,7 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
     if !allowRunning && !["completed","partial"].contains(status){throw error("Wait for the translation to finish before exporting.")}
     guard let source=try store.jobSource(jobId) else{throw error("The source document is unavailable.")}
     let model=try ModelCatalog.get(job["modelId"] as? String ?? "")
-    try store.validateJobSnapshot(jobId,model:model)
+    try store.validateJobForExport(jobId,model:model)
     if let cached=try verifiedExport(jobId,expectedPages:total){return(jobId,cached.url,cached.name)}
     guard allowRunning else{
       if ["completed","partial"].contains(status) {
@@ -345,7 +348,7 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
         var blocks=pageBlocks
         let url=folder.appendingPathComponent("page-\(index).pdf")
         try? FileManager.default.removeItem(at:url)
-        let raw=TranslateCoreBridge.exportPage(source,index:index,blocksJSON:try jsonString(blocks),destination:url.path,fontPath:fontPath())
+        let raw=TranslateCoreBridge.exportPage(source,index:index,blocksJSON:try jsonString(blocks),destination:url.path,fontPath:fontPath(),cjkFontPath:cjkFontPath())
         let result=try jsonObject(raw)
         if let message=result["error"] as? String{try store.savePage(jobId:jobId,index:index,status:"failed",blocks:try jsonString(blocks),error:message);throw error(message)}
         guard FileManager.default.fileExists(atPath:url.path) else{throw error("The PDF core did not create page \(index+1).")}
@@ -401,7 +404,9 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
       let digest=try sha256(at:pending)
       try? FileManager.default.removeItem(at:dest)
       try FileManager.default.moveItem(at:pending,to:dest)
-      let name=(job["documentName"] as? String ?? "translated.pdf").replacingOccurrences(of:"\\.pdf$",with:"",options:.regularExpression)+"-ru.pdf"
+      let sourceLanguage=try TranslationLanguage.pair(source:job["sourceLanguage"] as? String ?? "",target:job["targetLanguage"] as? String ?? "").0
+      let targetLanguage=try TranslationLanguage.pair(source:job["sourceLanguage"] as? String ?? "",target:job["targetLanguage"] as? String ?? "").1
+      let name=(job["documentName"] as? String ?? "translated.pdf").replacingOccurrences(of:"\\.pdf$",with:"",options:.regularExpression)+"-\(sourceLanguage.rawValue)-to-\(targetLanguage.rawValue).pdf"
       try store.saveExport(jobId,path:dest.path,name:name,sha256:digest)
       var protected=URLResourceValues();protected.isExcludedFromBackup=true;var copy=dest;try? copy.setResourceValues(protected)
       return(jobId,dest,name)
@@ -437,6 +442,14 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
     if let bundleURL=Bundle.main.url(forResource:"TranslatePDFFont",withExtension:"bundle"),let bundle=Bundle(url:bundleURL),let path=bundle.path(forResource:"NotoSans-Regular",ofType:"ttf"){return path}
     return Bundle.main.path(forResource:"NotoSans-Regular",ofType:"ttf") ?? ""
   }
+  private func cjkFontPath()->String {
+    if let bundleURL=Bundle.main.url(forResource:"TranslatePDFFont",withExtension:"bundle"),let bundle=Bundle(url:bundleURL),let path=bundle.path(forResource:"NotoSansSC-Regular",ofType:"ttf"){return path}
+    return Bundle.main.path(forResource:"NotoSansSC-Regular",ofType:"ttf") ?? ""
+  }
+  private func isMemoryAllocationFailure(_ message:String)->Bool {
+    let normalized=message.lowercased()
+    return ["out of memory","failed to allocate","allocation failed","cannot allocate","not enough memory","memory allocation"].contains(where:normalized.contains)
+  }
   private func deviceModel()->String { var size=0;sysctlbyname("hw.machine",nil,&size,nil,0);var bytes=[CChar](repeating:0,count:size);sysctlbyname("hw.machine",&bytes,&size,nil,0);return String(cString:bytes) }
   private func beginBackgroundExecution(jobID:String){DispatchQueue.main.async{self.backgroundTask=UIApplication.shared.beginBackgroundTask(withName:"PDF translation \(jobID)"){[weak self] in guard let self else{return};self.requestPause(jobID:jobID,reason:"iOS ended the available background execution window; saved pages are ready to resume.")}}}
   private func endBackgroundExecution(){DispatchQueue.main.async{if self.backgroundTask != .invalid{UIApplication.shared.endBackgroundTask(self.backgroundTask);self.backgroundTask = .invalid}}}
@@ -468,19 +481,22 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
       let model=try ModelCatalog.get(job["modelId"] as? String ?? "")
       try store.validateJobSnapshot(id,model:model)
       let count=(job["totalPages"] as? NSNumber)?.intValue ?? 0
+      let languages=try TranslationLanguage.pair(source:job["sourceLanguage"] as? String ?? "",target:job["targetLanguage"] as? String ?? "")
       guard count>0 else{throw error("The translation contains no exportable pages.")}
       let needsInference=try requiresInference(id,totalPages:count)
       var modelLoaded=false
       if needsInference {
-        guard model.translationEnabled else{throw error("This compact model is not enabled for translation until device memory and translation quality are validated.")}
+        guard model.translationEnabled else{throw error("The selected model is not enabled for translation.")}
         guard try downloader.isReady(model) else{throw error("The model file failed its pinned size or SHA-256 check.")}
-        let policy=try assessment(for:model,status:"ready",downloadedBytes:model.bytes)
-        guard policy.memoryEstimateEligible else{throw error("The selected model is currently unavailable: \(policy.reason).")}
+        _ = try assessment(for:model,status:"ready",downloadedBytes:model.bytes)
       }
       try store.updateJob(id,status:"running",stage:needsInference ? "extracting":"exporting",clearError:true)
       if needsInference {
         let loaded=try jsonObject(TranslateCoreBridge.loadModel(model.fileURL.path,context:2048,threads:max(1,min(4,ProcessInfo.processInfo.activeProcessorCount)),profile:model.profile))
-        if let message=loaded["error"] as? String{throw error(message)}
+        if let message=loaded["error"] as? String {
+          if isMemoryAllocationFailure(message) { throw PauseSignal("The operating system could not allocate memory for this model. The job is paused at its latest saved checkpoint; free memory and resume when ready.") }
+          throw error(message)
+        }
         modelLoaded=true
       }
       var completed=(job["completedPages"] as? NSNumber)?.intValue ?? 0
@@ -499,7 +515,7 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
         guard width>0,height>0 else{throw error("Page geometry is unavailable.")}
         var blocks=previousPage?["blocks"] as? [[String:Any]] ?? (native["blocks"] as? [[String:Any]] ?? [])
         if previousPage == nil,let imageData=TranslateCoreBridge.renderPNG(source,index:pageIndex,width:1400),let image=UIImage(data:imageData),let cg=image.cgImage {
-          blocks += ocrBlocks(cgImage:cg,pageWidth:width,pageHeight:height,existing:blocks)
+          blocks += try ocrBlocks(cgImage:cg,pageWidth:width,pageHeight:height,existing:blocks,sourceLanguage:languages.0)
         }
         let context=(native["context"] as? String ?? "").prefix(2_000)
         var partial=blocks.contains { ($0["status"] as? String) == "failed" || ($0["status"] as? String) == "partial" }
@@ -512,11 +528,18 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
           let text=blocks[index]["sourceText"] as? String ?? ""
           guard !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else{continue}
           do {
-            let translated=try jsonObject(TranslateCoreBridge.translate(text,glossary:glossary,context:String(context)))
-            if let message=translated["error"] as? String{blocks[index]["translatedText"]=NSNull();blocks[index]["status"]="failed";blocks[index]["error"]=message;partial=true}
+            let translated=try jsonObject(TranslateCoreBridge.translate(text,glossary:glossary,context:String(context),sourceLanguage:languages.0.rawValue,targetLanguage:languages.1.rawValue))
+            if let message=translated["error"] as? String {
+              if isMemoryAllocationFailure(message) { throw PauseSignal("The operating system could not allocate memory while translating. The job is paused at its latest saved checkpoint; free memory and resume when ready.") }
+              blocks[index]["translatedText"]=NSNull();blocks[index]["status"]="failed";blocks[index]["error"]=message;partial=true
+            }
             else if let value=translated["text"] as? String,!value.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty{blocks[index]["translatedText"]=value;blocks[index]["status"]="translated"}
             else{blocks[index]["translatedText"]=NSNull();blocks[index]["status"]="failed";blocks[index]["error"]="Translation was not produced.";partial=true}
-          }catch{blocks[index]["translatedText"]=NSNull();blocks[index]["status"]="failed";blocks[index]["error"]=error.localizedDescription;partial=true}
+          }catch let signal as PauseSignal { throw signal }
+          catch {
+            if isMemoryAllocationFailure(error.localizedDescription) { throw PauseSignal("The operating system could not allocate memory while translating. The job is paused at its latest saved checkpoint; free memory and resume when ready.") }
+            blocks[index]["translatedText"]=NSNull();blocks[index]["status"]="failed";blocks[index]["error"]=error.localizedDescription;partial=true
+          }
           try store.savePage(jobId:id,index:pageIndex,status:"running",blocks:try jsonString(blocks))
         }
         stateLock.lock();let stopAfterBlocks=cancelRequested;stateLock.unlock();if stopAfterBlocks{break}
@@ -544,10 +567,10 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
         if #available(iOS 26.0,*),let continued=continuedTask as? BGContinuedProcessingTask {continued.progress.completedUnitCount=Int64(count)}
       }
       continuedTask?.setTaskCompleted(success:!wasCanceled && !wasPaused);continuedTask=nil
-    }catch is PauseSignal {
+    }catch let signal as PauseSignal {
       let total=(try? store.job(id)?["totalPages"] as? NSNumber)?.intValue ?? 0
       let done=(try? store.job(id)?["completedPages"] as? NSNumber)?.intValue ?? 0
-      try? store.updateJob(id,status:"paused",stage:"queued",completed:min(done,max(0,total-1)),clearCurrentPage:true,error:"Paused after the latest saved page checkpoint.")
+      try? store.updateJob(id,status:"paused",stage:"queued",completed:min(done,max(0,total-1)),clearCurrentPage:true,error:signal.reason)
       TranslateCoreBridge.releaseModel();continuedTask?.setTaskCompleted(success:false);continuedTask=nil
     }catch is CancelSignal {
       let total=(try? store.job(id)?["totalPages"] as? NSNumber)?.intValue ?? 0
@@ -563,9 +586,13 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
     stateLock.lock();if activeJobID==id{activeJobID=nil;pauseRequested=false;cancelRequested=false};stateLock.unlock();endBackgroundExecution()
   }
 
-  private func ocrBlocks(cgImage:CGImage,pageWidth:Double,pageHeight:Double,existing:[[String:Any]])->[ [String:Any] ]{
-    let request=VNRecognizeTextRequest();request.recognitionLevel = .accurate;request.usesLanguageCorrection=false;request.recognitionLanguages=["en-US"]
-    guard (try? VNImageRequestHandler(cgImage:cgImage).perform([request])) != nil,let observations=request.results else{return []}
+  private func ocrBlocks(cgImage:CGImage,pageWidth:Double,pageHeight:Double,existing:[[String:Any]],sourceLanguage:TranslationLanguage)throws->[ [String:Any] ]{
+    let request=VNRecognizeTextRequest();request.recognitionLevel = .accurate;request.usesLanguageCorrection=false
+    let supported=try request.supportedRecognitionLanguages()
+    guard supported.contains(sourceLanguage.visionLocale) else { throw error("iOS Vision does not support OCR for the selected source language (\(sourceLanguage.visionLocale)) on this OS version.") }
+    request.recognitionLanguages=[sourceLanguage.visionLocale]
+    try VNImageRequestHandler(cgImage:cgImage).perform([request])
+    guard let observations=request.results else{return []}
     let scaleX=pageWidth/Double(cgImage.width),scaleY=pageHeight/Double(cgImage.height);var result=[[String:Any]]()
     for (index,item) in observations.enumerated(){guard let candidate=item.topCandidates(1).first else{continue};let text=candidate.string.trimmingCharacters(in:.whitespacesAndNewlines);guard !text.isEmpty else{continue};let box=item.boundingBox;let left=box.minX*pageWidth,top=(1-box.maxY)*pageHeight,right=box.maxX*pageWidth,bottom=(1-box.minY)*pageHeight
       if overlaps(existing+result,left:left,top:top,right:right,bottom:bottom){continue}
@@ -618,5 +645,8 @@ extension PdfTranslatorModule: UIDocumentPickerDelegate {
   }
 }
 
-private struct PauseSignal:Error{}
+private struct PauseSignal:Error {
+  let reason:String
+  init(_ reason:String = "Paused after the latest saved page checkpoint.") { self.reason=reason }
+}
 private struct CancelSignal:Error{}

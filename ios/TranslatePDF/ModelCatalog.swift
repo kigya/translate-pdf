@@ -2,6 +2,48 @@ import Foundation
 import CryptoKit
 import os
 
+enum TranslationLanguage: String, CaseIterable {
+  case ru
+  case zhHans = "zh-Hans"
+  case fr
+  case en
+  case de
+  case es
+
+  var visionLocale: String {
+    switch self {
+    case .ru: return "ru-RU"
+    case .zhHans: return "zh-Hans"
+    case .fr: return "fr-FR"
+    case .en: return "en-US"
+    case .de: return "de-DE"
+    case .es: return "es-ES"
+    }
+  }
+
+  var displayName: String {
+    switch self {
+    case .ru: return "Russian"
+    case .zhHans: return "Chinese (Simplified)"
+    case .fr: return "French"
+    case .en: return "English"
+    case .de: return "German"
+    case .es: return "Spanish"
+    }
+  }
+
+  static func pair(source: String, target: String) throws -> (TranslationLanguage, TranslationLanguage) {
+    guard let sourceLanguage = TranslationLanguage(rawValue: source),
+          let targetLanguage = TranslationLanguage(rawValue: target) else {
+      throw NSError(domain: "PdfTranslator", code: 30, userInfo: [NSLocalizedDescriptionKey: "Choose a supported source and target language."])
+    }
+    guard sourceLanguage != targetLanguage else {
+      throw NSError(domain: "PdfTranslator", code: 31, userInfo: [NSLocalizedDescriptionKey: "Source and target languages must be different."])
+    }
+    return (sourceLanguage, targetLanguage)
+  }
+}
+
 struct ModelDefinition {
   let id: String
   let label: String

@@ -1,6 +1,6 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { AppState, StyleSheet, TextInput } from 'react-native';
+import { AppState, BackHandler, StyleSheet, TextInput } from 'react-native';
 
 jest.mock('react-native-safe-area-context', () => {
   const ReactNative = require('react-native');
@@ -43,6 +43,7 @@ jest.mock('../src/native/PdfTranslator', () => ({
 }));
 
 import App from '../App';
+import { createTranslator } from '../src/i18n/messages';
 
 jest.setTimeout(15_000);
 
@@ -75,6 +76,8 @@ describe('native-backed app flows', () => {
   beforeEach(() => {
     cleanup();
     jest.clearAllMocks();
+    jest.spyOn(AppState, 'addEventListener').mockReturnValue({ remove: jest.fn() });
+    jest.spyOn(BackHandler, 'addEventListener').mockReturnValue({ remove: jest.fn() });
   });
 
   afterEach(() => {
@@ -135,7 +138,7 @@ describe('native-backed app flows', () => {
     expect(await screen.findByText('Balanced tier')).toBeOnTheScreen();
     expect(screen.getByText('Quality tier')).toBeOnTheScreen();
     expect(screen.getByText('Meaning preserved in 29 of 44 test passages')).toBeOnTheScreen();
-    expect(screen.getByText('Technical English→Russian sample; results vary by document.')).toBeOnTheScreen();
+    expect(screen.getByText(createTranslator('en')('modelEvidenceCaveat'))).toBeOnTheScreen();
     expect(screen.getByRole('link', { name: 'Licenses: Compact candidate' })).toBeOnTheScreen();
     fireEvent.press(screen.getByRole('button', { name: 'Use this model: Balanced candidate' }));
     await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ selectedModelId: 'model-balanced' }));
@@ -148,15 +151,16 @@ describe('native-backed app flows', () => {
     await waitFor(() => expect(native.startJob).toHaveBeenCalledWith({ documentId: 'doc-1', sourceLanguage: 'en', targetLanguage: 'ru', modelId: 'model-balanced' }));
   });
 
-  it('disables downloading when model memory is insufficient and shows the resource reason', async () => {
+  it('allows downloading below the estimated memory envelope and shows an advisory', async () => {
     const blocked = { ...snapshot().models[0], id: 'model-blocked', label: 'Blocked candidate', status: 'not_downloaded', tier: 'compact', memoryEstimateEligible: false, diskEstimateEligible: true, resourceEstimateEligible: false, resourceReason: 'memory' };
     await renderApp(snapshot({ models: [blocked], device: { ...snapshot().device, recommendedModelId: 'model-q4' } }));
     fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
 
-    expect(await screen.findByText('Not enough available memory for this model and pipeline.')).toBeOnTheScreen();
-    expect(screen.getByRole('button', { name: 'Download model' })).toBeDisabled();
+    expect(await screen.findByText(createTranslator('en')('modelMemoryWarning'))).toBeOnTheScreen();
+    expect(screen.getByRole('button', { name: 'Download model' })).toBeEnabled();
+    native.startModelDownload.mockResolvedValue(blocked);
     fireEvent.press(screen.getByRole('button', { name: 'Download model' }));
-    expect(native.startModelDownload).not.toHaveBeenCalled();
+    await waitFor(() => expect(native.startModelDownload).toHaveBeenCalledWith('model-blocked'));
   });
 
   it('shows zero bytes downloaded as a measured zero rather than an unavailable value', async () => {
@@ -441,12 +445,12 @@ describe('native-backed app flows', () => {
     fireEvent.changeText(screen.UNSAFE_getAllByType(TextInput)[0], ' radiator ');
     fireEvent.changeText(screen.UNSAFE_getAllByType(TextInput)[1], ' радиатор ');
     fireEvent.press(screen.getByRole('button', { name: 'Add term' }));
-    await waitFor(() => expect(native.saveGlossaryEntry).toHaveBeenCalledWith({ id: expect.any(String), source: 'radiator', target: 'радиатор' }));
+    await waitFor(() => expect(native.saveGlossaryEntry).toHaveBeenCalledWith({ id: expect.any(String), source: 'radiator', target: 'радиатор', sourceLanguage: 'en', targetLanguage: 'ru' }));
 
     fireEvent.press(screen.getByRole('button', { name: 'Edit term: radiator' }));
     fireEvent.changeText(screen.UNSAFE_getAllByType(TextInput)[1], 'батарея');
     fireEvent.press(screen.getByRole('button', { name: 'Save term' }));
-    await waitFor(() => expect(native.saveGlossaryEntry).toHaveBeenLastCalledWith({ id: 'term-1', source: 'radiator', target: 'батарея' }));
+    await waitFor(() => expect(native.saveGlossaryEntry).toHaveBeenLastCalledWith({ id: 'term-1', source: 'radiator', target: 'батарея', sourceLanguage: 'en', targetLanguage: 'ru' }));
 
     fireEvent.press(screen.getByRole('button', { name: 'Remove term' }));
     await waitFor(() => expect(native.deleteGlossaryEntry).toHaveBeenCalledWith('term-1'));
@@ -728,4 +732,55 @@ describe('native-backed app flows', () => {
     intervalSpy.mockRestore();
     clearSpy.mockRestore();
   });
+  it('persists a document language pair, swaps it atomically, and starts with that pair', async () => {
+    const doc = { id: 'doc-languages', name: 'Guide.pdf', pageCount: 1, importedAt: 2 };
+    let data = snapshot({ preferences: { theme: 'system', language: 'system', sourceLanguage: 'en', targetLanguage: 'ru' } });
+    native.pickPdf.mockResolvedValue(doc);
+    native.setSettings.mockImplementation(async (settings: Record<string, string>) => {
+      data = { ...data, preferences: { ...data.preferences, ...settings } };
+      return data.preferences;
+    });
+    await renderApp(data);
+    native.bootstrap.mockImplementation(async () => data);
+    fireEvent.press(screen.getByRole('button', { name: 'Import a PDF' }));
+    await screen.findByText('Guide.pdf');
+    fireEvent.press(screen.getByRole('button', { name: 'Source language: English' }));
+    fireEvent.press(screen.getByRole('radio', { name: 'Français' }));
+    await screen.findByRole('button', { name: 'Source language: Français' });
+    expect(native.setSettings).toHaveBeenLastCalledWith({ sourceLanguage: 'fr', targetLanguage: 'ru' });
+    fireEvent.press(screen.getByRole('button', { name: 'Target language: Русский' }));
+    fireEvent.press(screen.getByRole('radio', { name: 'Deutsch' }));
+    await screen.findByRole('button', { name: 'Target language: Deutsch' });
+    fireEvent.press(screen.getByRole('button', { name: 'Swap languages' }));
+    await screen.findByRole('button', { name: 'Source language: Deutsch' });
+    expect(native.setSettings).toHaveBeenLastCalledWith({ sourceLanguage: 'de', targetLanguage: 'fr' });
+    native.startJob.mockResolvedValue({ id: 'job-languages', documentId: doc.id, documentName: doc.name, modelId: 'model-q4', sourceLanguage: 'de', targetLanguage: 'fr', status: 'queued', stage: 'queued', completedPages: 0, totalPages: 1, currentPage: null });
+    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
+    await waitFor(() => expect(native.startJob).toHaveBeenCalledWith({ documentId: doc.id, modelId: 'model-q4', sourceLanguage: 'de', targetLanguage: 'fr' }));
+  });
+
+  it('keeps the old pair on save failure and applies a confirmed save even if refresh fails', async () => {
+    native.pickPdf.mockResolvedValue({ id: 'doc-pair', name: 'Pair.pdf', pageCount: 1, importedAt: 2 });
+    await renderApp(snapshot());
+    fireEvent.press(screen.getByRole('button', { name: 'Import a PDF' }));
+    await screen.findByText('Pair.pdf');
+    native.setSettings.mockRejectedValueOnce(new Error('Cannot save languages.'));
+    fireEvent.press(screen.getByRole('button', { name: 'Source language: English' }));
+    fireEvent.press(screen.getByRole('radio', { name: 'Français' }));
+    await screen.findByText('Cannot save languages.');
+    expect(screen.getByRole('button', { name: 'Source language: English' })).toBeOnTheScreen();
+    native.setSettings.mockResolvedValue({ theme: 'system', language: 'system', sourceLanguage: 'fr', targetLanguage: 'ru' });
+    native.bootstrap.mockRejectedValue(new Error('Refresh unavailable.'));
+    fireEvent.press(screen.getByRole('radio', { name: 'Français' }));
+    await screen.findByRole('button', { name: 'Source language: Français' });
+  });
+
+  it('does not present EN-RU sample grades as evidence for another pair', async () => {
+    const model = { ...snapshot().models[0], evaluation: { acceptableCases: 31, totalCases: 44 } };
+    await renderApp(snapshot({ models: [model], preferences: { theme: 'system', language: 'system', sourceLanguage: 'fr', targetLanguage: 'zh-Hans' } }));
+    fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
+    expect(screen.queryByText(/Meaning preserved in/)).toBeNull();
+    expect(screen.getByText(createTranslator('en')('modelPairUnrated'))).toBeOnTheScreen();
+  });
+
 });

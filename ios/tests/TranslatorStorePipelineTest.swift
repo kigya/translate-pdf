@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 // Compile-time stand-in for the native bridge referenced by TranslatorStore.page().
 // These tests never call page(), so no PDF/native behavior is simulated.
@@ -9,13 +10,43 @@ enum TranslateCoreBridge {
 @main
 enum TranslatorStorePipelineTest {
   static func main() throws {
+    try testTranslationLanguagesAndDefaults()
     try testInsertedJobValidatesAgainstPinnedInputs()
     try testLegacyPipelineRejectsResumeAndRetainsPageCheckpoint()
     try testCatalogExposesThreeUnverifiedProfilesAndResources()
     try testSelectedModelSettingIsPersistedAndValidated()
     try testUnsupportedGlossaryIsRejectedBeforeJobCreation()
+    try testPairScopedGlossaryAndGemmaValidation()
+    try testLegacyEnglishRussianGlossaryMigration()
     try testMissingJobCannotValidate()
-    print("PASS 6 TranslatorStore pipeline/catalog tests")
+    print("PASS 9 TranslatorStore pipeline/catalog/language tests")
+  }
+
+  private static func testTranslationLanguagesAndDefaults() throws {
+    try expect(TranslationLanguage.allCases.count == 6, "the app should expose exactly six translation languages")
+    let pairs = TranslationLanguage.allCases.flatMap { source in
+      TranslationLanguage.allCases.compactMap { target in source == target ? nil : "\(source.rawValue)>\(target.rawValue)" }
+    }
+    try expect(pairs.count == 30 && Set(pairs).count == 30, "the six languages should form all 30 distinct ordered pairs")
+    try expect(TranslationLanguage.zhHans.visionLocale == "zh-Hans", "Simplified Chinese OCR must use the Vision Simplified Chinese locale")
+    let fixture = try Fixture()
+    let defaults = try fixture.store.languagePreferences()
+    try expect(defaults.sourceLanguage == "en" && defaults.targetLanguage == "ru", "new installations should default to English to Russian")
+    try expect(try fixture.store.setting("source_language", fallback: "") == "en" && fixture.store.setting("target_language", fallback: "") == "ru", "bootstrap should persist the default language pair")
+    try fixture.store.setSetting("source_language", "invalid")
+    try fixture.store.setSetting("target_language", "fr")
+    let repaired = try fixture.store.languagePreferences()
+    try expect(repaired.sourceLanguage == "en" && repaired.targetLanguage == "ru", "an invalid stored pair should be repaired to English to Russian")
+    try expect(try fixture.store.setting("source_language", fallback: "") == "en" && fixture.store.setting("target_language", fallback: "") == "ru", "bootstrap should persist the repaired pair")
+    try fixture.store.setLanguagePreferences(sourceLanguage: "zh-Hans", targetLanguage: "fr")
+    let saved = try fixture.store.languagePreferences()
+    try expect(saved.sourceLanguage == "zh-Hans" && saved.targetLanguage == "fr", "the source and target selection should persist across store instances")
+    let reopened = try TranslatorStore(directory: fixture.directory).languagePreferences()
+    try expect(reopened.sourceLanguage == "zh-Hans" && reopened.targetLanguage == "fr", "the source and target selection should survive reopening the private store")
+    try expectThrows("identical source and target languages must be rejected") {
+      try fixture.store.setLanguagePreferences(sourceLanguage: "de", targetLanguage: "de")
+    }
+    try expectThrows("unknown language codes must be rejected") { _ = try TranslationLanguage.pair(source: "zh", target: "ru") }
   }
 
   private static func testInsertedJobValidatesAgainstPinnedInputs() throws {
@@ -24,8 +55,12 @@ enum TranslatorStorePipelineTest {
     let model = try ModelCatalog.get(ModelCatalog.recommendedId)
 
     try fixture.store.validateJobSnapshot("job-valid", model: model)
+    try expect(job["sourceLanguage"] as? String == "en" && job["targetLanguage"] as? String == "ru", "the job should freeze its selected language pair")
+    try fixture.store.setLanguagePreferences(sourceLanguage: "fr", targetLanguage: "de")
+    let frozen = try fixture.store.job("job-valid")
+    try expect(frozen?["sourceLanguage"] as? String == "en" && frozen?["targetLanguage"] as? String == "ru", "changing preferences must not alter an existing job's language pair")
     try expect(job["status"] as? String == "queued", "new job should start queued")
-    try expect((job["pipelineVersion"] as? Int64) == 3, "new job should pin pipeline version 3")
+    try expect((job["pipelineVersion"] as? Int64) == 4, "new job should pin pipeline version 4")
     try expect((job["modelRevision"] as? String) == model.revision, "new job should pin catalog revision")
     try expect((job["modelProfile"] as? String) == model.profile, "job snapshot should expose its frozen native profile")
     try expect((try fixture.store.query("SELECT model_profile FROM jobs WHERE id=?", ["job-valid"]).first?["model_profile"] as? String) == model.profile, "new job should pin the native prompt profile")
@@ -41,11 +76,13 @@ enum TranslatorStorePipelineTest {
     try fixture.store.validateJobSnapshot("job-stale", model: model)
 
     try fixture.store.savePage(jobId: "job-stale", index: 0, status: "translated", blocks: "[]")
-    try fixture.store.execute("UPDATE jobs SET pipeline_version=2 WHERE id=?", ["job-stale"])
+    try fixture.store.execute("UPDATE jobs SET pipeline_version=3 WHERE id=?", ["job-stale"])
 
-    try expectThrows("pipeline version 2 must reject checkpoint resume after the prompt/runtime change") {
+    try expectThrows("pipeline version 3 jobs must reject continuation after the prompt/runtime change") {
       try fixture.store.validateJobSnapshot("job-stale", model: model)
     }
+    try fixture.store.validateJobForExport("job-stale", model: model)
+    try expect(try fixture.store.job("job-stale") != nil, "legacy jobs should remain readable")
     let rows = try fixture.store.pageRows("job-stale")
     try expect(rows.count == 1, "the saved page row should remain after snapshot rejection")
     try expect((rows.first?["index"] as? Int64) == 0, "the retained checkpoint should refer to page zero")
@@ -89,23 +126,23 @@ enum TranslatorStorePipelineTest {
 
   private static func testSelectedModelSettingIsPersistedAndValidated() throws {
     let fixture = try Fixture()
-    let initial = try fixture.store.resolveSelectedModelId(recommended: ModelCatalog.balancedId, installedMemoryEligible: [])
+    let initial = try fixture.store.resolveSelectedModelId(recommended: ModelCatalog.balancedId, installedModelIds: [])
     try expect(initial == ModelCatalog.balancedId, "a missing selection should initialize from the current recommendation")
-    try expect(try fixture.store.resolveSelectedModelId(recommended: ModelCatalog.qualityId, installedMemoryEligible: [ModelCatalog.qualityId]) == ModelCatalog.balancedId, "bootstrap resource changes must not silently replace a valid saved choice")
+    try expect(try fixture.store.resolveSelectedModelId(recommended: ModelCatalog.qualityId, installedModelIds: [ModelCatalog.qualityId]) == ModelCatalog.balancedId, "bootstrap resource changes must not silently replace a valid saved choice")
     try expect(try fixture.store.setSelectedModelId(ModelCatalog.balancedId) == ModelCatalog.balancedId, "a catalog choice should be accepted")
-    try expect(try fixture.store.resolveSelectedModelId(recommended: ModelCatalog.compactId, installedMemoryEligible: []) == ModelCatalog.balancedId, "an explicit selection should remain pinned across bootstrap reads")
+    try expect(try fixture.store.resolveSelectedModelId(recommended: ModelCatalog.compactId, installedModelIds: []) == ModelCatalog.balancedId, "an explicit selection should remain pinned across bootstrap reads")
     try fixture.store.setSetting("selected_model_id", "removed-model")
-    try expect(try fixture.store.resolveSelectedModelId(recommended: ModelCatalog.compactId, installedMemoryEligible: [ModelCatalog.qualityId]) == ModelCatalog.qualityId, "an invalid saved selection should recover to an installed eligible model")
+    try expect(try fixture.store.resolveSelectedModelId(recommended: ModelCatalog.compactId, installedModelIds: [ModelCatalog.qualityId]) == ModelCatalog.qualityId, "an invalid saved selection should recover to the highest installed enabled model")
     try expect(try fixture.store.selectedModelId() == ModelCatalog.qualityId, "the repaired installed choice should be persisted")
     let eligibilityFixture = try Fixture()
-    try expect(try eligibilityFixture.store.resolveSelectedModelId(recommended: ModelCatalog.qualityId, installedMemoryEligible: [ModelCatalog.compactId]) == ModelCatalog.compactId, "an installed but ineligible higher tier must not displace the eligible installed compact model")
-    try expect(try eligibilityFixture.store.resolveSelectedModelId(recommended: ModelCatalog.qualityId, installedMemoryEligible: []) == ModelCatalog.compactId, "the eligible installed fallback remains pinned when the recommendation changes")
+    try expect(try eligibilityFixture.store.resolveSelectedModelId(recommended: ModelCatalog.compactId, installedModelIds: [ModelCatalog.compactId, ModelCatalog.qualityId]) == ModelCatalog.qualityId, "the highest installed enabled tier should seed the default even when its RAM estimate is ineligible")
+    try expect(try eligibilityFixture.store.resolveSelectedModelId(recommended: ModelCatalog.compactId, installedModelIds: []) == ModelCatalog.qualityId, "the installed fallback remains pinned when the recommendation changes")
     try expectThrows("unknown model IDs must be rejected") { _ = try fixture.store.setSelectedModelId("unknown") }
   }
 
   private static func testUnsupportedGlossaryIsRejectedBeforeJobCreation() throws {
     let fixture = try Fixture()
-    _ = try fixture.store.saveGlossary("term-1", source: "bearing", target: "подшипник")
+    _ = try fixture.store.saveGlossary("term-1", source: "bearing", target: "подшипник", sourceLanguage: "en", targetLanguage: "ru")
     try expectThrows("a non-glossary profile must reject a job with glossary text") {
       _ = try fixture.store.addJob(id: "job-no-glossary", input: [
         "documentId": "document-1",
@@ -115,6 +152,45 @@ enum TranslatorStorePipelineTest {
       ], pageCount: 1)
     }
     try expect(try fixture.store.job("job-no-glossary") == nil, "unsupported glossary must be rejected before inserting a job")
+  }
+
+  private static func testPairScopedGlossaryAndGemmaValidation() throws {
+    let fixture = try Fixture()
+    _ = try fixture.store.saveGlossary("term-fr-de", source: "roulement", target: "Lager", sourceLanguage: "fr", targetLanguage: "de")
+    _ = try fixture.store.saveGlossary("term-en-ru", source: "bearing", target: "подшипник", sourceLanguage: "en", targetLanguage: "ru")
+    try expect(try fixture.store.glossaryText(nil, sourceLanguage: "fr", targetLanguage: "de") == "roulement translates to Lager", "only glossary rows matching the requested pair should be included")
+    try expect(try fixture.store.glossaryText("term-fr-de", sourceLanguage: "en", targetLanguage: "ru").isEmpty, "a selected glossary row from a different pair should not apply")
+    try expectThrows("TranslateGemma must reject a matching glossary before inserting a job") {
+      _ = try fixture.store.addJob(id: "job-gemma-glossary", input: [
+        "documentId": "document-1", "modelId": ModelCatalog.balancedId,
+        "glossaryId": "term-fr-de", "sourceLanguage": "fr", "targetLanguage": "de",
+      ], pageCount: 1)
+    }
+    let noMatchingTerms = try fixture.store.addJob(id: "job-gemma-other-pair", input: [
+      "documentId": "document-1", "modelId": ModelCatalog.balancedId,
+      "glossaryId": "term-fr-de", "sourceLanguage": "en", "targetLanguage": "ru",
+    ], pageCount: 1)
+    try expect(noMatchingTerms["pipelineVersion"] as? Int64 == 4, "Gemma should allow a selected glossary with no entries for this pair")
+    try expect(try fixture.store.jobGlossaryText("job-gemma-other-pair").isEmpty, "the frozen job glossary should contain only the matching pair")
+  }
+
+  private static func testLegacyEnglishRussianGlossaryMigration() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("translator-legacy-glossary-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = directory.appendingPathComponent("translator-private.db")
+    var handle: OpaquePointer?
+    try expect(sqlite3_open(database.path, &handle) == SQLITE_OK, "the legacy SQLite fixture should open")
+    defer { if let handle { sqlite3_close(handle) } }
+    let schema = "CREATE TABLE glossary (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL, created_at INTEGER NOT NULL); INSERT INTO glossary VALUES ('legacy-term', 'bearing', 'подшипник', 1);"
+    try expect(sqlite3_exec(handle, schema, nil, nil, nil) == SQLITE_OK, "the legacy glossary table should be created")
+    if let handle { sqlite3_close(handle) }
+    handle = nil
+    let store = try TranslatorStore(directory: directory)
+    let migrated = try store.glossary().first { ($0["id"] as? String) == "legacy-term" }
+    try expect(migrated?["sourceLanguage"] as? String == "en" && migrated?["targetLanguage"] as? String == "ru", "legacy glossary entries should migrate to English to Russian")
+    try expect(try store.glossaryText("legacy-term", sourceLanguage: "en", targetLanguage: "ru") == "bearing translates to подшипник", "legacy terms should remain usable for the original English to Russian pair")
+    try expect(try store.glossaryText("legacy-term", sourceLanguage: "fr", targetLanguage: "de").isEmpty, "migrated terms must not leak into another language pair")
   }
 
   private static func testMissingJobCannotValidate() throws {

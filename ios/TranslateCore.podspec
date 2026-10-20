@@ -18,7 +18,10 @@ Pod::Spec.new do |spec|
   ]
   spec.dependency 'React-Core'
   spec.resource_bundles = {
-    'TranslatePDFFont' => ['../assets/fonts/NotoSans-Regular.ttf'],
+    'TranslatePDFFont' => [
+      'TranslateCore/Resources/fonts/NotoSans-Regular.ttf',
+      'TranslateCore/Resources/fonts/NotoSansSC-Regular.ttf'
+    ],
     'TranslatePDFLicenses' => ['TranslateCore/Licenses/*']
   }
   spec.vendored_frameworks = ['Frameworks/TranslateCore.xcframework', 'Frameworks/PDFium.xcframework']

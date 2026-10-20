@@ -123,14 +123,13 @@ internal data class MemoryRecommendation(
 internal object MemoryPolicy {
   private const val MIB = 1024L * 1024L
   private const val MIN_RESERVE = 512L * MIB
-  private const val GIB = 1024L * MIB
   private const val DISK_HEADROOM = 512L * MIB
-  private const val DEBUG_PROFILE_MINIMUM_HEADROOM = 256L * MIB
 
   data class Resources(
     val memoryEligible: Boolean, val diskEligible: Boolean, val requiredDiskBytes: Long,
     val reserveBytes: Long, val reason: String,
   ) {
+    /** Estimates remain visible in recommendation JSON; the job lifecycle does not gate on them. */
     val eligible: Boolean get() = memoryEligible && diskEligible
     fun applyTo(value: JSONObject): JSONObject = value
       .put("memoryEstimateEligible", memoryEligible).put("diskEstimateEligible", diskEligible)
@@ -148,7 +147,7 @@ internal object MemoryPolicy {
     val reason = when {
       !model.translationEnabled -> "unsupported"
       systemLowMemory -> "lowMemory"
-      !memory -> "memory"
+      !memory -> "memoryEstimate"
       availableDiskBytes < disk -> "disk"
       else -> "available"
     }
@@ -165,7 +164,7 @@ internal object MemoryPolicy {
     val resource = resources(selected, totalMemoryBytes, availableMemoryBytes, systemLowMemoryThresholdBytes, systemLowMemory, availableDiskBytes, downloadedBytes[selected.id] ?: 0)
     val reason = when(resource.reason) {
       "lowMemory" -> "Android reports low memory; wait until other apps release memory."
-      "memory" -> "Free memory is below this model's estimated process memory plus the system reserve."
+      "memoryEstimate" -> "The estimated model working set is above current free memory; the estimate is advisory and runtime may fail if memory is insufficient."
       "disk" -> "Free storage is below the remaining download plus the 512 MiB work reserve."
       "unsupported" -> "This model is unavailable in the current runtime."
       else -> "Fits the current resource estimate. Translation quality and whole-document memory remain experimental."
@@ -180,14 +179,6 @@ internal object MemoryPolicy {
   fun requiredDiskBytes(modelBytes: Long, downloadedBytes: Long = 0): Long =
     (modelBytes - downloadedBytes.coerceIn(0, modelBytes)).coerceAtLeast(0) + DISK_HEADROOM
 
-  /** Debug profiling may bypass only the unvalidated full-pipeline envelope. */
-  fun permitsBoundedDebugProfile(
-    availableMemoryBytes: Long,
-    reserveBytes: Long,
-    systemLowMemory: Boolean,
-    modelBytes: Long,
-  ): Boolean = !systemLowMemory && availableMemoryBytes >=
-    reserveBytes + modelBytes + DEBUG_PROFILE_MINIMUM_HEADROOM
 }
 
 internal object ForegroundNotificationPolicy {

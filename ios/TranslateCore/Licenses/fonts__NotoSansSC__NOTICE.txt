@@ -1,0 +1,4 @@
+Noto Sans SC static Regular instance, weight 400.
+Derived with fonttools 4.60.1 (recalcTimestamp=False) from google/fonts commit 47d54ca1ebb14fd864695f1d39dc734f39017c33, ofl/notosanssc/NotoSansSC[wght].ttf.
+Copyright and SIL Open Font License 1.1 are retained in OFL.txt.
+Source and derived SHA-256 values are recorded in assets/fonts/NotoSansSC-SOURCE.json.

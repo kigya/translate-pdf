@@ -76,7 +76,7 @@ export function OnboardingScreen({ colors, t, initialState, persist, onComplete,
   const smallTitle = width < 360 ? 27 : 31;
   return <View testID="onboarding-root" style={{ flex: 1, backgroundColor: colors.background, direction, paddingTop: insets.top + 5, paddingBottom: Math.max(10, insets.bottom), paddingLeft: insets.left, paddingRight: insets.right }} {...responder.panHandlers}>
     <View style={{ width: '100%', maxWidth: 1000, minHeight: 56, paddingHorizontal: 22, flexDirection: 'row', alignItems: 'center', alignSelf: 'center', direction }}>
-      <View style={{ width: 36, height: 38, justifyContent: 'center' }}><AppIcon size={34} color={colors.accent} active={false} background="transparent" /></View>
+      <View style={{ width: 36, height: 38, justifyContent: 'center' }}><AppIcon size={34} color="#FFFFFF" active={false} background={colors.accent} /></View>
       <Text style={{ color: colors.text, marginStart: 9, fontSize: 17, fontWeight: '800', letterSpacing: -0.35 }}>{t('appName')}</Text>
       <View style={{ flex: 1 }} />
       <Pressable accessibilityRole="button" accessibilityLabel={t('skip')} onPress={() => replay ? exitReplay() : void finish()} disabled={saving} hitSlop={12} style={{ minWidth: 64, minHeight: 48, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: colors.accent, fontSize: 14, fontWeight: '700' }}>{t('skip')}</Text></Pressable>

@@ -17,9 +17,14 @@ enum TranslatorStorePipelineTest {
     try testSelectedModelSettingIsPersistedAndValidated()
     try testUnsupportedGlossaryIsRejectedBeforeJobCreation()
     try testPairScopedGlossaryAndGemmaValidation()
+    try testGlossaryOptOutFreezesEmptySnapshotAndLegacyMigrationIsVersionBounded()
     try testLegacyEnglishRussianGlossaryMigration()
     try testMissingJobCannotValidate()
-    print("PASS 9 TranslatorStore pipeline/catalog/language tests")
+    try testActiveTransferProgressIsNotReportedAsDiskStorage()
+    try testStaleDownloadCallbacksCannotMutateResumedOrDeletedModels()
+    try testDownloadProgressCommitCannotRaceInvalidation()
+    try testOperationsWaitForBackgroundTaskRestoration()
+    print("PASS 14 TranslatorStore pipeline/catalog/language tests")
   }
 
   private static func testTranslationLanguagesAndDefaults() throws {
@@ -174,6 +179,30 @@ enum TranslatorStorePipelineTest {
     try expect(try fixture.store.jobGlossaryText("job-gemma-other-pair").isEmpty, "the frozen job glossary should contain only the matching pair")
   }
 
+  private static func testGlossaryOptOutFreezesEmptySnapshotAndLegacyMigrationIsVersionBounded() throws {
+    let fixture = try Fixture()
+    _ = try fixture.store.saveGlossary("term-en-ru", source: "bearing", target: "подшипник", sourceLanguage: "en", targetLanguage: "ru")
+    let defaultJob = try fixture.store.addJob(id: "job-default-glossary", input: [
+      "documentId": "document-1", "modelId": ModelCatalog.recommendedId,
+      "sourceLanguage": "en", "targetLanguage": "ru", "glossaryId": "term-en-ru",
+    ], pageCount: 1)
+    try expect(try fixture.store.jobGlossaryText("job-default-glossary") == "bearing translates to подшипник", "omitted useGlossary must keep the backward-compatible true default")
+    try expect(defaultJob["pipelineVersion"] as? Int64 == 4, "new jobs retain pipeline version 4")
+
+    _ = try fixture.store.addJob(id: "job-opt-out", input: [
+      "documentId": "document-1", "modelId": ModelCatalog.recommendedId,
+      "sourceLanguage": "en", "targetLanguage": "ru", "glossaryId": "term-en-ru", "useGlossary": false,
+    ], pageCount: 1)
+    try expect(try fixture.store.jobGlossaryText("job-opt-out").isEmpty, "explicit glossary opt-out must freeze an empty snapshot")
+    try fixture.store.execute("UPDATE jobs SET glossary_snapshot='' WHERE id='job-opt-out'")
+    _ = try TranslatorStore(directory: fixture.directory)
+    try expect(try fixture.store.jobGlossaryText("job-opt-out").isEmpty, "opening a v4 store must never refill an intentionally empty snapshot")
+
+    try fixture.store.execute("UPDATE jobs SET pipeline_version=3,glossary_snapshot='' WHERE id='job-default-glossary'")
+    let migratedStore = try TranslatorStore(directory: fixture.directory)
+    try expect(try migratedStore.jobGlossaryText("job-default-glossary") == "bearing translates to подшипник", "only a pre-v4 legacy job with an empty snapshot may be populated during migration")
+  }
+
   private static func testLegacyEnglishRussianGlossaryMigration() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("translator-legacy-glossary-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -199,6 +228,70 @@ enum TranslatorStorePipelineTest {
     try expectThrows("a missing job must not validate") {
       try fixture.store.validateJobSnapshot("missing", model: model)
     }
+  }
+
+  private static func testStaleDownloadCallbacksCannotMutateResumedOrDeletedModels() throws {
+    let firstTask: UInt64 = 1
+    let pauseGeneration: UInt64 = 2
+    let resumedTask: UInt64 = 3
+    try expect(ModelDownloadCallbackGuard.accepts(taskGeneration:firstTask,currentGeneration:firstTask,deleting:false), "the current download callback should be accepted")
+    try expect(!ModelDownloadCallbackGuard.accepts(taskGeneration:firstTask,currentGeneration:pauseGeneration,deleting:false), "a canceled task completion must not overwrite the pause state")
+    try expect(!ModelDownloadCallbackGuard.accepts(taskGeneration:pauseGeneration,currentGeneration:resumedTask,deleting:false), "a delayed pause callback must not overwrite a resumed download")
+    try expect(!ModelDownloadCallbackGuard.accepts(taskGeneration:firstTask,currentGeneration:firstTask,deleting:true), "callbacks must not mutate model state while deletion is tombstoned")
+    try expect(ModelDownloadCallbackGuard.accepts(taskGeneration:resumedTask,currentGeneration:resumedTask,deleting:false), "the resumed task callback should remain accepted")
+  }
+
+  private static func testDownloadProgressCommitCannotRaceInvalidation() throws {
+    let lock=NSLock()
+    var generation:UInt64=1
+    var deleting=false
+    var commits=0
+    let entered=DispatchSemaphore(value:0),release=DispatchSemaphore(value:0),invalidated=DispatchSemaphore(value:0)
+    let callbackDone=DispatchSemaphore(value:0)
+    DispatchQueue.global().async {
+      _ = ModelDownloadCallbackGuard.performIfCurrent(lock:lock,taskGeneration:{1},currentGeneration:{generation},isDeleting:{deleting}) {
+        entered.signal()
+        _ = release.wait(timeout:.now()+2)
+        commits += 1
+      }
+      callbackDone.signal()
+    }
+    try expect(entered.wait(timeout:.now()+1) == .success, "the progress callback should enter its guarded commit")
+    DispatchQueue.global().async {
+      lock.lock();generation=2;deleting=true;lock.unlock()
+      invalidated.signal()
+    }
+    try expect(invalidated.wait(timeout:.now()+0.02) == .timedOut, "pause/delete invalidation must wait until the guarded progress write finishes")
+    release.signal()
+    try expect(callbackDone.wait(timeout:.now()+1) == .success, "the in-flight progress callback should finish")
+    try expect(invalidated.wait(timeout:.now()+1) == .success, "the invalidation should proceed immediately after the progress transaction")
+    let accepted=ModelDownloadCallbackGuard.performIfCurrent(lock:lock,taskGeneration:{1},currentGeneration:{generation},isDeleting:{deleting}) { commits += 1 }
+    try expect(!accepted && commits == 1, "a stale progress callback must not commit after pause or deletion invalidates its generation")
+  }
+
+  private static func testOperationsWaitForBackgroundTaskRestoration() throws {
+    let barrier=ModelDownloadRestorationBarrier()
+    var sideEffects=0
+    var failedClosed=false
+    do { try barrier.wait(timeout:0.01);sideEffects += 1 } catch { failedClosed=true }
+    try expect(failedClosed && sideEffects == 0, "start/pause/delete preflight must fail closed while restored tasks are unresolved")
+    barrier.complete()
+    barrier.complete()
+    var proceeded=false
+    do { try barrier.wait(timeout:0.1);sideEffects += 1;proceeded=true } catch {}
+    try expect(proceeded && sideEffects == 1, "operations should proceed after task restoration completes exactly once")
+  }
+
+  private static func testActiveTransferProgressIsNotReportedAsDiskStorage() throws {
+    let fixture=try Fixture()
+    let model=try ModelCatalog.get(ModelCatalog.compactId)
+    try fixture.store.updateModel(model.id,status:"downloading",bytes:3_145_728)
+    let snapshot=try fixture.store.models(totalMemory:8_589_934_592,availableMemory:4_294_967_296,availableDisk:100_000_000_000,systemLowMemory:false).first{$0["id"] as? String == model.id}
+    try expect(snapshot?["activeTransferBytes"] as? Int64 == 3_145_728, "in-progress URLSession transfer bytes should be reported as transfer progress")
+    try expect(snapshot?["storedBytes"] as? Int64 == 0, "URLSession's private temporary download file must not be claimed as measured app storage")
+    try fixture.store.updateModel(model.id,status:"paused",bytes:3_145_728)
+    let paused=try fixture.store.models(totalMemory:8_589_934_592,availableMemory:4_294_967_296,availableDisk:100_000_000_000,systemLowMemory:false).first{$0["id"] as? String == model.id}
+    try expect((paused?["activeTransferBytes"] as? NSNumber)?.int64Value == 0, "paused transfer progress should not be labeled active")
   }
 
   private static func expect(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {

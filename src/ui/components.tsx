@@ -1,6 +1,7 @@
 import React, { ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, TextInputProps, View, ViewStyle } from 'react-native';
 import { Palette } from './theme';
+import { Icon } from './Controls';
 
 export type LayoutDirection = 'ltr' | 'rtl';
 
@@ -11,7 +12,7 @@ export function Screen({ children, colors, maxWidth = 940, direction = 'ltr' }: 
 export function Header({ title, subtitle, colors, onBack, right, backLabel = 'Back', direction = 'ltr' }: { title: string; subtitle?: string; colors: Palette; onBack?: () => void; right?: ReactNode; backLabel?: string; direction?: LayoutDirection }) {
   const textDirection = { writingDirection: direction, textAlign: direction === 'rtl' ? 'right' as const : 'left' as const };
   return <View style={[styles.header, { borderBottomColor: colors.border, direction }]}>
-    {onBack ? <Pressable accessibilityRole="button" accessibilityLabel={backLabel} onPress={onBack} hitSlop={10} style={styles.back}><Text style={{ color: colors.accent, fontSize: 22 }}>{direction === 'rtl' ? '›' : '‹'}</Text></Pressable> : null}
+    {onBack ? <Pressable accessibilityRole="button" accessibilityLabel={backLabel} onPress={onBack} style={styles.back}><Icon name="arrow" size={28} color={colors.accent} rotation={direction === 'rtl' ? 0 : 180}/></Pressable> : null}
     <View style={{ flex: 1 }}><Text accessibilityRole="header" style={[styles.headerTitle, { color: colors.text }, textDirection]}>{title}</Text>{subtitle ? <Text style={[{ color: colors.muted, marginTop: 3, fontSize: 13 }, textDirection]}>{subtitle}</Text> : null}</View>{right}
   </View>;
 }
@@ -42,7 +43,7 @@ export function Button({ label, onPress, colors, variant = 'primary', disabled, 
 }
 
 export function Field({ label, colors, value, onChangeText, placeholder, ...props }: TextInputProps & { label: string; colors: Palette }) {
-  return <View style={{ gap: 7 }}><Text style={{ color: colors.muted, fontSize: 12, fontWeight: '700' }}>{label}</Text><TextInput value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor={colors.muted} selectionColor={colors.accent} style={[styles.field, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]} {...props} /></View>;
+  return <View style={{ gap: 7 }}><Text style={{ color: colors.muted, fontSize: 12, fontWeight: '700' }}>{label}</Text><TextInput accessibilityLabel={label} value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor={colors.muted} selectionColor={colors.accent} style={[styles.field, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]} {...props} /></View>;
 }
 
 export function Notice({ text, colors, retry, retryLabel = 'Try again', tone = 'error' }: { text?: string; colors: Palette; retry?: () => void; retryLabel?: string; tone?: 'error' | 'info' }) {
@@ -60,7 +61,7 @@ export function SectionTitle({ children, colors }: { children: ReactNode; colors
 
 const styles = StyleSheet.create({
   header: { minHeight: 76, paddingHorizontal: 22, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 12 },
-  headerTitle: { fontSize: 20, fontWeight: '700', letterSpacing: -0.35 }, back: { width: 36, height: 42, justifyContent: 'center' },
+  headerTitle: { fontSize: 20, fontWeight: '700', letterSpacing: -0.35 }, back: { width: 48, height: 48, justifyContent: 'center', alignItems: 'center' },
   card: { borderWidth: 1, borderRadius: 22, padding: 18, gap: 12, shadowColor: '#000', shadowOpacity: 0.035, shadowRadius: 14, shadowOffset: { width: 0, height: 5 }, elevation: 1 },
   button: { minHeight: 48, paddingHorizontal: 16, paddingVertical: 12, justifyContent: 'center', borderRadius: 15 },
   field: { borderWidth: 1, borderRadius: 13, paddingHorizontal: 14, paddingVertical: 12, minHeight: 48, fontSize: 16 },

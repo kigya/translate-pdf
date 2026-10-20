@@ -31,7 +31,7 @@ describe('direction-aware layout primitives', () => {
     const onBack = jest.fn();
     render(<Header title="Settings" subtitle="Local preferences" colors={palettes.light} onBack={onBack} direction="rtl" />);
 
-    expect(screen.getByText('›')).toBeOnTheScreen();
+    expect(screen.getByRole('button', {name:'Back'})).toHaveStyle({width:48,height:48});
     expect(screen.getByRole('header')).toHaveStyle({ writingDirection: 'rtl', textAlign: 'right' });
   });
 
@@ -40,7 +40,7 @@ describe('direction-aware layout primitives', () => {
     render(<Header title="Library" subtitle="Recent documents" colors={palettes.light} onBack={onBack} right={<Text>More</Text>} />);
     fireEvent.press(screen.getByRole('button', { name: 'Back' }));
     expect(onBack).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('‹')).toBeOnTheScreen();
+    expect(screen.getByRole('button', {name:'Back'})).toHaveStyle({width:48,height:48});
     expect(screen.getByText('More')).toBeOnTheScreen();
     expect(screen.getByRole('header')).toHaveStyle({ writingDirection: 'ltr', textAlign: 'left' });
   });
@@ -59,7 +59,8 @@ describe('direction-aware layout primitives', () => {
   it('supports editable labeled fields and preserves standard text-input props', () => {
     const onChangeText = jest.fn();
     render(<Field label="English term" value="coolant" onChangeText={onChangeText} placeholder="Type a term" colors={palettes.light} autoCapitalize="none" />);
-    const input = screen.getByDisplayValue('coolant');
+    const input = screen.getByLabelText('English term');
+    expect(input).toHaveDisplayValue('coolant');
     expect(screen.getByText('English term')).toBeOnTheScreen();
     fireEvent.changeText(input, 'reservoir');
     expect(onChangeText).toHaveBeenCalledWith('reservoir');

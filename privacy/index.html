@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Privacy Policy for TranslatePDF by KIGYA.">
+  <title>TranslatePDF Privacy Policy</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.65 system-ui, sans-serif; }
+    body { max-width: 48rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+    h1, h2 { line-height: 1.2; }
+    h1 { margin-bottom: .3rem; }
+    .updated { color: #666; }
+    a { color: #b21e2b; }
+    @media (prefers-color-scheme: dark) { .updated { color: #bbb; } a { color: #ff8f99; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>TranslatePDF Privacy Policy</h1>
+    <p class="updated">Effective date: October 20, 2026</p>
+
+    <p>TranslatePDF is an offline-first PDF translation app developed by KIGYA. This policy describes the prototype's current data handling. It does not claim legal certification or replace the disclosures required for a particular store release.</p>
+
+    <h2>Information the app stores on your device</h2>
+    <p>When you use the app, it stores the PDFs you choose, translated pages and job checkpoints, dictionary entries, language and appearance preferences, and downloaded model files in app storage. The app reads local storage and memory availability to show storage information and help decide whether a model can run. Translation and OCR are performed on the device; PDF contents, translations, and dictionary entries are not sent to a translation server.</p>
+
+    <h2>Network connections</h2>
+    <p>The app needs an internet connection to download a model you choose. Model files are hosted on Hugging Face, fetched over HTTPS, and checked against the expected file size and SHA-256 hash before use. A download request can expose your IP address, the requested model file, request time, and ordinary connection metadata to Hugging Face and the network providers involved in delivering the file. Those providers handle network requests under their own policies. The app does not upload your PDF or use a remote translation service.</p>
+    <p>Opening this policy on GitHub Pages or following a model-license link opens an external website in your browser. The website host and your browser may process ordinary connection metadata under their own policies. The app does not add document, user, or device identifiers to those links.</p>
+    <p>The app does not include an account service, advertising, analytics, or app telemetry in the current implementation.</p>
+
+    <h2>Notifications and exports</h2>
+    <p>The app may ask for operating-system notification permission when you start a download or translation. On Android, a foreground-service notification can show work progress. iOS may suspend longer work when its available background time ends; an authorized local notification can announce a completed, verified model download. Continuous translation-progress notifications are not scheduled on iOS. Permission is optional. Denying it does not send your document elsewhere.</p>
+    <p>If you export or share a translated PDF, the operating system passes the file to the destination you select. That destination may store, process, or share the file under its own policy. Review the destination before sharing.</p>
+
+    <h2>Storage, retention, and deletion</h2>
+    <p>Files remain in the app's private storage until removed by an available app control or the operating system. The app lets you remove downloaded model files; doing so keeps source PDFs and saved translation work. The current app interface does not provide a control to delete source documents from the library. Removing a translation job is not the same as deleting its source document.</p>
+    <p>Uninstalling the app removes its app-private data according to the platform. Android automatic app backup is disabled. On iOS, downloaded models and translated exports are marked to be excluded from backup; this policy does not make a broader claim about backups of every app file or device backup settings.</p>
+
+    <h2>Permissions and device processing</h2>
+    <p>The app stores documents and processing records in its private app storage and uses the system document picker to access a PDF you select. It reads device memory and storage measurements locally; it does not transmit those measurements in the current implementation. Downloaded model files and translation work remain on the device unless you choose to share an export.</p>
+
+    <h2>Children</h2>
+    <p>TranslatePDF is a general-purpose document tool and is not designed specifically for children. The prototype has no account creation or age-verification flow.</p>
+
+    <h2>Changes and contact</h2>
+    <p>Data handling may change as the app is developed. This page will be updated when a material change affects the described practices. For privacy questions, contact <a href="mailto:kirillborichevskiy@gmail.com">kirillborichevskiy@gmail.com</a>.</p>
+    <p>Developer: KIGYA. App: TranslatePDF.</p>
+  </main>
+</body>
+</html>

@@ -1,6 +1,7 @@
 package dev.kigya.translatepdf
 
 import android.app.Activity
+import android.app.NotificationManager
 import android.app.LocaleManager
 import android.Manifest
 import android.content.ActivityNotFoundException
@@ -15,6 +16,7 @@ import android.os.StatFs
 import android.provider.OpenableColumns
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
+import androidx.core.app.NotificationManagerCompat
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.ActivityEventListener
 import com.facebook.react.bridge.NativeModule
@@ -22,6 +24,8 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.modules.core.PermissionAwareActivity
+import com.facebook.react.modules.core.PermissionListener
 import com.facebook.react.uimanager.ViewManager
 import org.json.JSONArray
 import org.json.JSONObject
@@ -45,6 +49,7 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
   @Volatile private var pendingExport: Promise? = null
   @Volatile private var pendingExportFile: File? = null
   @Volatile private var pendingExportId: String? = null
+  @Volatile private var pendingNotificationPermission: Promise? = null
   private val thumbnailDirectory = File(context.cacheDir, "thumbnails").apply { mkdirs() }
   private val translatedPageDirectory = File(context.cacheDir, "translated-page-work").apply { mkdirs() }
 
@@ -62,6 +67,8 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     val stat = StatFs(context.filesDir.absolutePath)
     val availableDisk = stat.availableBlocksLong * stat.blockSizeLong
     val downloaded = ModelCatalog.models.associate { it.id to if (downloader.isInstalled(it.id)) it.bytes else downloader.partialLength(it.id) }
+    val installedModelBytes = ModelCatalog.models.sumOf { downloader.installedLength(it.id) }
+    val partialDownloadBytes = ModelCatalog.models.sumOf { downloader.partialLength(it.id) }
     val recommendation = MemoryPolicy.recommend(info.totalMem, info.availMem, info.threshold, info.lowMemory, availableDisk, downloaded)
     val initialSelection = ModelCatalog.models.asReversed().firstOrNull { downloader.isInstalled(it.id) }?.id ?: recommendation.recommendedModelId
     val selectedModelId = database.selectedModelId(initialSelection)
@@ -70,6 +77,10 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     for (index in 0 until models.length()) {
       val value = models.getJSONObject(index)
       val model = ModelCatalog.get(value.getString("id"))
+      val installedBytes = downloader.installedLength(model.id)
+      val partialBytes = downloader.partialLength(model.id)
+      value.put("storedBytes", installedBytes + partialBytes)
+        .put("partialBytes", partialBytes)
       MemoryPolicy.resources(model, info.totalMem, info.availMem, info.threshold, info.lowMemory, availableDisk, downloaded[model.id] ?: 0).applyTo(value)
     }
     JSONObject()
@@ -93,13 +104,18 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
         .put("resourceEstimateEligible", recommendation.resourceEstimateEligible)
         .put("recommendedModelAvailable", recommendation.recommendationAvailable)
         .put("recommendationReason", recommendation.reason)
-        .put("recommendationVerified", false))
+        .put("recommendationVerified", false)
+        .put("storage", JSONObject()
+          .put("installedModelBytes", installedModelBytes)
+          .put("partialDownloadBytes", partialDownloadBytes)
+          .put("freeDiskBytes", availableDisk)))
       .put("preferences", JSONObject()
         .put("theme", database.setting("theme", "system"))
         .put("language", database.setting("language", "system"))
         .put("sourceLanguage", selectedPair.first)
         .put("targetLanguage", selectedPair.second)
-        .put("selectedModelId", selectedModelId))
+        .put("selectedModelId", selectedModelId)
+        .put("notificationExplanationShown", database.setting("notificationExplanationShown", "false").toBoolean()))
       .put("onboarding", JSONObject()
         .put("version", database.setting("onboarding_version", "1").toIntOrNull() ?: 1)
         .put("page", database.setting("onboarding_page", "0").toIntOrNull() ?: 0)
@@ -108,6 +124,7 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
       .put("documents", database.documentsJson())
       .put("jobs", database.jobsJson())
       .put("glossary", database.glossaryJson())
+      .put("notifications", notificationPermissionSnapshot())
       .toString()
   }
 
@@ -142,11 +159,25 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     }
     require(model.translationEnabled) { "This model is unavailable in the current runtime." }
     if (!hasStorageFor((model.bytes - downloader.partialLength(modelId)).coerceAtLeast(0))) throw IllegalStateException("Not enough free storage for the remaining download and work reserve.")
-    database.modelStatus(modelId, "downloading", downloader.partialLength(modelId))
-    val intent = Intent(context, PdfTranslationService::class.java)
-      .setAction(PdfTranslationService.ACTION_START_MODEL)
-      .putExtra(PdfTranslationService.EXTRA_MODEL_ID, modelId)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+    val transferToken = downloader.reserve(modelId)
+    try {
+      downloader.withReservation(modelId, transferToken) {
+        database.modelStatus(modelId, "downloading", downloader.partialLength(modelId))
+        val intent = Intent(context, PdfTranslationService::class.java)
+          .setAction(PdfTranslationService.ACTION_START_MODEL)
+          .putExtra(PdfTranslationService.EXTRA_MODEL_ID, modelId)
+          .putExtra(PdfTranslationService.EXTRA_MODEL_TRANSFER_TOKEN, transferToken)
+        try {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+        } catch (error: Exception) {
+          database.modelStatus(modelId, if (downloader.partialLength(modelId) > 0) "paused" else "not_downloaded", downloader.partialLength(modelId))
+          throw error
+        }
+      }
+    } catch (error: Exception) {
+      downloader.releaseReservation(modelId, transferToken)
+      throw error
+    }
     model.toJson("downloading", downloader.partialLength(modelId)).toString()
   }
 
@@ -161,13 +192,116 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
 
   @ReactMethod
   fun deleteModel(modelId: String, promise: Promise) = runAsync(promise, "MODEL_DELETE_FAILED") {
-    val definition = ModelCatalog.get(modelId)
+    ModelCatalog.get(modelId)
     require(!database.modelInUse(modelId)) { "Pause or cancel the active job before deleting its model." }
     downloader.cancel(modelId)
     downloader.fileFor(modelId).delete()
     database.deleteModel(modelId)
     null
   }
+
+  @ReactMethod
+  fun requestNotificationPermission(promise: Promise) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+      promise.resolve(notificationPermissionSnapshot().toString())
+      return
+    }
+    val alreadyGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+      android.content.pm.PackageManager.PERMISSION_GRANTED
+    if (alreadyGranted || database.setting(SETTING_NOTIFICATION_REQUESTED, "false").toBoolean()) {
+      promise.resolve(notificationPermissionSnapshot().toString())
+      return
+    }
+    if (pendingNotificationPermission != null) {
+      promise.reject("NOTIFICATION_PERMISSION_BUSY", "A notification permission request is already open.")
+      return
+    }
+    context.runOnUiQueueThread {
+      if (pendingNotificationPermission != null) {
+        promise.reject("NOTIFICATION_PERMISSION_BUSY", "A notification permission request is already open.")
+        return@runOnUiQueueThread
+      }
+      if (database.setting(SETTING_NOTIFICATION_REQUESTED, "false").toBoolean()) {
+        promise.resolve(notificationPermissionSnapshot().toString())
+        return@runOnUiQueueThread
+      }
+      val activity = context.currentActivity
+      if (activity == null || activity.isFinishing ||
+        (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed)) {
+        promise.reject("NOTIFICATION_PERMISSION_UNAVAILABLE", "Open the app before requesting notification permission.")
+        return@runOnUiQueueThread
+      }
+      val permissionActivity = activity as? PermissionAwareActivity
+      if (permissionActivity == null) {
+        promise.reject("NOTIFICATION_PERMISSION_UNAVAILABLE", "This screen cannot request Android permissions.")
+        return@runOnUiQueueThread
+      }
+      if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED) {
+        promise.resolve(notificationPermissionSnapshot().toString())
+        return@runOnUiQueueThread
+      }
+      pendingNotificationPermission = promise
+      database.setSetting(SETTING_NOTIFICATION_REQUESTED, "true")
+      try {
+        permissionActivity.requestPermissions(
+          arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS,
+          PermissionListener { requestCode, _, _ ->
+            if (requestCode != REQUEST_POST_NOTIFICATIONS) return@PermissionListener false
+            val pending = pendingNotificationPermission.also { pendingNotificationPermission = null }
+            pending?.resolve(notificationPermissionSnapshot().toString())
+            true
+          },
+        )
+      } catch (error: Exception) {
+        pendingNotificationPermission = null
+        database.setSetting(SETTING_NOTIFICATION_REQUESTED, "false")
+        promise.reject("NOTIFICATION_PERMISSION_UNAVAILABLE", "Android could not open the notification permission prompt.", error)
+      }
+    }
+  }
+
+  @ReactMethod
+  fun getLicenseNotices(promise: Promise) = runAsync(promise, "LICENSES_READ_FAILED") {
+    JSONArray().also { notices ->
+      licensePaths().forEach { path ->
+        val readableTitle = path.removeSuffix(".txt").removeSuffix(".md")
+          .replace("/", " · ").replace("__", " · ").replace('-', ' ')
+        notices.put(JSONObject().put("id", path).put("title", readableTitle))
+      }
+    }.toString()
+  }
+
+  @ReactMethod
+  fun getLicenseNotice(id: String, promise: Promise) = runAsync(promise, "LICENSE_READ_FAILED") {
+    val valid = licensePaths().contains(id)
+    require(valid) { "The requested license notice is not available." }
+    context.assets.open("licenses/$id").bufferedReader().use { it.readText() }
+  }
+
+  private fun notificationPermissionSnapshot(): JSONObject {
+    val requestedBefore = database.setting(SETTING_NOTIFICATION_REQUESTED, "false").toBoolean()
+    val channelDisabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+      context.getSystemService(NotificationManager::class.java).getNotificationChannel(PdfTranslationService.CHANNEL_ID)?.importance == NotificationManager.IMPORTANCE_NONE
+    val permissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+      ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    val status = when {
+      channelDisabled || (permissionGranted && !NotificationManagerCompat.from(context).areNotificationsEnabled()) -> "denied"
+      Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU -> "not_required"
+      ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED -> "granted"
+      requestedBefore -> "denied"
+      else -> "not_determined"
+    }
+    return JSONObject().put("status", status).put("requestedBefore", requestedBefore)
+      .put("canRequest", status == "not_determined" && !requestedBefore)
+  }
+
+  private fun licensePaths(directory: String = "licenses"): List<String> =
+    context.assets.list(directory).orEmpty().flatMap { name ->
+      val path = "$directory/$name"
+      val children = context.assets.list(path).orEmpty()
+      if (children.isEmpty()) listOf(path.removePrefix("licenses/")) else licensePaths(path)
+    }.filter(String::isNotBlank).sorted()
 
   @ReactMethod
   fun startJob(inputJson: String, promise: Promise) = runAsync(promise, "JOB_START_FAILED") { synchronized(jobStartLock) {
@@ -185,7 +319,8 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     LanguagePair.requireValid(pair.first, pair.second)
     val definition = ModelCatalog.get(modelId)
     require(definition.translationEnabled) { "This model is unavailable in the current runtime." }
-    require(definition.supportsGlossary || database.glossaryText(null, pair.first, pair.second).isBlank()) { "This model uses direct translation without a glossary. Choose Hy-MT2 to use saved terms." }
+    val useGlossary = input.optBoolean("useGlossary", true)
+    require(!useGlossary || definition.supportsGlossary || database.glossaryText(null, pair.first, pair.second).isBlank()) { "This model uses direct translation without a glossary. Choose Hy-MT2 to use saved terms." }
     if (!downloader.isInstalled(modelId)) throw IllegalStateException("Download and verify the selected model first.")
     val pageCount = database.documentInfo(documentId)?.second ?: throw IllegalArgumentException("The source document could not be inspected.")
     val id = UUID.randomUUID().toString()
@@ -199,24 +334,8 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
       database.updateJob(id, status = "failed", error = "Android did not allow the foreground translation service to start.")
       throw error
     }
-    requestNotificationPermissionAfterExplicitStart()
     job.toString()
   } }
-
-  /** Request is non-blocking: enqueueing and foreground processing never depend on the user's choice. */
-  private fun requestNotificationPermissionAfterExplicitStart() {
-    val alreadyGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-      android.content.pm.PackageManager.PERMISSION_GRANTED
-    if (!ForegroundNotificationPolicy.shouldRequestPermission(Build.VERSION.SDK_INT, alreadyGranted)) return
-    context.runOnUiQueueThread {
-      val activity = context.currentActivity ?: return@runOnUiQueueThread
-      if (activity.isFinishing || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed)) return@runOnUiQueueThread
-      val permissionNowGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-        android.content.pm.PackageManager.PERMISSION_GRANTED
-      if (!ForegroundNotificationPolicy.shouldRequestPermission(Build.VERSION.SDK_INT, permissionNowGranted)) return@runOnUiQueueThread
-      runCatching { activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS) }
-    }
-  }
 
   @ReactMethod
   fun pauseJob(jobId: String, promise: Promise) = runAsync(promise, "JOB_PAUSE_FAILED") {
@@ -411,6 +530,7 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
   @ReactMethod
   fun setSettings(settingsJson: String, promise: Promise) = runAsync(promise, "SETTINGS_SAVE_FAILED") {
     val settings = JSONObject(settingsJson)
+    if (settings.has("notificationExplanationShown")) database.setSetting("notificationExplanationShown", settings.getBoolean("notificationExplanationShown").toString())
     if (settings.has("theme")) {
       val theme = settings.getString("theme")
       require(theme in setOf("system", "light", "dark")) { "Theme selection is invalid." }
@@ -438,7 +558,8 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     database.setSetting("targetLanguage", targetLanguage)
     JSONObject().put("theme", database.setting("theme", "system")).put("language", database.setting("language", "system"))
       .put("sourceLanguage", sourceLanguage).put("targetLanguage", targetLanguage)
-      .put("selectedModelId", database.setting("selectedModelId", ModelCatalog.RECOMMENDED_ID)).toString()
+      .put("selectedModelId", database.setting("selectedModelId", ModelCatalog.RECOMMENDED_ID))
+      .put("notificationExplanationShown", database.setting("notificationExplanationShown", "false").toBoolean()).toString()
   }
 
   @ReactMethod
@@ -647,6 +768,7 @@ internal class PdfTranslatorModule(private val context: ReactApplicationContext)
     private const val REQUEST_IMPORT = 6101
     private const val REQUEST_EXPORT = 6102
     private const val REQUEST_POST_NOTIFICATIONS = 0xD339
+    private const val SETTING_NOTIFICATION_REQUESTED = "notification_permission_requested"
   }
 }
 

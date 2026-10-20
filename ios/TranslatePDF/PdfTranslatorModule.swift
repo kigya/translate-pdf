@@ -6,6 +6,7 @@ import Vision
 import QuickLook
 import BackgroundTasks
 import Darwin
+import UserNotifications
 
 private final class PdfPreviewController: QLPreviewController, QLPreviewControllerDataSource {
   private let file: URL
@@ -23,6 +24,7 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
   private let work = DispatchQueue(label:"dev.kigya.translatepdf.native-queue",qos:.userInitiated)
   private let translationWork = DispatchQueue(label:"dev.kigya.translatepdf.translation-queue",qos:.userInitiated)
   private let stateLock=NSRecursiveLock()
+  private let notificationPermissionLock=NSLock()
   private var store:TranslatorStore!
   private var downloader:ModelDownloadCoordinator!
   private var pendingImport:RCTPromiseResolveBlock?
@@ -59,7 +61,8 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
   }
 
   @objc func bootstrap(_ resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
-    run(resolve,reject,"BOOTSTRAP_FAILED") {
+    UNUserNotificationCenter.current().getNotificationSettings { notificationSettings in
+    self.run(resolve,reject,"BOOTSTRAP_FAILED") {
       guard let store=self.store else { throw self.error("Private storage is unavailable.") }
       let total=ProcessInfo.processInfo.physicalMemory
       let available=UInt64(os_proc_available_memory())
@@ -97,7 +100,12 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
       device["resourceEstimateEligible"]=recommendation.resourceEstimateEligible
       device["recommendedModelAvailable"]=recommendation.resourceEstimateEligible;device["recommendedModelId"]=recommended.id
       device["recommendationReason"]=recommendation.reason;device["recommendationVerified"]=false
-      return try jsonString(["schemaVersion":1,"device":device,"preferences":["theme":theme,"language":language,"sourceLanguage":sourceLanguage,"targetLanguage":targetLanguage,"selectedModelId":selectedModelId],"onboarding":["version":version,"page":page,"done":done],"models":modelStates,"documents":docs,"jobs":jobs,"glossary":glossary])
+      let installedBytes=modelStates.reduce(Int64(0)){$0 + (($1["storedBytes"] as? NSNumber)?.int64Value ?? 0) - (($1["partialBytes"] as? NSNumber)?.int64Value ?? 0)}
+      let partialBytes=modelStates.reduce(Int64(0)){$0 + (($1["partialBytes"] as? NSNumber)?.int64Value ?? 0)}
+      let activeTransferBytes=modelStates.reduce(Int64(0)){$0 + (($1["activeTransferBytes"] as? NSNumber)?.int64Value ?? 0)}
+      device["storage"]=["installedModelBytes":max(0,installedBytes),"partialDownloadBytes":partialBytes,"activeTransferBytes":activeTransferBytes,"freeDiskBytes":disk]
+      return try jsonString(["schemaVersion":1,"device":device,"preferences":["notificationExplanationShown":try store.setting("notificationExplanationShown",fallback:"false") == "true","theme":theme,"language":language,"sourceLanguage":sourceLanguage,"targetLanguage":targetLanguage,"selectedModelId":selectedModelId],"onboarding":["version":version,"page":page,"done":done],"models":modelStates,"documents":docs,"jobs":jobs,"glossary":glossary,"notifications":self.notificationSnapshot(notificationSettings)])
+    }
     }
   }
 
@@ -122,6 +130,42 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
     run(resolve,reject,"MODEL_DELETE_FAILED") { let jobs=try self.store.jobs();guard !jobs.contains(where:{($0["modelId"] as? String)==modelId && ["queued","running"].contains($0["status"] as? String ?? "")}) else{throw self.error("A queued or active translation uses this model. Cancel or finish that job before deleting it.")};try self.downloader.delete(ModelCatalog.get(modelId));return NSNull() }
   }
 
+  @objc func requestNotificationPermission(_ resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
+    let center=UNUserNotificationCenter.current()
+    center.getNotificationSettings { settings in
+      self.notificationPermissionLock.lock()
+      let current=self.notificationSnapshot(settings)
+      let shouldRequest=current["canRequest"] as? Bool == true
+      if shouldRequest { UserDefaults.standard.set(true,forKey:"dev.kigya.translatepdf.notificationPermissionRequested") }
+      self.notificationPermissionLock.unlock()
+      guard shouldRequest else {
+        let latest=self.notificationSnapshot(settings)
+        DispatchQueue.main.async { resolve((try? jsonString(latest)) ?? "{}") }
+        return
+      }
+      center.requestAuthorization(options:[.alert,.badge,.sound]) { _,_ in
+        center.getNotificationSettings { updated in
+          let snapshot=self.notificationSnapshot(updated)
+          DispatchQueue.main.async { resolve((try? jsonString(snapshot)) ?? "{}") }
+        }
+      }
+    }
+  }
+
+  @objc func getLicenseNotices(_ resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
+    run(resolve,reject,"LICENSES_READ_FAILED") {
+      let notices=self.licenseNoticeURLs().map { url in ["id":url.lastPathComponent,"title":url.deletingPathExtension().lastPathComponent.replacingOccurrences(of:"__",with:" · ")] }
+      return try jsonString(notices)
+    }
+  }
+
+  @objc func getLicenseNotice(_ id:String,resolver resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
+    run(resolve,reject,"LICENSE_READ_FAILED") {
+      guard !id.isEmpty,!id.contains("/"),!id.contains("\\"),!id.contains(".."),let url=self.licenseNoticeURLs().first(where:{$0.lastPathComponent == id}) else { throw self.error("The requested license notice is unavailable.") }
+      return try String(contentsOf:url,encoding:.utf8)
+    }
+  }
+
   @objc func startJob(_ inputJson:String,resolver resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
     run(resolve,reject,"JOB_START_FAILED") {
       guard UIApplication.shared.applicationState == .active else { throw self.error("Return to the open app before starting translation.") }
@@ -133,7 +177,7 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
       guard let path=try self.store.documentPath(documentId),FileManager.default.fileExists(atPath:path) else { throw self.error("The imported document is no longer available.") }
       let model=try ModelCatalog.get(modelId)
       guard model.translationEnabled else { throw self.error("The selected model is not enabled for translation.") }
-      let glossary=try self.store.glossaryText(input["glossaryId"] as? String,sourceLanguage:sourceLanguage,targetLanguage:targetLanguage)
+      let glossary=(input["useGlossary"] as? Bool ?? true) ? try self.store.glossaryText(input["glossaryId"] as? String,sourceLanguage:sourceLanguage,targetLanguage:targetLanguage) : ""
       guard model.supportsGlossary || glossary.isEmpty else { throw self.error("The selected model profile does not support glossary instructions. Clear the glossary or choose a glossary-compatible model before starting a job.") }
       guard try self.downloader.isReady(model) else { throw self.error("Download and verify the selected model first.") }
       let assessment=try self.assessment(for:model,status:"ready",downloadedBytes:model.bytes)
@@ -242,7 +286,7 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
     run(resolve,reject,"ONBOARDING_SAVE_FAILED"){guard let state=try JSONSerialization.jsonObject(with:Data(stateJson.utf8)) as? [String:Any],let version=(state["version"] as? NSNumber)?.intValue,let page=(state["page"] as? NSNumber)?.intValue,let done=state["done"] as? Bool,version>0,(0...3).contains(page) else { throw self.error("Onboarding state is invalid.") };try self.store.setSetting("onboarding_version",String(version));try self.store.setSetting("onboarding_page",String(page));try self.store.setSetting("onboarding_done",String(done));return try jsonString(["version":version,"page":page,"done":done]) }
   }
   @objc func setSettings(_ settingsJson:String,resolver resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
-    run(resolve,reject,"SETTINGS_SAVE_FAILED"){guard let settings=try JSONSerialization.jsonObject(with:Data(settingsJson.utf8)) as? [String:Any] else { throw self.error("Settings are invalid.") };if let theme=settings["theme"] as? String { guard ["system","light","dark"].contains(theme) else { throw self.error("Theme selection is invalid.") };try self.store.setSetting("theme",theme) };if let language=settings["language"] as? String { guard language == "system" || language.range(of:"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",options:.regularExpression) != nil else { throw self.error("Language selection is invalid.") };try self.store.setSetting("language",language) };let savedPair=try self.store.languagePreferences();let source=settings["sourceLanguage"] as? String ?? savedPair.sourceLanguage;let target=settings["targetLanguage"] as? String ?? savedPair.targetLanguage;if settings["sourceLanguage"] != nil || settings["targetLanguage"] != nil { try self.store.setLanguagePreferences(sourceLanguage:source,targetLanguage:target) };if let modelId=settings["selectedModelId"] as? String { _ = try self.store.setSelectedModelId(modelId) };return try jsonString(["theme":try self.store.setting("theme",fallback:"system"),"language":try self.store.setting("language",fallback:"system"),"sourceLanguage":source,"targetLanguage":target,"selectedModelId":try self.store.selectedModelId()]) }
+    run(resolve,reject,"SETTINGS_SAVE_FAILED"){guard let settings=try JSONSerialization.jsonObject(with:Data(settingsJson.utf8)) as? [String:Any] else { throw self.error("Settings are invalid.") };if let seen=settings["notificationExplanationShown"] as? Bool {try self.store.setSetting("notificationExplanationShown",seen ? "true":"false")};if let theme=settings["theme"] as? String { guard ["system","light","dark"].contains(theme) else { throw self.error("Theme selection is invalid.") };try self.store.setSetting("theme",theme) };if let language=settings["language"] as? String { guard language == "system" || language.range(of:"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",options:.regularExpression) != nil else { throw self.error("Language selection is invalid.") };try self.store.setSetting("language",language) };let savedPair=try self.store.languagePreferences();let source=settings["sourceLanguage"] as? String ?? savedPair.sourceLanguage;let target=settings["targetLanguage"] as? String ?? savedPair.targetLanguage;if settings["sourceLanguage"] != nil || settings["targetLanguage"] != nil { try self.store.setLanguagePreferences(sourceLanguage:source,targetLanguage:target) };if let modelId=settings["selectedModelId"] as? String { _ = try self.store.setSelectedModelId(modelId) };return try jsonString(["notificationExplanationShown":try self.store.setting("notificationExplanationShown",fallback:"false") == "true","theme":try self.store.setting("theme",fallback:"system"),"language":try self.store.setting("language",fallback:"system"),"sourceLanguage":source,"targetLanguage":target,"selectedModelId":try self.store.selectedModelId()]) }
   }
   @objc func saveGlossaryEntry(_ entryJson:String,resolver resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
     run(resolve,reject,"GLOSSARY_SAVE_FAILED"){guard let item=try JSONSerialization.jsonObject(with:Data(entryJson.utf8)) as? [String:Any],let id=item["id"] as? String,let source=item["source"] as? String,let target=item["target"] as? String,let sourceLanguage=item["sourceLanguage"] as? String,let targetLanguage=item["targetLanguage"] as? String,!source.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,!target.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { throw self.error("Both glossary terms and their language pair are required.") };return try jsonString(self.store.saveGlossary(id,source:source,target:target,sourceLanguage:sourceLanguage,targetLanguage:targetLanguage)) }
@@ -250,6 +294,30 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
   @objc func deleteGlossaryEntry(_ entryId:String,resolver resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){run(resolve,reject,"GLOSSARY_DELETE_FAILED"){try self.store.deleteGlossary(entryId);return NSNull()}}
 
   private func run(_ resolve:@escaping RCTPromiseResolveBlock,_ reject:@escaping RCTPromiseRejectBlock,_ code:String,_ body:@escaping() throws->Any){work.async{do{let result=try body();DispatchQueue.main.async{resolve(result)}}catch{DispatchQueue.main.async{reject(code,error.localizedDescription,error)}}}}
+  private func notificationSnapshot(_ settings:UNNotificationSettings)->[String:Any]{
+    let requested=UserDefaults.standard.bool(forKey:"dev.kigya.translatepdf.notificationPermissionRequested")
+    let status:String
+    switch settings.authorizationStatus {
+    case .authorized,.provisional,.ephemeral: status="granted"
+    case .denied: status="denied"
+    case .notDetermined: status=requested ? "denied" : "not_determined"
+    @unknown default: status="unavailable"
+    }
+    return ["status":status,"requestedBefore":requested,"canRequest":status == "not_determined" && !requested]
+  }
+  private func licenseBundle()->Bundle?{
+    guard let url=Bundle.main.url(forResource:"TranslatePDFLicenses",withExtension:"bundle") else{return nil}
+    return Bundle(url:url)
+  }
+  private func licenseNoticeURLs()->[URL]{
+    guard let bundle=licenseBundle(),let urls=try? FileManager.default.contentsOfDirectory(at:bundle.bundleURL,includingPropertiesForKeys:[.isRegularFileKey]) else{return []}
+    return urls.filter { url in
+      guard url.lastPathComponent != "Info.plist",!url.lastPathComponent.hasPrefix("."),
+        (try? url.resourceValues(forKeys:[.isRegularFileKey]).isRegularFile) == true,
+        let text=try? String(contentsOf:url,encoding:.utf8),!text.isEmpty else{return false}
+      return true
+    }.sorted{$0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending}
+  }
   private func error(_ message:String)->NSError{NSError(domain:"PdfTranslator",code:100,userInfo:[NSLocalizedDescriptionKey:message])}
   private func recoverInterruptedJobs() throws {
     for row in try store.query("SELECT id,status,total_pages,completed_pages FROM jobs WHERE status IN ('running','queued')") {

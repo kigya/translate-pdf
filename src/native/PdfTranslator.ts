@@ -5,12 +5,43 @@ export type { TranslationLanguage } from '../domain/translationLanguages';
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type LanguagePreference = 'system' | string;
 
-export type ModelStatus = 'not_downloaded' | 'downloading' | 'paused' | 'verifying' | 'ready' | 'error';
-export type JobStatus = 'queued' | 'running' | 'paused' | 'completed' | 'partial' | 'failed' | 'canceled';
-export type JobStage = 'queued' | 'copying' | 'extracting' | 'ocr' | 'translating' | 'layout' | 'exporting' | 'complete';
-export type BlockStatus = 'pending' | 'translated' | 'partial' | 'failed' | 'skipped';
+export type ModelStatus =
+  | 'not_downloaded'
+  | 'downloading'
+  | 'paused'
+  | 'verifying'
+  | 'ready'
+  | 'error';
+export type JobStatus =
+  | 'queued'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'partial'
+  | 'failed'
+  | 'canceled';
+export type JobStage =
+  | 'queued'
+  | 'copying'
+  | 'extracting'
+  | 'ocr'
+  | 'translating'
+  | 'layout'
+  | 'exporting'
+  | 'complete';
+export type BlockStatus =
+  | 'pending'
+  | 'translated'
+  | 'partial'
+  | 'failed'
+  | 'skipped';
 export type ModelTier = 'compact' | 'balanced' | 'quality';
-export type ModelResourceReason = 'available' | 'memory' | 'disk' | 'lowMemory' | 'unsupported';
+export type ModelResourceReason =
+  | 'available'
+  | 'memory'
+  | 'disk'
+  | 'lowMemory'
+  | 'unsupported';
 
 export interface DeviceSnapshot {
   manufacturer: string;
@@ -32,6 +63,12 @@ export interface DeviceSnapshot {
   recommendedModelId: string;
   recommendationReason: string;
   recommendationVerified: boolean;
+  storage?: {
+    activeTransferBytes?: number;
+    installedModelBytes: number;
+    partialDownloadBytes: number;
+    freeDiskBytes: number;
+  };
 }
 
 export interface ModelSnapshot {
@@ -45,6 +82,11 @@ export interface ModelSnapshot {
   translationEnabled: boolean;
   status: ModelStatus;
   downloadedBytes: number;
+  /** Actual model files on disk, including an incomplete download or resume payload. */
+  storedBytes?: number;
+  partialBytes?: number;
+  /** URLSession transferred bytes; progress, not a measured disk footprint. */
+  activeTransferBytes?: number;
   /** Relative tier label for the current comparison; it is not a safety certification. */
   tier?: ModelTier;
   /** Full-pipeline estimate excluding the system reserve. */
@@ -128,12 +170,36 @@ export interface GlossaryEntry {
 export interface BootstrapSnapshot {
   schemaVersion: number;
   device: DeviceSnapshot;
-  preferences: { theme: ThemePreference; language: LanguagePreference; selectedModelId?: string; sourceLanguage?: TranslationLanguage; targetLanguage?: TranslationLanguage };
+  preferences: {
+    notificationExplanationShown?: boolean;
+    theme: ThemePreference;
+    language: LanguagePreference;
+    selectedModelId?: string;
+    sourceLanguage?: TranslationLanguage;
+    targetLanguage?: TranslationLanguage;
+  };
   onboarding: { version: number; page: number; done: boolean };
   models: ModelSnapshot[];
   documents: DocumentSnapshot[];
   jobs: JobSnapshot[];
   glossary: GlossaryEntry[];
+  notifications?: NotificationPermissionSnapshot;
+}
+
+export type NotificationPermissionStatus =
+  | 'granted'
+  | 'denied'
+  | 'not_determined'
+  | 'unavailable'
+  | 'not_required';
+export interface NotificationPermissionSnapshot {
+  status: NotificationPermissionStatus;
+  requestedBefore: boolean;
+  canRequest: boolean;
+}
+export interface LicenseNotice {
+  id: string;
+  title: string;
 }
 
 export interface JobDetails {
@@ -143,16 +209,33 @@ export interface JobDetails {
 }
 
 export interface ImportedDocument extends DocumentSnapshot {}
-export interface ExportedPdf { id: string; uri: string; displayName: string }
+export interface ExportedPdf {
+  id: string;
+  uri: string;
+  displayName: string;
+}
 export interface StartJobInput {
   documentId: string;
   sourceLanguage: TranslationLanguage;
   targetLanguage: TranslationLanguage;
   modelId: string;
   glossaryId?: string;
+  /** Defaults to true for older callers; false freezes an empty glossary snapshot in this job. */
+  useGlossary?: boolean;
 }
-export interface OnboardingState { version: number; page: number; done: boolean }
-export interface SettingsUpdate { theme?: ThemePreference; language?: LanguagePreference; selectedModelId?: string; sourceLanguage?: TranslationLanguage; targetLanguage?: TranslationLanguage }
+export interface OnboardingState {
+  version: number;
+  page: number;
+  done: boolean;
+}
+export interface SettingsUpdate {
+  notificationExplanationShown?: boolean;
+  theme?: ThemePreference;
+  language?: LanguagePreference;
+  selectedModelId?: string;
+  sourceLanguage?: TranslationLanguage;
+  targetLanguage?: TranslationLanguage;
+}
 
 interface NativePdfTranslatorModule {
   bootstrap(): Promise<string>;
@@ -166,8 +249,16 @@ interface NativePdfTranslatorModule {
   cancelJob(jobId: string): Promise<string>;
   deleteJob(jobId: string): Promise<string>;
   getJob(jobId: string, pageIndex: number): Promise<string>;
-  renderPage(documentId: string, pageIndex: number, width: number): Promise<string>;
-  renderTranslatedPage(jobId: string, pageIndex: number, width: number): Promise<string>;
+  renderPage(
+    documentId: string,
+    pageIndex: number,
+    width: number,
+  ): Promise<string>;
+  renderTranslatedPage(
+    jobId: string,
+    pageIndex: number,
+    width: number,
+  ): Promise<string>;
   previewJob(jobId: string): Promise<string>;
   exportJob(jobId: string): Promise<string>;
   shareExport(exportId: string): Promise<void>;
@@ -176,13 +267,20 @@ interface NativePdfTranslatorModule {
   setSettings(settingsJson: string): Promise<string>;
   saveGlossaryEntry(entryJson: string): Promise<string>;
   deleteGlossaryEntry(entryId: string): Promise<string>;
+  requestNotificationPermission(): Promise<string>;
+  getLicenseNotices(): Promise<string>;
+  getLicenseNotice(id: string): Promise<string>;
 }
 
-const nativeModule = NativeModules.PdfTranslator as NativePdfTranslatorModule | undefined;
+const nativeModule = NativeModules.PdfTranslator as
+  | NativePdfTranslatorModule
+  | undefined;
 
 function requireNativeModule(): NativePdfTranslatorModule {
   if (!nativeModule) {
-    throw new Error('The PDF translator native module is unavailable on this platform.');
+    throw new Error(
+      'The PDF translator native module is unavailable on this platform.',
+    );
   }
   return nativeModule;
 }
@@ -211,17 +309,44 @@ export const PdfTranslator = {
   },
 
   async startModelDownload(modelId: string): Promise<ModelSnapshot> {
-    return parseJson(await requireNativeModule().startModelDownload(modelId), 'startModelDownload');
+    return parseJson(
+      await requireNativeModule().startModelDownload(modelId),
+      'startModelDownload',
+    );
   },
   async pauseModelDownload(modelId: string): Promise<ModelSnapshot> {
-    return parseJson(await requireNativeModule().pauseModelDownload(modelId), 'pauseModelDownload');
+    return parseJson(
+      await requireNativeModule().pauseModelDownload(modelId),
+      'pauseModelDownload',
+    );
   },
   async deleteModel(modelId: string): Promise<void> {
     await requireNativeModule().deleteModel(modelId);
   },
 
+  async requestNotificationPermission(): Promise<NotificationPermissionSnapshot> {
+    return parseJson(
+      await requireNativeModule().requestNotificationPermission(),
+      'requestNotificationPermission',
+    );
+  },
+
+  async getLicenseNotices(): Promise<LicenseNotice[]> {
+    return parseJson(
+      await requireNativeModule().getLicenseNotices(),
+      'getLicenseNotices',
+    );
+  },
+
+  async getLicenseNotice(id: string): Promise<string> {
+    return requireNativeModule().getLicenseNotice(id);
+  },
+
   async startJob(input: StartJobInput): Promise<JobSnapshot> {
-    return parseJson(await requireNativeModule().startJob(JSON.stringify(input)), 'startJob');
+    return parseJson(
+      await requireNativeModule().startJob(JSON.stringify(input)),
+      'startJob',
+    );
   },
   async pauseJob(jobId: string): Promise<JobSnapshot> {
     return parseJson(await requireNativeModule().pauseJob(jobId), 'pauseJob');
@@ -236,18 +361,32 @@ export const PdfTranslator = {
     await requireNativeModule().deleteJob(jobId);
   },
   async getJob(jobId: string, pageIndex = 0): Promise<JobDetails> {
-    return parseJson(await requireNativeModule().getJob(jobId, pageIndex), 'getJob');
+    return parseJson(
+      await requireNativeModule().getJob(jobId, pageIndex),
+      'getJob',
+    );
   },
   /** Resolves an Android file:// URI in the bounded private thumbnail cache. */
-  async renderPage(documentId: string, pageIndex: number, width: number): Promise<string> {
+  async renderPage(
+    documentId: string,
+    pageIndex: number,
+    width: number,
+  ): Promise<string> {
     return requireNativeModule().renderPage(documentId, pageIndex, width);
   },
   /** Resolves a private file:// thumbnail URI for the translated job page. */
-  async renderTranslatedPage(jobId: string, pageIndex: number, width: number): Promise<string> {
+  async renderTranslatedPage(
+    jobId: string,
+    pageIndex: number,
+    width: number,
+  ): Promise<string> {
     return requireNativeModule().renderTranslatedPage(jobId, pageIndex, width);
   },
   async previewJob(jobId: string): Promise<ExportedPdf> {
-    return parseJson(await requireNativeModule().previewJob(jobId), 'previewJob');
+    return parseJson(
+      await requireNativeModule().previewJob(jobId),
+      'previewJob',
+    );
   },
   async exportJob(jobId: string): Promise<ExportedPdf> {
     return parseJson(await requireNativeModule().exportJob(jobId), 'exportJob');
@@ -260,13 +399,29 @@ export const PdfTranslator = {
   },
 
   async setOnboarding(state: OnboardingState): Promise<OnboardingState> {
-    return parseJson(await requireNativeModule().setOnboarding(JSON.stringify(state)), 'setOnboarding');
+    return parseJson(
+      await requireNativeModule().setOnboarding(JSON.stringify(state)),
+      'setOnboarding',
+    );
   },
-  async setSettings(settings: SettingsUpdate): Promise<BootstrapSnapshot['preferences']> {
-    return parseJson(await requireNativeModule().setSettings(JSON.stringify(settings)), 'setSettings');
+  async setSettings(
+    settings: SettingsUpdate,
+  ): Promise<BootstrapSnapshot['preferences']> {
+    return parseJson(
+      await requireNativeModule().setSettings(JSON.stringify(settings)),
+      'setSettings',
+    );
   },
-  async saveGlossaryEntry(entry: Pick<GlossaryEntry, 'id' | 'source' | 'target' | 'sourceLanguage' | 'targetLanguage'>): Promise<GlossaryEntry> {
-    return parseJson(await requireNativeModule().saveGlossaryEntry(JSON.stringify(entry)), 'saveGlossaryEntry');
+  async saveGlossaryEntry(
+    entry: Pick<
+      GlossaryEntry,
+      'id' | 'source' | 'target' | 'sourceLanguage' | 'targetLanguage'
+    >,
+  ): Promise<GlossaryEntry> {
+    return parseJson(
+      await requireNativeModule().saveGlossaryEntry(JSON.stringify(entry)),
+      'saveGlossaryEntry',
+    );
   },
   async deleteGlossaryEntry(entryId: string): Promise<void> {
     await requireNativeModule().deleteGlossaryEntry(entryId);

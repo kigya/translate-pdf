@@ -1,4 +1,5 @@
 import { localizedMessages } from './localizedMessages';
+import { productCopy } from './ux';
 
 export const localeOptions = [
   ['system', 'System default'], ['en', 'English'], ['zh-Hans', '简体中文'], ['es', 'Español'], ['hi', 'हिन्दी'],
@@ -142,7 +143,7 @@ export function localeDirection(value: string | null | undefined): 'rtl' | 'ltr'
 
 export function createTranslator(locale: Locale) {
   const dict: Record<MessageKey, string> = locale === 'ru' ? ru : locale === 'en' || locale === 'system' ? en : localizedMessages[locale];
-  return (key: MessageKey, values?: Record<string, string | number>): string => Object.entries(values ?? {}).reduce((message, [name, value]) => message.replaceAll(`{${name}}`, String(value)), dict[key]);
+  return (key: MessageKey, values?: Record<string, string | number>): string => Object.entries(values ?? {}).reduce((message, [name, value]) => message.replaceAll(`{${name}}`, String(value)), productCopy(locale, key) ?? dict[key]);
 }
 
 export type Translator = ReturnType<typeof createTranslator>;

@@ -10,6 +10,9 @@ import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
+import java.util.UUID
+
+internal class ModelDownloadCanceled : IllegalStateException("Model download was canceled before completion.")
 
 internal class ModelDownloader(
   context: Context,
@@ -17,10 +20,15 @@ internal class ModelDownloader(
 ) {
   private val appContext = context.applicationContext
   private val modelDirectory = File(appContext.filesDir, "models").apply { mkdirs() }
-  private val active = ConcurrentHashMap<String, Transfer>()
+  // A module instance and the foreground service use separate downloader
+  // objects. Transfers must still be visible to both so deletion can cancel
+  // the service-owned socket and wait for its worker before unlinking files.
+  private val active: ConcurrentHashMap<String, Transfer> = transfers
 
   fun fileFor(modelId: String): File = File(modelDirectory, "${ModelCatalog.get(modelId).id}.gguf")
   fun partialLength(modelId: String): Long = File(modelDirectory, "${ModelCatalog.get(modelId).id}.part").length()
+  fun installedLength(modelId: String): Long = fileFor(modelId).length()
+  fun storedLength(modelId: String): Long = installedLength(modelId) + partialLength(modelId)
 
   fun isReady(modelId: String): Boolean {
     val definition = ModelCatalog.get(modelId)
@@ -34,11 +42,102 @@ internal class ModelDownloader(
     return state?.first == "ready" && file.isFile && file.length() == ModelCatalog.get(modelId).bytes
   }
 
-  fun start(modelId: String, onProgress: (Long) -> Unit, onFinished: (Result<File>) -> Unit) {
+  /** Reserve before enqueueing the foreground service so delete can tombstone queued starts. */
+  fun reserve(modelId: String): String {
+    ModelCatalog.get(modelId)
+    while (true) {
+      val current=active[modelId]
+      if (current != null) {
+        synchronized(current) {
+          if (current.stopRequested && !current.started) {
+            active.remove(modelId,current)
+            current.finished.countDown()
+          } else {
+            throw IllegalStateException("A model download is already queued or running.")
+          }
+        }
+        continue
+      }
+      val transfer=Transfer(UUID.randomUUID().toString())
+      if (active.putIfAbsent(modelId,transfer) == null) return transfer.token
+    }
+  }
+
+  fun releaseReservation(modelId: String, token: String, beforeRelease: () -> Unit = {}): Boolean {
+    val transfer=active[modelId] ?: return false
+    synchronized(transfer) {
+      if (transfer.token == token && !transfer.started) {
+        transfer.stopRequested=true
+        try {
+          beforeRelease()
+        } finally {
+          active.remove(modelId,transfer)
+          transfer.finished.countDown()
+        }
+        return true
+      }
+    }
+    return false
+  }
+
+  fun <T> withReservation(modelId: String, token: String, enqueue: () -> T): T {
+    val transfer=active[modelId]
+    require(transfer != null && transfer.token == token) { "The queued model download was canceled." }
+    synchronized(transfer) {
+      require(!transfer.stopRequested && !transfer.started) { "The queued model download was canceled." }
+      return enqueue()
+    }
+  }
+
+  /** Claim a queued service command before it creates an executor or foreground notification. */
+  fun claimServiceStart(modelId: String, token: String): Boolean {
+    val transfer=active[modelId] ?: return false
+    synchronized(transfer) {
+      if (transfer.token != token || transfer.stopRequested || transfer.started) return false
+      transfer.started=true
+      return true
+    }
+  }
+
+  /** Undo a claim only when service work could not be scheduled. */
+  fun releaseServiceStart(modelId: String, token: String) {
+    val transfer=active[modelId] ?: return
+    synchronized(transfer) {
+      if (transfer.token == token && !transfer.workerStarted) {
+        if (transfer.stopRequested) {
+          active.remove(modelId,transfer)
+          transfer.finished.countDown()
+        } else {
+          transfer.started=false
+        }
+      }
+    }
+  }
+
+  fun start(modelId: String, onProgress: (Long) -> Unit, onFinished: (Result<File>) -> Unit, downloadUrl: URL? = null, transferToken: String? = null) {
     val definition = ModelCatalog.get(modelId)
-    if (active.containsKey(modelId)) return
-    val transfer = Transfer()
-    if (active.putIfAbsent(modelId, transfer) != null) return
+    val transfer=if (transferToken != null) {
+      val reserved=active[modelId]
+      if (reserved == null || reserved.token != transferToken) {
+        onFinished(Result.failure(ModelDownloadCanceled()))
+        return
+      }
+      reserved
+    } else {
+      reserve(modelId)
+      active[modelId] ?: run { onFinished(Result.failure(ModelDownloadCanceled()));return }
+    }
+    synchronized(transfer) {
+      if (transfer.stopRequested) {
+        active.remove(modelId,transfer)
+        transfer.finished.countDown()
+        onFinished(Result.failure(ModelDownloadCanceled()))
+        return
+      }
+      if (transfer.workerStarted) return
+      transfer.started=true
+      transfer.workerStarted=true
+    }
     Thread({
       val partial = File(modelDirectory, "${definition.id}.part")
       var connection: HttpURLConnection? = null
@@ -52,14 +151,17 @@ internal class ModelDownloader(
         var offset = partial.length().coerceAtMost(definition.bytes)
         if (offset >= definition.bytes) offset = 0
         if (offset == 0L) partial.delete()
-        connection = (URL(definition.url).openConnection() as HttpURLConnection).apply {
+        if (transfer.stopRequested) throw ModelDownloadCanceled()
+        connection = (downloadUrl ?: URL(definition.url)).openConnection() as HttpURLConnection
+        transfer.connection = connection
+        connection.apply {
           connectTimeout = 20_000
           readTimeout = 45_000
           instanceFollowRedirects = true
           setRequestProperty("User-Agent", "TranslatePDF/0.1")
           if (offset > 0) setRequestProperty("Range", "bytes=$offset-")
         }
-        transfer.connection = connection
+        if (transfer.stopRequested) throw ModelDownloadCanceled()
         connection.connect()
         val code = connection.responseCode
         if (code !in 200..299) throw IllegalStateException("Model download failed with HTTP $code.")
@@ -75,7 +177,7 @@ internal class ModelDownloader(
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
             try {
               while (true) {
-                if (transfer.stopRequested) throw TransferPaused()
+                if (transfer.stopRequested) throw ModelDownloadCanceled()
                 val read = input.read(buffer)
                 if (read < 0) break
                 written += read
@@ -102,13 +204,13 @@ internal class ModelDownloader(
         if (!partial.renameTo(final)) throw IllegalStateException("Verified model could not be committed atomically.")
         database.modelStatus(modelId, "ready", definition.bytes)
         onFinished(Result.success(final))
-      } catch (_: TransferPaused) {
+      } catch (_: ModelDownloadCanceled) {
         database.modelStatus(modelId, "paused", partial.length())
-        onFinished(Result.failure(TransferPaused()))
+        onFinished(Result.failure(ModelDownloadCanceled()))
       } catch (error: Exception) {
         if (transfer.stopRequested) {
           database.modelStatus(modelId, "paused", partial.length())
-          onFinished(Result.failure(TransferPaused()))
+          onFinished(Result.failure(ModelDownloadCanceled()))
         } else {
           database.modelStatus(modelId, "error", partial.length(), error.message ?: "Model download failed.")
           onFinished(Result.failure(error))
@@ -123,18 +225,27 @@ internal class ModelDownloader(
 
   fun pause(modelId: String) {
     active[modelId]?.let { transfer ->
-      transfer.stopRequested = true
-      transfer.connection?.disconnect()
+      synchronized(transfer) {
+        transfer.stopRequested = true
+        transfer.connection?.disconnect()
+        if (!transfer.started) transfer.finished.countDown()
+      }
     }
   }
 
   fun cancel(modelId: String) {
     val transfer = active[modelId]
-    transfer?.let { it.stopRequested = true; it.connection?.disconnect() }
+    transfer?.let { current -> synchronized(current) {
+      current.stopRequested = true
+      current.connection?.disconnect()
+      if (!current.started) current.finished.countDown()
+    } }
     if (transfer != null && !transfer.finished.await(50, TimeUnit.SECONDS)) {
       throw IllegalStateException("The model transfer has not stopped yet. Retry deletion after it pauses.")
     }
-    File(modelDirectory, "${ModelCatalog.get(modelId).id}.part").delete()
+    val definition = ModelCatalog.get(modelId)
+    File(modelDirectory, "${definition.id}.part").delete()
+    File(modelDirectory, "${definition.id}.gguf").delete()
   }
 
   private fun sha256(file: File): String {
@@ -150,10 +261,14 @@ internal class ModelDownloader(
     return digest.digest().joinToString("") { "%02x".format(it) }
   }
 
-  private class Transfer {
+  internal class Transfer(val token: String) {
     @Volatile var stopRequested = false
+    @Volatile var started = false
+    @Volatile var workerStarted = false
     @Volatile var connection: HttpURLConnection? = null
     val finished = CountDownLatch(1)
   }
-  private class TransferPaused : IllegalStateException("Model download paused.")
+  private companion object {
+    val transfers = ConcurrentHashMap<String, Transfer>()
+  }
 }

@@ -132,7 +132,7 @@ internal class TranslatorDatabase(context: Context) :
     val modelRevision = model.revision
     val glossaryId = input.optString("glossaryId").takeIf(String::isNotBlank)
     val (sourceLanguage, targetLanguage) = LanguagePair.fromJson(input).also { LanguagePair.requireValid(it.first, it.second) }
-    val glossarySnapshot = glossaryText(glossaryId, sourceLanguage, targetLanguage)
+    val glossarySnapshot = if (input.optBoolean("useGlossary", true)) glossaryText(glossaryId, sourceLanguage, targetLanguage) else ""
     writableDatabase.insertOrThrow("jobs", null, ContentValues().apply {
       put("id", id); put("document_id", documentId); put("model_id", input.getString("modelId"))
       put("model_revision", modelRevision); put("model_profile", model.profile); put("source_sha256", sourceSha); put("glossary_snapshot", glossarySnapshot)

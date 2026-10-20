@@ -20,6 +20,9 @@ buildscript {
 
 apply plugin: "com.facebook.react.rootproject"
 
+// Native libraries resolve React Native without relying on the GUI daemon's PATH.
+ext.REACT_NATIVE_NODE_MODULES_DIR = file("../node_modules/react-native").absolutePath
+
 gradle.projectsEvaluated {
     allprojects {
         tasks.withType(Exec).configureEach { task ->

@@ -11,6 +11,7 @@ TranslatePDF is a private prototype. No project-level license has been selected 
 | React Native New App Screen | 0.88.0 | MIT; source package is part of the React Native repository | [`licenses/react-native-new-app-screen/LICENSE`](licenses/react-native-new-app-screen/LICENSE) |
 | React Native Safe Area Context | 5.10.1 | MIT | [`licenses/react-native-safe-area-context/LICENSE`](licenses/react-native-safe-area-context/LICENSE) |
 | React Native Reanimated | 4.7.1 | MIT | [`licenses/react-native-reanimated/LICENSE`](licenses/react-native-reanimated/LICENSE) |
+| React Native SVG | 15.16.0 | MIT | [`licenses/react-native-svg/LICENSE`](licenses/react-native-svg/LICENSE) |
 | React Native Worklets | 0.13.0 | MIT | [`licenses/react-native-worklets/LICENSE`](licenses/react-native-worklets/LICENSE) |
 | Hermes | version resolved by `ios/Podfile.lock` and Android Gradle dependency resolution | MIT | [`licenses/hermes/LICENSE`](licenses/hermes/LICENSE) |
 | Tesseract4Android | 4.9.0 | Apache-2.0 | [`licenses/tesseract4android/4.9.0/`](licenses/tesseract4android/4.9.0/), including the wrapper, Tesseract, Leptonica, libpng, and IJG JPEG notices shipped with its AAR; upstream [tagged source](https://github.com/adaptech-cz/Tesseract4Android/tree/4.9.0) |

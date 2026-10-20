@@ -157,10 +157,18 @@ final class TranslatorStore {
       let state = try modelState(definition.id)
       let status = state?["status"] as? String ?? "not_downloaded"
       let recordedBytes = state?["downloaded_bytes"] as? Int64 ?? 0
+      let installedBytes = ((try? FileManager.default.attributesOfItem(atPath:definition.fileURL.path)[.size]) as? NSNumber)?.int64Value ?? 0
       let partialBytes = ((try? FileManager.default.attributesOfItem(atPath:definition.partialURL.path)[.size]) as? NSNumber)?.int64Value ?? 0
+      let resumeBytes = ((try? FileManager.default.attributesOfItem(atPath:definition.resumeURL.path)[.size]) as? NSNumber)?.int64Value ?? 0
       let downloadedBytes = min(definition.bytes,max(recordedBytes,partialBytes))
       let assessment = MemoryPolicy.assess(definition, status: status, downloadedBytes: downloadedBytes, total: totalMemory, available: availableMemory, availableDisk: availableDisk, systemLowMemory: systemLowMemory)
-      return definition.snapshot(status: status, downloadedBytes: downloadedBytes, error: state?["error"] as? String, assessment: assessment)
+      var snapshot = definition.snapshot(status: status, downloadedBytes: downloadedBytes, error: state?["error"] as? String, assessment: assessment)
+      snapshot["storedBytes"] = installedBytes + partialBytes + resumeBytes
+      snapshot["partialBytes"] = partialBytes + resumeBytes
+      // URLSession owns its active temporary file until didFinishDownloadingTo.
+      // This reports persisted transfer progress separately, never as disk use.
+      snapshot["activeTransferBytes"] = status == "downloading" ? downloadedBytes : Int64(0)
+      return snapshot
     }
   }
 
@@ -176,7 +184,8 @@ final class TranslatorStore {
     }
     _ = try TranslationLanguage.pair(source:sourceLanguage,target:targetLanguage)
     let glossaryId=input["glossaryId"] as? String
-    let glossarySnapshot=try glossaryText(glossaryId,sourceLanguage:sourceLanguage,targetLanguage:targetLanguage)
+    let glossarySnapshot=(input["useGlossary"] as? Bool ?? true)
+      ? try glossaryText(glossaryId,sourceLanguage:sourceLanguage,targetLanguage:targetLanguage) : ""
     guard definition.supportsGlossary || glossarySnapshot.isEmpty else { throw NSError(domain:"PdfTranslator",code:11,userInfo:[NSLocalizedDescriptionKey:"The selected model profile does not support glossary instructions. Clear the glossary or choose a glossary-compatible model before creating the job."]) }
     try execute("INSERT INTO jobs(id,document_id,model_id,model_revision,source_sha256,glossary_snapshot,pipeline_version,model_profile,source_lang,target_lang,status,stage,completed_pages,total_pages,current_page,glossary_id,error,created_at,updated_at) VALUES(?,?,?,?,?,?,4,?,?,?,'queued','queued',0,?,NULL,?,NULL,?,?)", [id,documentId,modelId,definition.revision,sourceSHA256,glossarySnapshot,definition.profile,sourceLanguage,targetLanguage,pageCount,glossaryId ?? NSNull(),now,now])
     return try job(id) ?? [:]
@@ -291,7 +300,7 @@ final class TranslatorStore {
       guard let id=row["id"] as? String,let path=row["path"] as? String,FileManager.default.fileExists(atPath:path),let digest=try? sha256(at:URL(fileURLWithPath:path)) else{continue}
       try execute("UPDATE documents SET source_sha256=? WHERE id=?",[digest,id])
     }
-    for row in try query("SELECT id,document_id,model_id,glossary_id,source_lang,target_lang FROM jobs WHERE model_revision='' OR source_sha256='' OR glossary_snapshot=''") {
+    for row in try query("SELECT id,document_id,model_id,glossary_id,source_lang,target_lang,pipeline_version FROM jobs WHERE pipeline_version<4 AND (model_revision='' OR source_sha256='' OR glossary_snapshot='')") {
       guard let id=row["id"] as? String,let documentId=row["document_id"] as? String,let modelId=row["model_id"] as? String,
         let definition=try? ModelCatalog.get(modelId) else{continue}
       let source=try documentSHA256(documentId) ?? ""

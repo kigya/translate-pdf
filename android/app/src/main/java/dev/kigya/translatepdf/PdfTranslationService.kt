@@ -10,7 +10,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import org.json.JSONArray
@@ -26,8 +28,13 @@ internal class PdfTranslationService : Service() {
   private val downloader by lazy { ModelDownloader(applicationContext, database) }
   private val stopped = AtomicBoolean(false)
   private var executor: ExecutorService? = null
+  private var latestStartId = 0
   private var jobId: String? = null
   private var modelId: String? = null
+  internal var stopSelfForStaleIntent: (Int) -> Unit = { id -> stopSelfResult(id) }
+  internal var stopSelfForCompletedWorker: (Int) -> Unit = { id -> stopSelfResult(id) }
+  internal var modelDownloadExecutorFactory: () -> ExecutorService = { Executors.newSingleThreadExecutor() }
+  private val mainHandler = Handler(Looper.getMainLooper())
   @Volatile private var activeOcrEngine: OcrEngine? = null
 
   override fun onCreate() {
@@ -37,6 +44,7 @@ internal class PdfTranslationService : Service() {
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    latestStartId = startId
     when (intent?.action) {
       ACTION_PAUSE -> {
         val requestedId = intent.getStringExtra(EXTRA_JOB_ID)
@@ -70,43 +78,61 @@ internal class PdfTranslationService : Service() {
         return START_NOT_STICKY
       }
       ACTION_START_MODEL -> {
-        val requestedId = intent.getStringExtra(EXTRA_MODEL_ID) ?: run { stopSelf(startId); return START_NOT_STICKY }
-        if (executor?.isShutdown == false) return START_NOT_STICKY
+        val requestedId = intent.getStringExtra(EXTRA_MODEL_ID) ?: run { stopServiceIfIdle(startId); return START_NOT_STICKY }
+        val transferToken = intent.getStringExtra(EXTRA_MODEL_TRANSFER_TOKEN) ?: run { stopServiceIfIdle(startId); return START_NOT_STICKY }
+        // Reject stale queued intents before creating an executor or entering foreground.
+        if (!downloader.claimServiceStart(requestedId, transferToken)) {
+          stopAfterStaleModelIntentIfIdle(startId)
+          return START_NOT_STICKY
+        }
+        if (executor != null) {
+          downloader.releaseServiceStart(requestedId, transferToken)
+          downloader.releaseReservation(requestedId, transferToken) {
+            database.modelStatus(requestedId, "paused", downloader.partialLength(requestedId))
+          }
+          return START_NOT_STICKY
+        }
         modelId = requestedId
         stopped.set(false)
-        startForegroundCompat(notification("Preparing model download…"))
-        executor = Executors.newSingleThreadExecutor().also { worker ->
-          worker.execute { runModelDownload(requestedId, startId) }
+        try {
+          startForegroundCompat(notification("Preparing model download…"))
+          val worker=modelDownloadExecutorFactory()
+          executor=worker
+          worker.execute { runModelDownload(requestedId, transferToken, worker) }
+        } catch (error: Exception) {
+          downloader.releaseServiceStart(requestedId, transferToken)
+          stopSelf(startId)
+          throw error
         }
         return START_NOT_STICKY
       }
       ACTION_START -> {
-        val requestedId = intent.getStringExtra(EXTRA_JOB_ID) ?: run { stopSelf(startId); return START_NOT_STICKY }
-        if (executor?.isShutdown == false) return START_NOT_STICKY
+        val requestedId = intent.getStringExtra(EXTRA_JOB_ID) ?: run { stopServiceIfIdle(startId); return START_NOT_STICKY }
+        if (executor != null) return START_NOT_STICKY
         jobId = requestedId
         activeJobId = requestedId
         stopped.set(false)
         startForegroundCompat(notification("Starting local translation…"))
-        executor = Executors.newSingleThreadExecutor().also { worker ->
-          worker.execute { runJob(requestedId, startId) }
-        }
+        val worker=Executors.newSingleThreadExecutor()
+        executor=worker
+        worker.execute { runJob(requestedId, worker) }
       }
     }
     return START_NOT_STICKY
   }
 
-  private fun runModelDownload(id: String, startId: Int) {
+  private fun runModelDownload(id: String, transferToken: String, owner: ExecutorService) {
     val finished = CountDownLatch(1)
     try {
       val definition = ModelCatalog.get(id)
       downloader.start(id, onProgress = { bytes ->
         updateNotification("Downloading model · ${bytes / 1_048_576} of ${definition.bytes / 1_048_576} MiB")
       }, onFinished = { result ->
-        if (result.isFailure && !stopped.get()) {
+        if (result.isFailure && result.exceptionOrNull() !is ModelDownloadCanceled && !stopped.get()) {
           database.modelStatus(id, "error", downloader.partialLength(id), result.exceptionOrNull()?.message ?: "Model download failed.")
         }
         finished.countDown()
-      })
+      }, transferToken = transferToken)
       finished.await()
       updateNotification(if (downloader.isInstalled(id)) "Model downloaded and verified." else "Model download paused or failed. Open the app to continue.")
     } catch (error: InterruptedException) {
@@ -115,13 +141,11 @@ internal class PdfTranslationService : Service() {
       database.modelStatus(id, "error", downloader.partialLength(id), error.message ?: "Model download failed.")
       updateNotification("Model download failed. Open the app to retry.")
     } finally {
-      executor?.shutdown()
-      stopForeground(STOP_FOREGROUND_DETACH)
-      stopSelf(startId)
+      finishWorker(owner)
     }
   }
 
-  private fun runJob(id: String, startId: Int) {
+  private fun runJob(id: String, owner: ExecutorService) {
     var ocrEngine: OcrEngine? = null
     var ocrSetupFailure: String? = null
     try {
@@ -314,10 +338,28 @@ internal class PdfTranslationService : Service() {
           .remove(QA_PROFILE_REGISTERED_JOB).apply()
       }
       runCatching { NativeCore.releaseModel() }
-      executor?.shutdown()
-      stopForeground(STOP_FOREGROUND_DETACH)
-      stopSelf(startId)
+      finishWorker(owner)
     }
+  }
+
+  internal fun finishWorker(owner: ExecutorService) {
+    mainHandler.post {
+      owner.shutdown()
+      if (executor !== owner) return@post
+      stopForeground(STOP_FOREGROUND_DETACH)
+      executor=null
+      jobId=null
+      modelId=null
+      activeJobId=null
+      stopped.set(true)
+      stopSelfForCompletedWorker(latestStartId)
+    }
+  }
+
+  internal fun stopServiceIfIdle(startId: Int): Boolean {
+    if (executor != null) return false
+    stopSelfForStaleIntent(latestStartId.coerceAtLeast(startId))
+    return true
   }
 
   private fun pauseForResources(id: String, message: String) {
@@ -460,12 +502,19 @@ internal class PdfTranslationService : Service() {
       pauseDownload = { modelId?.let(downloader::pause) },
       interruptWorker = { executor?.shutdownNow() },
     )
+    executor=null
+    jobId=null
+    modelId=null
     isActive = false
     activeJobId = null
     super.onDestroy()
   }
 
   override fun onBind(intent: Intent?): IBinder? = null
+
+  internal fun stopAfterStaleModelIntentIfIdle(startId: Int): Boolean {
+    return stopServiceIfIdle(startId)
+  }
 
   companion object {
     @Volatile var isActive: Boolean = false
@@ -479,6 +528,7 @@ internal class PdfTranslationService : Service() {
     const val ACTION_PAUSE_MODEL = "dev.kigya.translatepdf.action.PAUSE_MODEL"
     const val EXTRA_JOB_ID = "jobId"
     const val EXTRA_MODEL_ID = "modelId"
+    const val EXTRA_MODEL_TRANSFER_TOKEN = "modelTransferToken"
     const val CHANNEL_ID = "pdf_translation"
     private const val QA_PROFILE_PREFS = "debug_native_qa_profile"
     private const val QA_PROFILE_REGISTERED_JOB = "registered_job_id"

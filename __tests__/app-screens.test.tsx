@@ -12,7 +12,7 @@ jest.mock('react-native-reanimated', () => ({
 jest.mock('react-native-safe-area-context',()=>({useSafeAreaInsets:()=>({top:0,right:0,bottom:0,left:0})}));
 jest.mock('../src/native/PdfTranslator',()=>({PdfTranslator:{renderPage:jest.fn(),getLicenseNotices:jest.fn(),getLicenseNotice:jest.fn()}}));
 import { PdfTranslator, BootstrapSnapshot, ModelSnapshot, DocumentSnapshot } from '../src/native/PdfTranslator';
-import { ModelScreen, PairPicker, StorageScreen, SourcePreviewScreen, LicensesScreen, DictionaryScreen, TranslationOptionsScreen, SettingsScreen } from '../src/screens/AppScreens';
+import { LanguageChoices, ModelScreen, PairPicker, StorageScreen, SourcePreviewScreen, LicensesScreen, DictionaryScreen, TranslationOptionsScreen, SettingsScreen } from '../src/screens/AppScreens';
 import { DialogProvider } from '../src/ui/Dialog';
 import { createTranslator } from '../src/i18n/messages';
 import { ux } from '../src/i18n/ux';
@@ -23,6 +23,18 @@ const model={ id:'one', label:'Pinned package', revision:'hash', tier:'compact',
 const document={id:'doc',name:'Source.pdf',pageCount:2,importedAt:0} as DocumentSnapshot;
 const data={schemaVersion:1,preferences:{language:'system',theme:'system'},device:{availableMemoryBytes:4e9,availableDiskBytes:5e9,recommendedModelId:'one',recommendedModelAvailable:true},models:[model],jobs:[],documents:[],glossary:[],onboarding:{done:true}} as unknown as BootstrapSnapshot;
 const noop=()=>{};
+it('finds language autonyms, English names, codes and unaccented text independently of UI locale',()=>{
+ const choose=jest.fn();render(<LanguageChoices {...base} selected="en" onSelect={choose}/>);
+ const search=screen.getByLabelText('Search');
+ for(const query of ['French',' francais ','FR','Français']){
+  fireEvent.changeText(search,query);
+  expect(screen.getByRole('radio',{name:'Français'})).toBeOnTheScreen();
+ }
+ fireEvent.press(screen.getByRole('radio',{name:'Français'}));expect(choose).toHaveBeenCalledWith('fr');
+ fireEvent.changeText(search,'Russian');expect(screen.getByRole('radio',{name:'Русский'})).toBeOnTheScreen();
+ fireEvent.changeText(search,'not-a-language');expect(screen.queryAllByRole('radio')).toHaveLength(0);
+ fireEvent.changeText(search,'');expect(screen.getAllByRole('radio')).toHaveLength(31);
+});
 const models=(items:ModelSnapshot[],extra:object={})=><DialogProvider colors={base.colors}><ModelScreen {...base} snapshot={{...data,models:items}} onSelect={noop} onDownload={noop} onPause={noop} onDelete={noop} {...extra}/></DialogProvider>;
 beforeEach(()=>{jest.clearAllMocks();mockReduced=true;native.renderPage.mockResolvedValue('file:///source.png');native.getLicenseNotices.mockResolvedValue([]);native.getLicenseNotice.mockResolvedValue('Apache License');});
 afterEach(()=>jest.restoreAllMocks());

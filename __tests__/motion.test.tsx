@@ -309,6 +309,7 @@ describe('motion primitives', () => {
     const bar = screen.getByTestId('animated-tab-bar');
     expect(bar.props.style.paddingBottom).toBe(20);
     expect(bar.props.style.direction).toBe('rtl');
+    expect(screen.getByTestId('tab-indicator-track')).toHaveStyle({ direction: 'ltr' });
     expect(screen.getByRole('tab', { name: 'Library' })).toHaveProp('accessibilityState', { selected: true });
     expect(screen.getByRole('tab', { name: 'Settings' })).toHaveProp('accessibilityState', { selected: false });
     fireEvent.press(screen.getByRole('tab', { name: 'Settings' }));
@@ -335,9 +336,10 @@ describe('motion primitives', () => {
   });
 
   it('places active tabs correctly for LTR Library and RTL Settings', () => {
-    for (const [active, direction] of [['library', 'ltr'], ['settings', 'rtl']] as const) {
+    for (const [active, direction, left] of [['library', 'ltr', '12.5%'], ['settings', 'rtl', '12.5%'], ['settings', 'ltr', '62.5%'], ['library', 'rtl', '62.5%']] as const) {
       const tabs = render(<AnimatedTabBar active={active} direction={direction} onChange={jest.fn()} />);
-      expect(screen.getByTestId('tab-indicator').props.style[1].left).toBe('12.5%');
+      expect(screen.getByTestId('tab-indicator').props.style[1].left).toBe(left);
+      expect(screen.getByTestId('tab-indicator-track')).toHaveStyle({ direction: 'ltr' });
       tabs.unmount();
     }
   });

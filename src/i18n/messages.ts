@@ -12,6 +12,16 @@ export const localeOptions = [
 
 export type Locale = (typeof localeOptions)[number][0];
 
+/** Search aliases complement the displayed autonyms, regardless of the current UI language. */
+export const localeSearchNames: Record<Locale, string> = {
+  system: 'System default', en: 'English', 'zh-Hans': 'Chinese Simplified Mandarin', es: 'Spanish', hi: 'Hindi',
+  ar: 'Arabic', 'pt-BR': 'Portuguese Brazil', bn: 'Bengali Bangla', ru: 'Russian', ja: 'Japanese',
+  pa: 'Punjabi', de: 'German', jv: 'Javanese', ko: 'Korean', fr: 'French', tr: 'Turkish',
+  vi: 'Vietnamese', ta: 'Tamil', ur: 'Urdu', it: 'Italian', fa: 'Persian Farsi', mr: 'Marathi',
+  te: 'Telugu', id: 'Indonesian', th: 'Thai', gu: 'Gujarati', pl: 'Polish', uk: 'Ukrainian',
+  ro: 'Romanian', nl: 'Dutch', he: 'Hebrew',
+};
+
 const en = {
   appName: 'Translate PDF', tagline: 'Technical manuals, made readable.', home: 'Library', settings: 'Settings',
   welcome: 'Your manuals stay yours.', welcomeBody: 'Translate local PDF manuals between Russian, Simplified Chinese, French, English, German, and Spanish on this device. Your files stay here.',

@@ -73,7 +73,8 @@ export function AnimatedTabBar({ active, onChange, colors = palettes.light, labe
   useEffect(() => { indicator.value = reduced ? selectedPosition : withTiming(selectedPosition, { duration: 260 }); }, [active, direction, indicator, reduced, selectedPosition]);
   const indicatorStyle = useAnimatedStyle(() => ({ left: `${interpolate(indicator.value, [0, 1], [12.5, 62.5])}%` }));
   return <View testID="animated-tab-bar" style={{ backgroundColor: colors.surface, borderTopWidth: 1, borderColor: colors.border, paddingBottom: Math.max(8, bottomInset), paddingTop: 8, direction }}>
-    <View style={{ height: 3, position: 'absolute', top: 0, left: 0, right: 0 }}><AnimatedView testID="tab-indicator" style={[{ position: 'absolute', top: 0, width: '25%', height: 3, borderRadius: 3, backgroundColor: colors.accent }, indicatorStyle]} /></View>
+    {/* Positions above are physical left coordinates; keep Yoga from mirroring them a second time. */}
+    <View testID="tab-indicator-track" style={{ direction: 'ltr', height: 3, position: 'absolute', top: 0, left: 0, right: 0 }}><AnimatedView testID="tab-indicator" style={[{ position: 'absolute', top: 0, width: '25%', height: 3, borderRadius: 3, backgroundColor: colors.accent }, indicatorStyle]} /></View>
     <View style={{ flexDirection: 'row', alignItems: 'center' }}>{(['library', 'settings'] as const).map(tab => {
       const selected = active === tab;
       return <Pressable key={tab} accessibilityRole="tab" accessibilityLabel={labels[tab]} accessibilityState={{ selected }} onPress={() => onChange(tab)} style={{ flex: 1, minHeight: 52, alignItems: 'center', justifyContent: 'center', gap: 3 }}>

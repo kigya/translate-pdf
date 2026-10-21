@@ -26,7 +26,7 @@ import type {
 import { PdfTranslator } from '../native/PdfTranslator';
 import type { Palette } from '../ui/theme';
 import type { Locale, Translator } from '../i18n/messages';
-import { localeOptions } from '../i18n/messages';
+import { localeOptions, localeSearchNames } from '../i18n/messages';
 import { ux } from '../i18n/ux';
 import {
   formatBytes,
@@ -552,9 +552,9 @@ export function LanguageChoices({
       <ScrollView keyboardShouldPersistTaps="handled">
         {localeOptions
           .filter(([code, name]) =>
-            `${code} ${name}`
-              .toLocaleLowerCase()
-              .includes(search.toLocaleLowerCase()),
+            `${code} ${name} ${localeSearchNames[code]}`
+              .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+              .includes(search.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()),
           )
           .map(([code, name]) => (
             <Pressable

@@ -44,6 +44,7 @@ export function OnboardingScreen({ colors, t, initialState, persist, onComplete,
     if (!replay) void persist({ version: ONBOARDING_VERSION, page: bounded, done: false }).catch(() => setError(t('onboardFailed')));
   };
   const pageChangeRef = useRef(pageChange); pageChangeRef.current = pageChange;
+  const pageLabel = `${t('page')} ${page + 1} / ${PAGE_COUNT}`;
   const responder = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 35 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.45,
     onPanResponderRelease: (_, gesture) => {
@@ -59,7 +60,7 @@ export function OnboardingScreen({ colors, t, initialState, persist, onComplete,
     return () => subscription.remove();
   }, [onExit, replay]);
   useEffect(() => { const subscription = AppState.addEventListener('change', setAppState); return () => subscription.remove(); }, []);
-  useEffect(() => { AccessibilityInfo.announceForAccessibility(`${page + 1} of ${PAGE_COUNT}. ${t(titleKeys[page])}`); }, [page, t]);
+  useEffect(() => { AccessibilityInfo.announceForAccessibility(`${pageLabel}. ${t(titleKeys[page])}`); }, [page, pageLabel, t]);
   const exitReplay = () => onExit?.();
   const finish = async () => finishWhenIdle(saving, async () => {
     if (replay) { exitReplay(); return; }
@@ -91,7 +92,7 @@ export function OnboardingScreen({ colors, t, initialState, persist, onComplete,
     </ScrollView>
     <View style={{ width: '100%', maxWidth: 560, alignSelf: 'center', paddingHorizontal: 22, gap: 7, direction }}>
       <Notice colors={colors} text={error} />
-      <View testID="onboarding-page-indicator" accessibilityRole="image" accessibilityLabel={`${page + 1} of ${PAGE_COUNT}`} style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 9, marginBottom: 2 }}>
+      <View testID="onboarding-page-indicator" accessible accessibilityRole="image" accessibilityLabel={pageLabel} style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 9, marginBottom: 2 }}>
         {Array.from({ length: PAGE_COUNT }, (_, index) => <View key={index} style={{ width: page === index ? 22 : 6, height: 6, borderRadius: 6, backgroundColor: page === index ? colors.accent : colors.border }} />)}
       </View>
       <Button label={page === PAGE_COUNT - 1 ? (replay ? t('done') : t('next')) : t('next')} onPress={() => page === PAGE_COUNT - 1 ? void finish() : pageChange(page + 1)} colors={colors} disabled={saving} loading={saving} />

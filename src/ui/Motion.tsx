@@ -41,7 +41,7 @@ export function AppIcon({ size = 56, color = '#FFFFFF', background = 'transparen
   }, [active, foreground, motion, shouldReduce]);
   const firstArrow = useAnimatedStyle(() => ({ transform: [{ translateX: interpolate(motion.value, [0, 0.5, 1], [0, 4, 0]) }] }));
   const secondArrow = useAnimatedStyle(() => ({ transform: [{ translateX: interpolate(motion.value, [0, 0.5, 1], [0, -4, 0]) }] }));
-  return <View testID="app-motion-icon" accessible accessibilityRole="image" accessibilityLabel="Translate PDF" style={{ width: size, height: size, borderRadius: size * 0.23, backgroundColor: background, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+  return <View testID="app-motion-icon" accessible accessibilityRole="image" accessibilityLabel="Folivela" style={{ width: size, height: size, borderRadius: size * 0.23, backgroundColor: background, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
     <Svg width={size * 0.78} height={size * 0.82} viewBox="0 0 100 106" fill="none">
       <AnimatedPath d="M24 7h37l18 18v69a7 7 0 0 1-7 7H24a7 7 0 0 1-7-7V14a7 7 0 0 1 7-7Z" fill={color} stroke={color} strokeWidth={2.5} strokeDasharray="360 360" animatedProps={documentProps} />
       <Path d="M61 7v14a4 4 0 0 0 4 4h14" fill={color} opacity={0.7} />

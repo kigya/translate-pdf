@@ -61,6 +61,7 @@ describe('four-scene introduction', () => {
     renderOnboarding();
     expect(screen.getAllByRole('button').map(control => control.props.accessibilityLabel)).toEqual(['Skip', 'Next']);
     expect(screen.getByTestId('onboarding-page-indicator')).toHaveProp('accessibilityRole', 'image');
+    expect(screen.getByRole('image', { name: 'Page 1 / 4' })).toBeOnTheScreen();
     expect(screen.queryByRole('button', { name: 'Previous' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Page 2 of 4' })).toBeNull();
   });
@@ -70,6 +71,7 @@ describe('four-scene introduction', () => {
     expect(screen.getByText(translator('intro1Title'))).toBeOnTheScreen();
     fireEvent.press(screen.getByRole('button', { name: 'Next' }));
     expect(screen.getByTestId('ocr-scene', { includeHiddenElements: true })).toBeOnTheScreen();
+    expect(screen.getByRole('image', { name: 'Page 2 / 4' })).toBeOnTheScreen();
     fireEvent.press(screen.getByRole('button', { name: 'Next' }));
     expect(screen.getByTestId('model-scene', { includeHiddenElements: true })).toBeOnTheScreen();
     fireEvent.press(screen.getByRole('button', { name: 'Next' }));
@@ -192,7 +194,7 @@ describe('illustration motion lifecycle', () => {
 
   it('renders an accessible brand mark and tab navigation with theme-aware selectable labels', () => {
     const icon = render(<AppIcon size={64} background={palettes.dark.accent} active={false} reduced />);
-    expect(screen.getByRole('image', { name: 'Translate PDF' })).toBeOnTheScreen();
+    expect(screen.getByRole('image', { name: 'Folivela' })).toBeOnTheScreen();
     icon.unmount();
     const onChange = jest.fn();
     render(<AnimatedTabBar active="settings" onChange={onChange} colors={palettes.dark} labels={{ library: 'Files', settings: 'Preferences' }} bottomInset={12} />);

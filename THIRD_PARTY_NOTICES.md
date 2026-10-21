@@ -40,3 +40,12 @@ The current chooser also offers the official [Hy-MT2 7B Q4_K_M package](https://
 ## Redistribution limits
 
 These notices cover the listed redistributed components. They are not an exhaustive SBOM or legal clearance for a release: Android transitive AAR/native notices, the complete Xcode/Apple toolchain inventory, and notices for generated artifacts still require a release-specific inventory. Before public binary distribution, verify that the actual packaged artifacts and their required notices match these tracked copies and that users can access the notices in the product. No project-level license should be inferred from third-party licenses.
+
+
+## DOCX preview and OOXML processing
+
+DOCX preview uses docx-preview0.3.7 (Apache-2.0) and JSZip3.10.1 (MIT or GPLv3; distributed here under MIT). Native OOXML processing uses the pinned miniz and pugixml versions recorded in native/vendor/README.md and their bundled license notices. Preview assets run locally; this does not describe the separate optional MyMemory service.
+
+## Kinetik UI
+
+Kinetik UI source components were installed with kinetik-ui1.4.2 and adapted for Folivela under the MIT license. Source provenance is recorded in kinetik.json.

@@ -12,8 +12,8 @@ uint16_t be16(const std::vector<unsigned char>&, size_t);
 uint32_t be32(const std::vector<unsigned char>&, size_t);
 struct FontCoverage {
  const std::vector<unsigned char>& data;
- size_t subtable=0;
- uint16_t format=0;
+ size_t subtable;
+ uint16_t format;
  explicit FontCoverage(const std::vector<unsigned char>&);
  bool has(uint32_t) const;
 };

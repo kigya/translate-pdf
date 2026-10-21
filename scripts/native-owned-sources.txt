@@ -2,6 +2,8 @@
 # downloaded vendor code and public framework headers are intentionally outside
 # the owned application-code coverage denominator.
 native/core.cpp
+native/core_detail.hpp
+native/core_operations.hpp
 native/translation_guard.hpp
 native/android_bridge.cpp
 android/app/src/main/java/com/translatepdf/MainActivity.kt
@@ -27,3 +29,9 @@ ios/TranslatePDF/PdfTranslatorModule.swift
 ios/TranslatePDF/SceneDelegate.swift
 ios/TranslatePDF/TranslateCoreBridge.mm
 ios/TranslatePDF/TranslatorStore.swift
+
+native/docx.cpp
+android/app/src/main/java/dev/kigya/translatepdf/MyMemoryTranslator.kt
+android/app/src/main/java/dev/kigya/translatepdf/DocxPreviewRenderer.kt
+ios/TranslatePDF/DocxPreviewRenderer.swift
+ios/TranslatePDF/MyMemoryTranslator.swift

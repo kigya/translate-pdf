@@ -162,19 +162,21 @@ internal object MemoryPolicy {
       resources(it, totalMemoryBytes, availableMemoryBytes, systemLowMemoryThresholdBytes, systemLowMemory, availableDiskBytes, downloadedBytes[it.id] ?: 0).eligible
     } ?: ModelCatalog.models.first()
     val resource = resources(selected, totalMemoryBytes, availableMemoryBytes, systemLowMemoryThresholdBytes, systemLowMemory, availableDiskBytes, downloadedBytes[selected.id] ?: 0)
-    val reason = when(resource.reason) {
-      "lowMemory" -> "Android reports low memory; wait until other apps release memory."
-      "memoryEstimate" -> "The estimated model working set is above current free memory; the estimate is advisory and runtime may fail if memory is insufficient."
-      "disk" -> "Free storage is below the remaining download plus the 512 MiB work reserve."
-      "unsupported" -> "This model is unavailable in the current runtime."
-      else -> "Fits the current resource estimate. Translation quality and whole-document memory remain experimental."
-    }
+    val reason = recommendationReason(resource.reason)
     return MemoryRecommendation(
       availableMemoryBytes, systemLowMemoryThresholdBytes, resource.reserveBytes, selected.id,
       selected.requiredMemoryBytes, resource.requiredDiskBytes, resource.memoryEligible,
       resource.diskEligible, resource.eligible, resource.eligible, reason,
     )
   }
+
+  internal fun recommendationReason(reason: String): String = when(reason) {
+      "lowMemory" -> "Android reports low memory; wait until other apps release memory."
+      "memoryEstimate" -> "The estimated model working set is above current free memory; the estimate is advisory and runtime may fail if memory is insufficient."
+      "disk" -> "Free storage is below the remaining download plus the 512 MiB work reserve."
+      "unsupported" -> "This model is unavailable in the current runtime."
+      else -> "Fits the current resource estimate. Translation quality and whole-document memory remain experimental."
+    }
 
   fun requiredDiskBytes(modelBytes: Long, downloadedBytes: Long = 0): Long =
     (modelBytes - downloadedBytes.coerceIn(0, modelBytes)).coerceAtLeast(0) + DISK_HEADROOM

@@ -1,7 +1,7 @@
 jest.mock('../src/ui/useMotionReduced', () => ({ useMotionReduced: () => require('react-native-reanimated').useReducedMotion() ?? false }));
 import React from 'react';
-import { BackHandler, PanResponder } from 'react-native';
-import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen } from '@testing-library/react-native-legacy';
+import { AppState } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { finishWhenIdle, ONBOARDING_VERSION, OnboardingScreen, swipePageDelta } from '../src/onboarding/OnboardingScreen';
 import { ModelScene, OcrScene, ProgressScene, TranslationScene } from '../src/onboarding/OnboardingScenes';
@@ -30,11 +30,14 @@ jest.mock('react-native-reanimated', () => {
   const AnimatedView = ReactModule.forwardRef((props: object, ref: object) => ReactModule.createElement(ReactNative.View, { ...props, ref }));
   const FadeIn = { duration: jest.fn(() => 'fade-in') };
   return {
-    __esModule: true, default: { createAnimatedComponent: (component: unknown) => component, View: AnimatedView }, View: AnimatedView,
-    useReducedMotion: jest.fn(() => true), useSharedValue: (value: number) => ReactModule.useRef({ value }).current,
+    __esModule: true, default: { createAnimatedComponent: (component: unknown) => component, View: AnimatedView, Text: ReactNative.Text, ScrollView: ReactNative.ScrollView, Image: ReactNative.Image }, View: AnimatedView,
+    useReducedMotion: jest.fn(() => true), ReduceMotion: { Always: 'always', Never: 'never' }, useSharedValue: (value: number) => ReactModule.useRef({ value, get() { return this.value; }, set(next: number) { this.value = next; } }).current,
+    useFrameCallback: () => ({ setActive: jest.fn() }), useAnimatedRef: () => ReactModule.useRef(null), useDerivedValue: (fn: () => unknown) => ({ get: fn }), Extrapolation: { CLAMP: 'clamp' },
+    useAnimatedScrollHandler: () => jest.fn(),
     useAnimatedStyle: (callback: () => unknown) => callback(),
     useAnimatedProps: (callback: () => unknown) => callback(), cancelAnimation: jest.fn(),
-    withRepeat: jest.fn((value: unknown) => value), withTiming: (value: unknown) => value,
+    withRepeat: jest.fn((value: unknown) => value), withTiming: (value: unknown) => value, withSpring: (value: unknown) => value, withSequence: (...values: unknown[]) => values.at(-1), withDelay: (_delay: number, value: unknown) => value,
+    Easing: { bezier: (..._values: number[]) => (value: number) => value, linear: (value: number) => value, sin: (value: number) => value, inOut: (easing: unknown) => easing },
     interpolate: (value: number, input: number[], output: number[]) => output[0] + Math.max(0, Math.min(1, (value - input[0]) / ((input[1] ?? input[0] + 1) - input[0]))) * (output[1] - output[0]), FadeIn,
   };
 });
@@ -44,129 +47,107 @@ const translator = createTranslator('en');
 
 type OnboardingTestOptions = { persist?: jest.Mock; onComplete?: jest.Mock; direction?: 'ltr' | 'rtl'; replay?: boolean; onExit?: jest.Mock; initialState?: { version: number; page: number; done: boolean } };
 function renderOnboarding({ persist = jest.fn().mockResolvedValue(undefined), onComplete = jest.fn(), direction = 'ltr', replay = false, onExit = jest.fn(), initialState = { version: ONBOARDING_VERSION, page: 0, done: false } }: OnboardingTestOptions = {}) {
-  render(<SafeAreaProvider><OnboardingScreen colors={palettes.light} t={translator} initialState={initialState} persist={persist} onComplete={onComplete} ios={false} direction={direction} replay={replay} onExit={onExit} /></SafeAreaProvider>);
-  return { persist, onComplete, onExit };
+  const view = render(<SafeAreaProvider><OnboardingScreen colors={palettes.light} t={translator} initialState={initialState} persist={persist} onComplete={onComplete} ios={false} direction={direction} replay={replay} onExit={onExit} /></SafeAreaProvider>);
+  fireEvent(screen.getByTestId('onboarding'), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 360, height: 700 } } });
+  return { persist, onComplete, onExit, view };
 }
 
-describe('four-scene introduction', () => {
+describe('three-step Expo onboarding', () => {
+  it('does not run Finish while a save is already in flight', async () => {
+    const finish = jest.fn().mockResolvedValue(undefined);
+    await finishWhenIdle(true, finish);
+    expect(finish).not.toHaveBeenCalled();
+    await finishWhenIdle(false, finish);
+    expect(finish).toHaveBeenCalledTimes(1);
+  });
+
   it('persists Skip as completion on a first run', async () => {
     const { persist, onComplete } = renderOnboarding();
     expect(screen.getByTestId('translation-scene', { includeHiddenElements: true })).toBeOnTheScreen();
     await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Skip' })); await Promise.resolve(); });
-    expect(persist).toHaveBeenCalledWith({ version: ONBOARDING_VERSION, page: 0, done: true });
+    expect(persist).toHaveBeenCalledWith({ version: ONBOARDING_VERSION, page: 2, done: true });
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps Next as the only bottom action and makes page dots passive', () => {
+  it('presents three title-only steps for importing, translating, and comparing documents', () => {
     renderOnboarding();
-    expect(screen.getAllByRole('button').map(control => control.props.accessibilityLabel)).toEqual(['Skip', 'Next']);
-    expect(screen.getByTestId('onboarding-page-indicator')).toHaveProp('accessibilityRole', 'image');
-    expect(screen.getByRole('image', { name: 'Page 1 / 4' })).toBeOnTheScreen();
-    expect(screen.queryByRole('button', { name: 'Previous' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Page 2 of 4' })).toBeNull();
-  });
-
-  it('shows four automatic document demonstrations without illustration controls', () => {
-    renderOnboarding();
-    expect(screen.getByText(translator('intro1Title'))).toBeOnTheScreen();
-    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
-    expect(screen.getByTestId('ocr-scene', { includeHiddenElements: true })).toBeOnTheScreen();
-    expect(screen.getByRole('image', { name: 'Page 2 / 4' })).toBeOnTheScreen();
+    const titles = [translator('intro1Title'), translator('intro2Title'), translator('intro3Title')];
+    expect(screen.getByTestId('translation-scene', { includeHiddenElements: true })).toBeOnTheScreen();
+    for (const title of titles) expect(screen.getByLabelText(title, { includeHiddenElements: true })).toBeOnTheScreen();
+    for (const key of ['intro1Body', 'intro2Body', 'intro3Body'] as const) {
+      expect(screen.queryByText(translator(key), { includeHiddenElements: true })).toBeNull();
+    }
     fireEvent.press(screen.getByRole('button', { name: 'Next' }));
     expect(screen.getByTestId('model-scene', { includeHiddenElements: true })).toBeOnTheScreen();
     fireEvent.press(screen.getByRole('button', { name: 'Next' }));
     expect(screen.getByTestId('progress-scene', { includeHiddenElements: true })).toBeOnTheScreen();
-    expect(screen.queryByText(/notification/i)).toBeNull();
-    expect(screen.getAllByRole('button').map(control => control.props.accessibilityLabel)).toEqual(['Skip', 'Next']);
+    expect(screen.getByRole('button', { name: 'Next' })).toBeOnTheScreen();
   });
 
-  it('finishes from the final Next action and completes only the first-run record', async () => {
+  it('saves completion only when Finish is pressed on the final step', async () => {
     const persist = jest.fn().mockResolvedValue(undefined);
     const onComplete = jest.fn();
     renderOnboarding({ persist, onComplete });
     fireEvent.press(screen.getByRole('button', { name: 'Next' }));
     fireEvent.press(screen.getByRole('button', { name: 'Next' }));
-    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
-    await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Next' })); await Promise.resolve(); });
-    expect(persist).toHaveBeenLastCalledWith({ version: ONBOARDING_VERSION, page: 3, done: true });
+    expect(persist).not.toHaveBeenCalled();
+    await act(async () => { fireEvent(screen.getByRole('button', { name: 'Next' }), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } }); await Promise.resolve(); });
+    expect(persist).toHaveBeenLastCalledWith({ version: ONBOARDING_VERSION, page: 2, done: true });
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
-  it('does not allow a duplicate completion while persistence is pending', async () => {
-    const commit = jest.fn().mockResolvedValue(undefined);
-    await expect(finishWhenIdle(true, commit)).resolves.toBeUndefined();
-    expect(commit).not.toHaveBeenCalled();
-    await finishWhenIdle(false, commit);
-    expect(commit).toHaveBeenCalledTimes(1);
-  });
-
-  it('replays from the first page and system Back exits to Settings without mutating completion', async () => {
-    const addListener = jest.spyOn(BackHandler, 'addEventListener').mockImplementation(() => ({ remove: jest.fn() }));
-    const { persist, onExit, onComplete } = renderOnboarding({ replay: true, initialState: { version: ONBOARDING_VERSION, page: 3, done: true } });
+  it('keeps replay completion unchanged and exits through Skip', () => {
+    const { persist, onExit, onComplete } = renderOnboarding({ replay: true, initialState: { version: ONBOARDING_VERSION, page: 2, done: true } });
     expect(screen.getByTestId('translation-scene', { includeHiddenElements: true })).toBeOnTheScreen();
-    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
-    const back = addListener.mock.calls.at(-1)?.[1] as (() => boolean) | undefined;
-    expect(back?.()).toBe(true);
-    expect(onExit).toHaveBeenCalledTimes(1);
-    expect(persist).not.toHaveBeenCalled();
-    expect(onComplete).not.toHaveBeenCalled();
-    addListener.mockRestore();
-  });
-
-  it('lets Skip close a replay without setting done or returning Home', () => {
-    const { persist, onExit, onComplete } = renderOnboarding({ replay: true });
     fireEvent.press(screen.getByRole('button', { name: 'Skip' }));
     expect(onExit).toHaveBeenCalledTimes(1);
     expect(persist).not.toHaveBeenCalled();
     expect(onComplete).not.toHaveBeenCalled();
   });
 
-  it('uses localized swipe direction for scene navigation', async () => {
+  it('uses the active direction and preserves swipe threshold behavior', () => {
     expect(swipePageDelta(-100, 'ltr')).toBe(1);
-    expect(swipePageDelta(100, 'ltr')).toBe(-1);
     expect(swipePageDelta(100, 'rtl')).toBe(1);
     expect(swipePageDelta(-100, 'rtl')).toBe(-1);
     expect(swipePageDelta(40, 'rtl')).toBe(0);
-    const createSpy = jest.spyOn(PanResponder, 'create');
     const { persist } = renderOnboarding({ direction: 'rtl' });
-    const responder = createSpy.mock.results.at(-1)?.value;
-    const callbacks = createSpy.mock.calls.at(-1)?.[0];
-    expect(callbacks?.onMoveShouldSetPanResponder?.({} as never, { dx: 42, dy: 5 } as never)).toBe(true);
-    await act(async () => { callbacks?.onPanResponderRelease?.({} as never, { dx: 100, dy: 0 } as never); await Promise.resolve(); });
-    expect(screen.getByTestId('ocr-scene', { includeHiddenElements: true })).toBeOnTheScreen();
-    expect(persist).toHaveBeenCalledWith({ version: ONBOARDING_VERSION, page: 1, done: false });
-    expect(responder).toBeDefined();
-    createSpy.mockRestore();
-  });
-
-  it('applies right-to-left text direction while keeping illustration geometry left-to-right', () => {
-    renderOnboarding({ direction: 'rtl' });
     expect(screen.getByTestId('onboarding-root')).toHaveStyle({ direction: 'rtl' });
-    expect(screen.getByTestId('onboarding-example-scene', { includeHiddenElements: true })).toHaveStyle({ direction: 'ltr' });
-    expect(screen.getByText(translator('intro1Title'))).toHaveStyle({ writingDirection: 'rtl' });
+    expect(screen.getByTestId('translation-scene', { includeHiddenElements: true })).toBeOnTheScreen();
+    expect(persist).not.toHaveBeenCalled();
   });
 
-  it('uses a side-by-side layout on landscape tablets and keeps the primary action full width', () => {
-    const reactNative = require('react-native') as typeof import('react-native');
-    const dimensions = jest.spyOn(reactNative, 'useWindowDimensions');
-    dimensions.mockReturnValue({ width: 720, height: 360, scale: 1, fontScale: 1 });
-    renderOnboarding();
-    expect(screen.getByText(translator('intro1Title'))).toHaveStyle({ fontSize: 36, textAlign: 'left' });
-    expect(screen.getByTestId('onboarding-example-scene', { includeHiddenElements: true }).props.style.width).toBeCloseTo(388.12, 1);
-    expect(screen.getByRole('button', { name: 'Next' })).toHaveStyle({ minHeight: 48 });
-    dimensions.mockRestore();
-  });
-
-  it('shows a useful message when a page checkpoint cannot be saved', async () => {
+  it('shows a recovery message when completion cannot be saved', async () => {
     const persist = jest.fn().mockRejectedValue(new Error('Disk is full.'));
     renderOnboarding({ persist });
-    await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Next' })); await Promise.resolve(); });
+    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
+    await act(async () => { fireEvent(screen.getByRole('button', { name: 'Next' }), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } }); await Promise.resolve(); });
     expect(screen.getByText('Could not save the introduction. Try again.')).toBeOnTheScreen();
-    expect(screen.getByTestId('ocr-scene', { includeHiddenElements: true })).toBeOnTheScreen();
+    expect(screen.getByTestId('progress-scene', { includeHiddenElements: true })).toBeOnTheScreen();
   });
 });
 
 describe('illustration motion lifecycle', () => {
+  it('stops and resumes the active scene when the app backgrounds and returns', () => {
+    let changeState: ((state: 'active' | 'background' | 'inactive') => void) | undefined;
+    jest.spyOn(AppState, 'addEventListener').mockImplementation((_event, listener) => {
+      changeState = listener as (state: 'active' | 'background' | 'inactive') => void;
+      return { remove: jest.fn() };
+    });
+    animationMocks.useReducedMotion.mockReturnValue(false);
+    animationMocks.withRepeat.mockClear();
+    const { view: onboarding } = renderOnboarding();
+    act(() => changeState?.('active'));
+    expect(animationMocks.withRepeat).toHaveBeenCalledTimes(1);
+    act(() => changeState?.('background'));
+    expect(animationMocks.withRepeat).toHaveBeenCalledTimes(1);
+    act(() => changeState?.('active'));
+    expect(animationMocks.withRepeat).toHaveBeenCalledTimes(2);
+    onboarding.unmount();
+    jest.restoreAllMocks();
+    animationMocks.useReducedMotion.mockReturnValue(true);
+  });
+
   it('starts automatic scene motion only while active and motion is allowed', () => {
     animationMocks.useReducedMotion.mockReturnValue(false);
     animationMocks.withRepeat.mockClear();

@@ -6,6 +6,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -33,6 +34,14 @@ private object NativeJobPdfOperations : JobPdfNativeOperations {
   override fun mergePdf(pagesJson: String, destination: String): String = NativeCore.mergePdf(pagesJson, destination)
 }
 
+internal fun movePdfFile(source: File, target: File, atomic: Boolean) {
+  if (atomic) {
+    Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+  } else {
+    Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+  }
+}
+
 /** Creates and verifies one durable merged PDF per job from saved page checkpoints. */
 internal class JobPdfExporter(
   private val context: Context,
@@ -40,6 +49,10 @@ internal class JobPdfExporter(
   private val native: JobPdfNativeOperations = NativeJobPdfOperations,
   private val fontProvider: (Context) -> File = { app -> File(app.cacheDir, "NotoSans-Regular.ttf").also { FontAsset.ensure(app, it) } },
   private val cjkFontProvider: (Context) -> File = { app -> File(app.cacheDir, "NotoSansSC-Regular.ttf").also { FontAsset.ensureCjk(app, it) } },
+  private val moveFile: (File, File, Boolean) -> Unit = ::movePdfFile,
+  private val sourcePath: (String) -> String? = { id -> database.jobDocumentPath(id) },
+  private val createWorkDirectory: (File) -> Boolean = { it.mkdirs() },
+  private val openPdfInputStream: (File) -> InputStream = { FileInputStream(it) },
 ) {
   fun getOrBuild(jobId: String, shouldCancel: () -> Boolean = { false }): FinalizedJobPdf {
     val lock = locks.computeIfAbsent(jobId) { Any() }
@@ -61,11 +74,11 @@ internal class JobPdfExporter(
         return FinalizedJobPdf(output, exportId, name, pageCount, partial)
       }
 
-      val source = database.jobDocumentPath(jobId) ?: throw IllegalStateException("The source document is unavailable.")
+      val source = sourcePath(jobId) ?: throw IllegalStateException("The source document is unavailable.")
       val work = File(context.cacheDir, "job-export-${exportId.removePrefix("job-")}")
       val temporary = File(directory, "$exportId.incoming").apply { delete() }
       if (work.exists()) work.deleteRecursively()
-      require(work.mkdirs()) { "The temporary PDF export directory could not be created." }
+      require(createWorkDirectory(work)) { "The temporary PDF export directory could not be created." }
       val pageFiles = JSONArray()
       var partial = false
       val font = fontProvider(context)
@@ -82,8 +95,10 @@ internal class JobPdfExporter(
           val blocks = checkpoint.getJSONArray("blocks")
           val existingError = checkpoint.optString("error").takeIf { !checkpoint.isNull("error") && it.isNotBlank() }
           val pageOutput = File(work, "page-$pageIndex.pdf")
-          var result: JSONObject? = null
-          for (attempt in 0..1) {
+          lateinit var result: JSONObject
+          var pagePartial = checkpoint.optString("status") == "partial"
+          var attempt = 0
+          while (true) {
             checkCanceled(shouldCancel)
             pageOutput.delete()
             val current = JSONObject(native.exportPage(
@@ -95,7 +110,7 @@ internal class JobPdfExporter(
             }
             val issues = current.optJSONArray("issues") ?: JSONArray()
             val changed = PageExportIssues.applyToBlocks(blocks, issues)
-            val pagePartial = checkpoint.optString("status") == "partial" || current.optBoolean("partial") || issues.length() > 0
+            pagePartial = pagePartial || current.optBoolean("partial") || issues.length() > 0
             val pageError = PageExportIssues.pageError(existingError, blocks, pagePartial, issues)
             if (changed || pagePartial || pageError != existingError) {
               database.savePage(jobId, pageIndex, if (pagePartial) "partial" else "completed", blocks.toString(),
@@ -105,8 +120,9 @@ internal class JobPdfExporter(
             partial = partial || pagePartial
             if (!changed) break
             if (attempt == 1) throw IllegalStateException("Page ${pageIndex + 1} layout findings did not stabilize during export.")
+            attempt++
           }
-          if (result?.optBoolean("partial") == true) partial = true
+          if (result.optBoolean("partial")) partial = true
           pageFiles.put(pageOutput.absolutePath)
         }
 
@@ -148,7 +164,7 @@ internal class JobPdfExporter(
   private fun isVerifiedPdf(file: File, expectedPages: Int): Boolean {
     if (!file.isFile || file.length() < PDF_HEADER_BYTES) return false
     val header = ByteArray(PDF_HEADER_BYTES)
-    val read = FileInputStream(file).use { it.read(header) }
+    val read = openPdfInputStream(file).use { it.read(header) }
     if (read < PDF_HEADER_BYTES || String(header, Charsets.US_ASCII) != "%PDF-") return false
     return runCatching {
       val inspected = JSONObject(native.inspect(file.absolutePath))
@@ -172,12 +188,13 @@ internal class JobPdfExporter(
 
   private fun atomicReplace(source: File, target: File) {
     try {
-      Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+      moveFile(source, target, true)
     } catch (_: AtomicMoveNotSupportedException) {
-      Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+      moveFile(source, target, false)
     }
   }
 
+  /** File replacement strategy shared by the default installer and filesystem-fallback tests. */
   private fun exportId(jobId: String): String {
     val digest = MessageDigest.getInstance("SHA-256").digest(jobId.toByteArray(Charsets.UTF_8))
     return "job-" + digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }

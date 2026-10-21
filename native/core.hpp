@@ -1,4 +1,5 @@
 #pragma once
+#include "docx.hpp"
 #include <cstdint>
 #include <string>
 #include <vector>

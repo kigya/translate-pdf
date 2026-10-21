@@ -1,19 +1,20 @@
 import { ColorSchemeName } from 'react-native';
+import { createTheme } from '../lib/kinetik/tokens/tokens';
 
 export type ThemeMode = 'light' | 'dark';
 
-export const palettes = {
-  light: {
-    background: '#F7F6F3', surface: '#FFFFFF', raised: '#F0EFEB', text: '#20201F', muted: '#6B6A66',
-    border: '#E3E1DC', accent: '#C62828', onAccent: '#FFFFFF', softAccent: '#FBE9E7', success: '#237A57',
-    warning: '#A05700', shadow: '#1B191512',
-  },
-  dark: {
-    background: '#171717', surface: '#222222', raised: '#2C2B2A', text: '#F5F3EF', muted: '#B3B0AA',
-    border: '#3C3A38', accent: '#FF6B6B', onAccent: '#271313', softAccent: '#482626', success: '#72D2A8',
-    warning: '#FFBF69', shadow: '#00000000',
-  },
-} as const;
+export const kinetikBrand = {
+  light: { ember: '#C62828', onEmber: '#FFFFFF', emberSoft: '#FBE9E7', azure: '#C62828', success: '#237A57', warning: '#A05700' },
+  dark: { ember: '#C62828', onEmber: '#FFFFFF', danger: '#C62828', emberSoft: '#482626', azure: '#FF6B6B' },
+};
+function palette(mode: ThemeMode) {
+  const { colors } = createTheme(mode, kinetikBrand[mode]);
+  return { background: colors.background, surface: colors.surface, raised: colors.surfaceRaised,
+    text: colors.text, muted: colors.textMuted, border: colors.border,
+    accent: colors.azure, onAccent: mode === 'dark' ? '#271313' : colors.onEmber, primary: colors.ember, onPrimary: colors.onEmber, softAccent: colors.emberSoft,
+    success: colors.success, warning: colors.warning, shadow: 'transparent' };
+}
+export const palettes = { light: palette('light'), dark: palette('dark') };
 
 export function resolveTheme(preference: 'system' | ThemeMode, system: ColorSchemeName): ThemeMode {
   return preference === 'system' ? (system === 'dark' ? 'dark' : 'light') : preference;

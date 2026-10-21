@@ -1,7 +1,11 @@
 import React, { ReactNode } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, TextInputProps, View, ViewStyle } from 'react-native';
+import { PressJelly } from '../components/kinetik/press-jelly';
+import { StatusButton } from '../components/kinetik/status-button';
+import { Pressable, StyleSheet, Text, TextInput, TextInputProps, View, ViewStyle } from 'react-native';
 import { Palette } from './theme';
 import { Icon } from './Controls';
+import { useUiLocale } from '../i18n/UiLocaleContext';
+import { createTranslator, normalizeLocale } from '../i18n/messages';
 
 export type LayoutDirection = 'ltr' | 'rtl';
 
@@ -13,7 +17,7 @@ export function Header({ title, subtitle, colors, onBack, right, backLabel = 'Ba
   const textDirection = { writingDirection: direction, textAlign: direction === 'rtl' ? 'right' as const : 'left' as const };
   return <View style={[styles.header, { borderBottomColor: colors.border, direction }]}>
     {onBack ? <Pressable accessibilityRole="button" accessibilityLabel={backLabel} onPress={onBack} style={styles.back}><Icon name="arrow" size={28} color={colors.accent} rotation={direction === 'rtl' ? 0 : 180}/></Pressable> : null}
-    <View style={{ flex: 1 }}><Text accessibilityRole="header" style={[styles.headerTitle, { color: colors.text }, textDirection]}>{title}</Text>{subtitle ? <Text style={[{ color: colors.muted, marginTop: 3, fontSize: 13 }, textDirection]}>{subtitle}</Text> : null}</View>{right}
+    <View style={{ flex: 1 }}><Text accessibilityRole="header" numberOfLines={2} ellipsizeMode="middle" style={[styles.headerTitle, { color: colors.text }, textDirection]}>{title}</Text>{subtitle ? <Text style={[{ color: colors.muted, marginTop: 3, fontSize: 13 }, textDirection]}>{subtitle}</Text> : null}</View>{right}
   </View>;
 }
 
@@ -33,13 +37,13 @@ export function buttonOpacity(disabled: boolean | undefined, pressed: boolean): 
 }
 
 export function Button({ label, onPress, colors, variant = 'primary', disabled, loading, accessibilityLabel }: { label: string; onPress: () => void; colors: Palette; variant?: 'primary' | 'secondary' | 'quiet' | 'danger'; disabled?: boolean; loading?: boolean; accessibilityLabel?: string }) {
+  const locale = useUiLocale();
   const primary = variant === 'primary';
   const quiet = variant === 'quiet';
-  const bg = primary ? colors.accent : quiet ? 'transparent' : colors.raised;
-  const fg = primary ? colors.onAccent : variant === 'danger' ? colors.accent : colors.text;
-  return <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? label} accessibilityState={{ disabled: Boolean(disabled || loading), busy: Boolean(loading) }} disabled={disabled || loading} onPress={onPress} style={({ pressed }) => [styles.button, { backgroundColor: bg, borderColor: colors.border, borderWidth: primary || quiet ? 0 : 1, opacity: buttonOpacity(disabled, pressed) }, variant === 'danger' && { backgroundColor: colors.softAccent }]}>
-    {loading ? <ActivityIndicator size="small" color={fg} /> : <Text style={{ color: fg, fontWeight: '700', fontSize: 15, textAlign: 'center' }}>{label}</Text>}
-  </Pressable>;
+  const bg = primary ? colors.primary : quiet ? 'transparent' : colors.raised;
+  const fg = primary ? colors.onPrimary : variant === 'danger' ? colors.accent : colors.text;
+  if (primary) return <StatusButton loadingLabel={createTranslator(normalizeLocale(locale))('running')} accessibilityLabel={accessibilityLabel} status={loading ? 'loading' : 'idle'} disabled={disabled} onPress={onPress} style={{ alignSelf: 'stretch' }}>{label}</StatusButton>;
+  return <PressJelly block variant="surface" disabled={disabled || loading} loading={loading} onPress={onPress} accessibilityLabel={accessibilityLabel ?? label} style={{ backgroundColor: bg, borderColor: colors.border }}><Text style={{ color: fg, fontWeight: '700', fontSize: 15 }}>{label}</Text></PressJelly>;
 }
 
 export function Field({ label, colors, value, onChangeText, placeholder, ...props }: TextInputProps & { label: string; colors: Palette }) {

@@ -32,6 +32,38 @@ install_js_dependencies() {
   npm ci
 }
 
+select_xcode_developer_dir() {
+  local candidate
+  local -a candidates=()
+
+  if [[ -n "${DEVELOPER_DIR:-}" ]]; then
+    candidates+=("$DEVELOPER_DIR")
+  else
+    candidate="$(/usr/bin/xcode-select -p 2>/dev/null || true)"
+    [[ -z "$candidate" ]] || candidates+=("$candidate")
+    local app
+    for app in /Applications/Xcode*.app; do
+      [[ -d "$app/Contents/Developer" ]] && candidates+=("$app/Contents/Developer")
+    done
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    [[ -x "$candidate/usr/bin/xcodebuild" ]] || continue
+    [[ -d "$candidate/Platforms/iPhoneOS.platform" ]] || continue
+    [[ -d "$candidate/Platforms/iPhoneSimulator.platform" ]] || continue
+    if ! DEVELOPER_DIR="$candidate" "$candidate/usr/bin/xcodebuild" -version >/dev/null 2>&1; then
+      continue
+    fi
+    export DEVELOPER_DIR="$candidate"
+    export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
+    printf 'Using full Xcode at %s\n' "$DEVELOPER_DIR"
+    return 0
+  done
+
+  printf 'A full Xcode installation with iOS and iOS Simulator SDKs is required. Set DEVELOPER_DIR to its Contents/Developer directory.\n' >&2
+  return 1
+}
+
 check_javascript() {
   install_js_dependencies || return 1
   npm run typecheck || return 1
@@ -63,19 +95,37 @@ check_ios() {
     printf 'The unsigned iOS Release build requires macOS and Xcode.\n' >&2
     return 1
   }
-  require_command xcodebuild && require_command pod || return 1
-  export DEVELOPER_DIR="$(xcode-select -p)"
+  select_xcode_developer_dir || return 1
+  require_command xcodebuild || return 1
+  if ! command -v cmake >/dev/null 2>&1; then
+    local verified_cmake="$ROOT_DIR/.local-private/tools/cmake-3.31.12/cmake-3.31.12-macos-universal/CMake.app/Contents/bin/cmake"
+    if [[ -x "$verified_cmake" ]]; then
+      export CMAKE_BIN="$verified_cmake"
+    else
+      printf 'CMake is required to build the pinned iOS native frameworks.\n' >&2
+      return 1
+    fi
+  fi
+  bash ios/scripts/check-clang-discovery.sh || return 1
   install_js_dependencies || return 1
   python3 scripts/setup-native.py --platforms ios-device-arm64 ios-simulator-arm64 || return 1
   ios/scripts/build-native-frameworks.sh || return 1
   ios/scripts/sync-license-resources.sh || return 1
-  pod install --project-directory=ios --deployment || return 1
+  if command -v pod >/dev/null 2>&1; then
+    pod install --project-directory=ios --deployment || return 1
+  elif cmp -s ios/Podfile.lock ios/Pods/Manifest.lock; then
+    printf 'CocoaPods is unavailable; using the installed Pods tree matching Podfile.lock.\n'
+  else
+    printf 'CocoaPods is unavailable and the installed Pods tree does not match Podfile.lock.\n' >&2
+    return 1
+  fi
   ios/scripts/test-store-pipeline.sh || return 1
 
   local result=0
   xcodebuild \
     -workspace ios/TranslatePDF.xcworkspace \
     -scheme TranslatePDF \
+    -jobs 2 \
     -configuration Release \
     -destination 'generic/platform=iOS' \
     -derivedDataPath "$ROOT_DIR/.local-private/build/ios-release" \
@@ -84,11 +134,65 @@ check_ios() {
   xcodebuild \
     -workspace ios/TranslatePDF.xcworkspace \
     -scheme TranslatePDF \
+    -jobs 2 \
     -configuration Release \
     -destination 'generic/platform=iOS' \
     -archivePath "$ROOT_DIR/ios/build/TranslatePDF.xcarchive" \
+    ARCHS=arm64 \
     CODE_SIGNING_ALLOWED=NO \
     archive || result=1
+  xcodebuild \
+    -workspace ios/TranslatePDF.xcworkspace \
+    -scheme TranslatePDF \
+    -jobs 2 \
+    -configuration Release \
+    -destination 'generic/platform=iOS Simulator' \
+    -derivedDataPath "$ROOT_DIR/.local-private/build/ios-simulator-release" \
+    ARCHS=arm64 \
+    CODE_SIGNING_ALLOWED=NO \
+    build || result=1
+
+  local coverage_dir="$ROOT_DIR/.local-private/build/ios-native-coverage"
+  local coverage_derived="$coverage_dir/DerivedData"
+  local coverage_result="$coverage_dir/NativeCoverage.xcresult"
+  rm -rf "$coverage_derived" "$coverage_result"
+  mkdir -p "$coverage_dir"
+  local simulator_destination="${IOS_SIMULATOR_DESTINATION:-platform=iOS Simulator,name=iPhone 17 Pro}"
+  local coverage_log="$coverage_dir/test.log"
+  if ! xcodebuild \
+      -workspace ios/TranslatePDF.xcworkspace \
+      -scheme TranslatePDF \
+      -jobs 1 \
+      -configuration Debug \
+      -destination "$simulator_destination" \
+      -derivedDataPath "$coverage_derived" \
+      -resultBundlePath "$coverage_result" \
+      -enableCodeCoverage YES \
+      -parallel-testing-enabled NO \
+      -maximum-concurrent-test-simulator-destinations 1 \
+      CODE_SIGNING_ALLOWED=NO \
+      test > "$coverage_log" 2>&1; then
+    tail -100 "$coverage_log" >&2
+    result=1
+  else
+    local coverage_profile="$coverage_dir/Coverage.profdata"
+    local coverage_binary="$coverage_derived/Build/Products/Debug-iphonesimulator/TranslatePDF.app/TranslatePDF.debug.dylib"
+    local coverage_test_binary="$coverage_derived/Build/Products/Debug-iphonesimulator/TranslatePDF.app/PlugIns/TranslatePDFNativeCoverageTests.xctest/TranslatePDFNativeCoverageTests"
+    local llvm_json="$coverage_dir/ios-native-coverage-llvm.json"
+    local xccov_json="$coverage_dir/ios-xccov-report.json"
+    local -a profile_candidates=("$coverage_derived"/Build/ProfileData/*/Coverage.profdata)
+    if [[ ! -f "${profile_candidates[0]}" || ! -f "$coverage_binary" || ! -f "$coverage_test_binary" ]]; then
+      printf 'XCTest coverage profile or instrumented app/test binary is missing.\n' >&2
+      result=1
+    else
+      cp "${profile_candidates[0]}" "$coverage_profile" || result=1
+      xcrun llvm-cov export "$coverage_binary" \
+        -object "$coverage_test_binary" \
+        -instr-profile="$coverage_profile" \
+        > "$llvm_json" || result=1
+      xcrun xccov view --report --json "$coverage_result" > "$xccov_json" || result=1
+    fi
+  fi
   return "$result"
 }
 
@@ -97,41 +201,81 @@ check_native() {
     printf 'The host PDFium regression suite requires the pinned macOS PDFium binary.\n' >&2
     return 1
   }
-  require_command cmake && require_command ctest && require_command xcrun || return 1
-  python3 scripts/setup-native.py --platforms mac-arm64 || return 1
+  require_command cmake && require_command ctest && require_command xcrun && require_command swiftc || return 1
+  # These real model paths are required by the owned profile branches. Omitting
+  # them silently skips the model contracts and cannot satisfy strict coverage.
+  python3 scripts/setup-native.py --platforms mac-arm64 --models q4 gemma hy7 || return 1
+  export TRANSLATEPDF_TEST_MODEL="$ROOT_DIR/.local-private/models/Hy-MT2-1.8B-Q4_K_M.gguf"
+  export TRANSLATEPDF_TEST_GEMMA_MODEL="$ROOT_DIR/.local-private/models/translategemma-4b-it-Q4_K_M.gguf"
+  export TRANSLATEPDF_TEST_HY7_MODEL="$ROOT_DIR/.local-private/models/Hy-MT2-7B-Q4_K_M.gguf"
 
   local build_dir="$ROOT_DIR/.local-private/build/native-host"
   cmake -S native -B "$build_dir" \
     -DCMAKE_BUILD_TYPE=Release \
     -DTRANSLATEPDF_HOST_COVERAGE=ON || return 1
-  cmake --build "$build_dir" --parallel "$(sysctl -n hw.ncpu)" || return 1
+  cmake --build "$build_dir" --parallel 2 || return 1
   export TRANSLATEPDF_NATIVE_SMOKE="$build_dir/native-smoke"
   export DYLD_LIBRARY_PATH="$ROOT_DIR/.local-private/deps/pdfium/mac-arm64/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-  export LLVM_PROFILE_FILE="$build_dir/coverage/%p.profraw"
   mkdir -p "$build_dir/coverage"
+  local profile_dir
+  profile_dir="$(mktemp -d "$build_dir/coverage/run-XXXXXXXX")" || return 1
+  export LLVM_PROFILE_FILE="$profile_dir/%p.profraw"
 
   local result=0
   ctest --test-dir "$build_dir" --output-on-failure || result=1
-  python3 -m unittest discover -s native/tests -v || result=1
-  local profiles=("$build_dir"/coverage/*.profraw)
+  # Native host integration files use the repository's `*_test.py` naming;
+  # unittest's default `test*.py` pattern silently discovers zero of them.
+  python3 -m unittest discover -s native/tests -p '*_test.py' -v || result=1
+  local profiles=("$profile_dir"/*.profraw)
   if [[ ! -f "${profiles[0]}" ]]; then
     printf 'LLVM coverage profiles were not produced.\n' >&2
     return 1
   fi
   xcrun llvm-profdata merge -sparse "${profiles[@]}" -o "$build_dir/coverage/coverage.profdata" || result=1
   xcrun llvm-cov report "$build_dir/native-smoke" \
+    --object "$build_dir/translation-guard-test" \
+    --object "$build_dir/jni-bridge-test" \
     -instr-profile="$build_dir/coverage/coverage.profdata" \
     -ignore-filename-regex='(llama\.cpp|pdfium|\.local-private)' \
     > "$build_dir/coverage/llvm-cov-report.txt" || result=1
   cat "$build_dir/coverage/llvm-cov-report.txt"
   xcrun llvm-cov export "$build_dir/native-smoke" \
+    --object "$build_dir/translation-guard-test" \
+    --object "$build_dir/jni-bridge-test" \
     -instr-profile="$build_dir/coverage/coverage.profdata" \
     -ignore-filename-regex='(llama\.cpp|pdfium|\.local-private)' \
     > "$build_dir/coverage/llvm-cov-export.json" || result=1
+  bash scripts/run-native-swift-coverage.sh "$build_dir/swift-coverage" || result=1
+  local coverage_args=(
+    --owned-sources scripts/native-owned-sources.txt
+    --llvm-json "$build_dir/coverage/llvm-cov-export.json"
+    --report "$build_dir/coverage/native-coverage-gate.json"
+  )
+  local ios_coverage_dir="$ROOT_DIR/.local-private/build/ios-native-coverage"
+  local ios_llvm_json="${TRANSLATEPDF_IOS_LLVM_JSON:-$ios_coverage_dir/ios-native-coverage-llvm.json}"
+  local xccov_json="${TRANSLATEPDF_IOS_XCCOV_JSON:-$ios_coverage_dir/ios-xccov-report.json}"
+  if [[ ! -f "$ios_llvm_json" && -f "$ROOT_DIR/.local-private/ios-build-current/ios-native-coverage-llvm.json" ]]; then
+    ios_llvm_json="$ROOT_DIR/.local-private/ios-build-current/ios-native-coverage-llvm.json"
+  fi
+  if [[ ! -f "$xccov_json" && -f "$ROOT_DIR/.local-private/ios-build-current/ios-xccov-report.json" ]]; then
+    xccov_json="$ROOT_DIR/.local-private/ios-build-current/ios-xccov-report.json"
+  fi
+  if [[ -f "$ios_llvm_json" ]]; then
+    coverage_args+=(--llvm-json "$ios_llvm_json")
+  else
+    # The standalone host Swift test export is useful while XCTest coverage is
+    # unavailable; its branch evidence remains missing and fails closed.
+    coverage_args+=(--llvm-json "$build_dir/swift-coverage/store-tests-llvm.json")
+  fi
+  if [[ -f "$xccov_json" ]]; then
+    coverage_args+=(--xccov-json "$xccov_json")
+  fi
+  local jacoco_xml="${TRANSLATEPDF_JACOCO_XML:-$ROOT_DIR/android/app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml}"
+  if [[ -f "$jacoco_xml" ]]; then
+    coverage_args+=(--jacoco-xml "$jacoco_xml")
+  fi
   if ! python3 scripts/check-native-coverage.py \
-      --owned-sources scripts/native-owned-sources.txt \
-      --llvm-json "$build_dir/coverage/llvm-cov-export.json" \
-      --report "$build_dir/coverage/native-coverage-gate.json"; then
+      "${coverage_args[@]}"; then
     result=1
   fi
   return "$result"

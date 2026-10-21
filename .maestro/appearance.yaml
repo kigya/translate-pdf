@@ -1,0 +1,32 @@
+appId: dev.kigya.translatepdf
+name: Appearance switches and restoration
+tags:
+  - smoke
+  - T40
+---
+- assertVisible: "Translate documents"
+- tapOn:
+    text: "Settings"
+    waitToSettleTimeoutMs: 500
+- tapOn:
+    text: "Appearance"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "Follow system appearance"
+- assertVisible: "Dark"
+- tapOn:
+    text: "Dark"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "Follow system appearance"
+- tapOn:
+    text: "Dark"
+    waitToSettleTimeoutMs: 500
+- tapOn:
+    text: "Follow system appearance"
+    waitToSettleTimeoutMs: 500
+- back
+- assertVisible: "App language"
+- assertVisible: "System default"
+- tapOn:
+    text: "Library"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "Translate documents"

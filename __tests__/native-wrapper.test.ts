@@ -5,6 +5,9 @@ function makeBridge() {
     getLicenseNotice: jest.fn(),
     bootstrap: jest.fn(),
     pickPdf: jest.fn(),
+    pickDocument: jest.fn(),
+    renderDocxPreview: jest.fn(),
+    exportDocument: jest.fn(),
     startModelDownload: jest.fn(),
     pauseModelDownload: jest.fn(),
     deleteModel: jest.fn(),
@@ -22,6 +25,7 @@ function makeBridge() {
     openPdf: jest.fn(),
     setOnboarding: jest.fn(),
     setSettings: jest.fn(),
+    setJobColor: jest.fn(),
     saveGlossaryEntry: jest.fn(),
     deleteGlossaryEntry: jest.fn(),
   };
@@ -65,6 +69,27 @@ describe('typed native bridge boundary', () => {
     expect(await api.pickPdf()).toBeNull();
     bridge.pickPdf.mockResolvedValue('{"id":"doc-1","name":"guide.pdf"}');
     expect(await api.pickPdf()).toEqual({ id: 'doc-1', name: 'guide.pdf' });
+    bridge.pickDocument.mockResolvedValue('null');
+    expect(await api.pickDocument()).toBeNull();
+    bridge.pickDocument.mockResolvedValue('{"id":"word-1","name":"guide.docx","format":"docx"}');
+    expect(await api.pickDocument()).toEqual({ id: 'word-1', name: 'guide.docx', format: 'docx' });
+  });
+
+  it('forwards DOCX preview defaults and parses both export formats', async () => {
+    bridge.renderDocxPreview.mockResolvedValue(JSON.stringify({ uri: 'file:///preview.pdf', pageCount: 3 }));
+    expect(await api.renderDocxPreview('word-1')).toEqual({ uri: 'file:///preview.pdf', pageCount: 3 });
+    expect(bridge.renderDocxPreview).toHaveBeenCalledWith('word-1', null, false);
+    bridge.renderDocxPreview.mockResolvedValue('{"uri":"file:///translated.pdf","pageCount":4}');
+    expect(await api.renderDocxPreview('word-1', 'job-1', true)).toEqual({ uri: 'file:///translated.pdf', pageCount: 4 });
+    expect(bridge.renderDocxPreview).toHaveBeenLastCalledWith('word-1', 'job-1', true);
+
+    const docx = { id: 'saved-docx', uri: 'file:///translated.docx', displayName: 'translated.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
+    const pdf = { id: 'saved-pdf', uri: 'file:///translated.pdf', displayName: 'translated.pdf', mimeType: 'application/pdf' };
+    bridge.exportDocument.mockResolvedValueOnce(JSON.stringify(docx)).mockResolvedValueOnce(JSON.stringify(pdf));
+    expect(await api.exportDocument('job-1', 'docx')).toEqual(docx);
+    expect(await api.exportDocument('job-1', 'pdf')).toEqual(pdf);
+    expect(bridge.exportDocument).toHaveBeenNthCalledWith(1, 'job-1', 'docx');
+    expect(bridge.exportDocument).toHaveBeenNthCalledWith(2, 'job-1', 'pdf');
   });
 
   it('forwards model operations and preserves raw thumbnail URIs', async () => {
@@ -219,6 +244,17 @@ describe('typed native bridge boundary', () => {
     await expect(api.pickPdf()).rejects.toThrow(
       'pickPdf returned invalid native data.',
     );
+  });
+
+  it('persists and clears document labels with operation-specific malformed-response failures', async () => {
+    bridge.setJobColor.mockResolvedValue('{"id":"job-1","labelColor":"red"}');
+    expect(await api.setJobColor('job-1', 'red')).toEqual({ id: 'job-1', labelColor: 'red' });
+    expect(bridge.setJobColor).toHaveBeenLastCalledWith('job-1', 'red');
+    bridge.setJobColor.mockResolvedValue('{"id":"job-1"}');
+    expect(await api.setJobColor('job-1', null)).toEqual({ id: 'job-1' });
+    expect(bridge.setJobColor).toHaveBeenLastCalledWith('job-1', '');
+    bridge.setJobColor.mockResolvedValue('invalid native response');
+    await expect(api.setJobColor('job-1', 'blue')).rejects.toThrow('setJobColor returned invalid native data.');
   });
 
   it('reports a missing native module instead of inventing local state', async () => {

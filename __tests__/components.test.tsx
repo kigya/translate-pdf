@@ -1,8 +1,8 @@
 jest.mock('../src/ui/useMotionReduced', () => ({ useMotionReduced: () => require('react-native-reanimated').useReducedMotion() ?? false }));
 import React from 'react';
-import { render, screen } from '@testing-library/react-native';
-import { fireEvent } from '@testing-library/react-native';
-jest.mock('react-native-reanimated', () => ({ __esModule: true, default: { View: require('react-native').View }, useSharedValue: (value: number) => ({ value }), useAnimatedStyle: (fn: () => object) => fn(), useReducedMotion: () => true, withTiming: (v: number) => v }));
+import { render, screen } from '@testing-library/react-native-legacy';
+import { fireEvent } from '@testing-library/react-native-legacy';
+jest.mock('react-native-reanimated', () => ({ __esModule: true, default: { View: require('react-native').View, Text: require('react-native').Text, ScrollView: require('react-native').ScrollView, Image: require('react-native').Image, createAnimatedComponent: (component: unknown) => component }, Easing: { bezier: (..._values: number[]) => (value: number) => value, linear: (value: number) => value, sin: (value: number) => value, inOut: (easing: unknown) => easing }, ReduceMotion: { Always: 'always', Never: 'never' }, useSharedValue: (value: number) => ({ value, get() { return this.value; }, set(next: number) { this.value = next; } }), useAnimatedStyle: (fn: () => object) => fn(), useDerivedValue: (fn: () => unknown) => ({ get: fn }), useFrameCallback: () => ({ setActive: jest.fn() }), useAnimatedRef: () => require('react').useRef(null), useReducedMotion: () => true, withTiming: (v: number) => v, withSpring: (v: number) => v, withSequence: (...v: number[]) => v.at(-1), withDelay: (_d: number, v: number) => v, interpolate: (_v: number, _i: number[], output: number[]) => output[0], interpolateColor: (_v: number, _i: number[], output: string[]) => output[0] }));
 import { buttonOpacity, Card, Field, Header, Label, Notice, ProgressBar, Row, Screen, SectionTitle, Button } from '../src/ui/components';
 import { palettes } from '../src/ui/theme';
 import { Text, View } from 'react-native';

@@ -1,0 +1,1 @@
+module.exports = { expo: { name: 'Folivela', slug: 'folivela', scheme: 'folivela', version: '0.0.1', platforms: ['android', 'ios'], userInterfaceStyle: 'automatic', android: { package: 'dev.kigya.translatepdf' }, ios: { bundleIdentifier: 'dev.kigya.translatepdf' }, plugins: ['expo-router', 'expo-dev-client'], updates: { enabled: false }, experiments: { typedRoutes: false } } };

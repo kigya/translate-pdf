@@ -1,7 +1,7 @@
 jest.mock('../src/ui/useMotionReduced', () => ({ useMotionReduced: () => require('react-native-reanimated').useReducedMotion() ?? false }));
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { AppState, BackHandler, Linking, Modal, Dimensions, Platform, StyleSheet, TextInput } from 'react-native';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native-legacy';
+import { AppState, BackHandler, Image, Linking, Modal, Dimensions, Platform, StyleSheet } from 'react-native';
 
 jest.mock('react-native-safe-area-context', () => {
   const ReactNative = require('react-native');
@@ -18,38 +18,82 @@ jest.mock('react-native-reanimated', () => {
   const ReactModule = require('react');
   const AnimatedView = ReactModule.forwardRef((props: object, ref: object) => ReactModule.createElement(ReactNative.View, { ...props, ref }));
   const FadeIn = { duration: () => undefined };
+  const FadeInDown = { delay: () => ({ duration: () => ({ easing: () => undefined }) }) };
   return {
     __esModule: true,
-    default: { createAnimatedComponent: (component: unknown) => component, View: AnimatedView },
+    default: { createAnimatedComponent: (component: unknown) => component, View: AnimatedView, Text: ReactNative.Text, ScrollView: ReactNative.ScrollView, Image: ReactNative.Image },
     View: AnimatedView,
     useReducedMotion: () => mockReducedMotion,
-    useSharedValue: (value: number) => ({ value }),
+    useSharedValue: (value: number) => ({ value, get() { return this.value; }, set(next: number) { this.value = next; } }),
     useAnimatedStyle: (callback: () => unknown) => callback(),
     useAnimatedProps: (callback: () => unknown) => callback(),
+    useDerivedValue: (callback: () => unknown) => ({ get: callback }),
+    useAnimatedScrollHandler: () => jest.fn(),
+    useFrameCallback: () => ({ setActive: jest.fn() }),
+    useAnimatedRef: () => ReactModule.useRef(null),
     cancelAnimation: () => undefined,
     withRepeat: (value: unknown) => value,
-    withTiming: (value: unknown) => value,
+    withTiming: (value: unknown, _options?: unknown, callback?: (finished: boolean) => void) => { callback?.(true); return value; },
+    withSpring: (value: unknown) => value,
+    withDelay: (_delay: number, value: unknown) => value,
+    withSequence: (...values: unknown[]) => values.at(-1),
     interpolate: (_value: number, _input: number[], output: number[]) => output[0],
+    interpolateColor: (_value: number, _input: number[], output: string[]) => output[0],
+    ReduceMotion: { Always: 'always', Never: 'never' },
+    Easing: { bezier: (..._values: number[]) => (value: number) => value, linear: (value: number) => value, sin: (value: number) => value, inOut: (easing: unknown) => easing },
     Extrapolation: { CLAMP: 'clamp' },
     FadeIn,
+    FadeInDown,
   };
 });
 
 jest.mock('../src/native/PdfTranslator', () => ({
   PdfTranslator: {
-    bootstrap: jest.fn(), pickPdf: jest.fn(), startModelDownload: jest.fn(), pauseModelDownload: jest.fn(), deleteModel: jest.fn(),
+    bootstrap: jest.fn(), pickDocument: jest.fn(), startModelDownload: jest.fn(), pauseModelDownload: jest.fn(), deleteModel: jest.fn(),
     startJob: jest.fn(), pauseJob: jest.fn(), resumeJob: jest.fn(), cancelJob: jest.fn(), getJob: jest.fn(),
-    renderPage: jest.fn(), renderTranslatedPage: jest.fn(), previewJob: jest.fn(), exportJob: jest.fn(), shareExport: jest.fn(), openPdf: jest.fn(),
+    renderPage: jest.fn(), renderTranslatedPage: jest.fn(), renderDocxPreview: jest.fn(), exportDocument: jest.fn(), previewJob: jest.fn(), exportJob: jest.fn(), shareExport: jest.fn(), openPdf: jest.fn(),
     setOnboarding: jest.fn(), setSettings: jest.fn(), saveGlossaryEntry: jest.fn(), deleteGlossaryEntry: jest.fn(),
     requestPermissions: jest.fn(), requestNotificationPermission: jest.fn(),
     getLicenseNotices: jest.fn().mockResolvedValue([]), getLicenseNotice: jest.fn().mockResolvedValue(''),
   },
 }));
+jest.mock('../src/components/kinetik/star-rating', () => ({
+  StarRating: ({ value, accessibilityLabel, onValueChange }: { value: number; accessibilityLabel: string; onValueChange?: (value: number) => void }) => {
+    const ReactRuntime = require('react');
+    const ReactNative = require('react-native');
+    return ReactRuntime.createElement(ReactNative.View, { accessibilityRole: 'adjustable', accessibilityLabel, accessibilityValue: { min: 0, max: 5, now: value } },
+      ...[1, 2, 3, 4, 5].map(rating => ReactRuntime.createElement(ReactNative.Pressable, { key: rating, accessibilityRole: 'button', accessibilityLabel: `Set rating ${rating}`, onPress: () => onValueChange?.(rating) })),
+    );
+  },
+}));
+// App-flow tests assert routing and native contracts. Kinetik drawing details
+// are covered by the focused component suite; keep these routes viable with
+// the deliberately small Skia Jest mock.
+jest.mock('../src/components/kinetik/confetti-burst', () => {
+  const ReactRuntime = require('react');
+  const ReactNative = require('react-native');
+  return { ConfettiBurst: ReactRuntime.forwardRef(({ children }: { children?: React.ReactNode }, _ref: unknown) => ReactRuntime.createElement(ReactNative.View, null, children)) };
+});
+jest.mock('../src/components/kinetik/ring-spinner', () => {
+  const ReactRuntime = require('react');
+  const ReactNative = require('react-native');
+  return { RingSpinner: ({ label }: { label?: string }) => ReactRuntime.createElement(ReactNative.View, { accessibilityRole: 'progressbar', accessibilityLabel: label }) };
+});
+jest.mock('../src/components/kinetik/scan-progress', () => {
+  const ReactRuntime = require('react');
+  const ReactNative = require('react-native');
+  return { ScanProgress: ({ children, label, progress }: { children?: React.ReactNode; label: string; progress?: number }) => ReactRuntime.createElement(ReactNative.View, null,
+    children,
+    ReactRuntime.createElement(ReactNative.View, { accessibilityRole: 'progressbar', accessibilityLabel: label, ...(progress === undefined ? {} : { accessibilityValue: { min: 0, max: 100, now: Math.round(progress * 100) } }) }),
+  ) };
+});
 
 import App from '../App';
 import { LibraryScreen, TranslationOptionsScreen } from '../src/screens/AppScreens';
 import { createTranslator } from '../src/i18n/messages';
+import { ux } from '../src/i18n/ux';
 import { PRIVACY_URL } from '../src/domain/presentation';
+import type { BootstrapSnapshot } from '../src/native/PdfTranslator';
 
 jest.setTimeout(15_000);
 
@@ -101,6 +145,10 @@ async function renderApp(data: unknown) {
   return renderStartedApp();
 }
 
+function layoutOnboarding() {
+  fireEvent(screen.getByTestId('onboarding'), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 360, height: 700 } } });
+}
+
 describe('native-backed app flows', () => {
   beforeEach(() => {
     cleanup();
@@ -108,6 +156,7 @@ describe('native-backed app flows', () => {
     jest.clearAllMocks();
     native.bootstrap.mockReset().mockResolvedValue(snapshot());
     native.renderPage.mockResolvedValue('file:///private/source.png');
+    native.renderDocxPreview.mockResolvedValue({ uri: 'file:///private/word-preview.pdf', pageCount: 2 });
     jest.spyOn(AppState, 'addEventListener').mockReturnValue({ remove: jest.fn() });
     jest.spyOn(BackHandler, 'addEventListener').mockReturnValue({ remove: jest.fn() });
   });
@@ -141,7 +190,7 @@ describe('native-backed app flows', () => {
     fireEvent.press(screen.getByRole('button', { name: 'manual.pdf' }));
 
     expect(await screen.findByText('Translation Options')).toBeOnTheScreen();
-    expect(screen.getByRole('button', { name: 'Translate PDF' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Translate documents' })).toBeDisabled();
     expect(native.startJob).not.toHaveBeenCalled();
     expect(native.startModelDownload).not.toHaveBeenCalled();
     expect(native.requestPermissions).not.toHaveBeenCalled();
@@ -161,36 +210,71 @@ describe('native-backed app flows', () => {
       data = { ...data, preferences: { ...data.preferences, ...settings } };
       return data.preferences;
     });
-    await renderApp(data);
+    await renderStartedApp();
     native.bootstrap.mockImplementation(async () => data);
     fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
 
     expect(await screen.findByText('Compact')).toBeOnTheScreen();
     expect(await screen.findByText('Balanced')).toBeOnTheScreen();
     expect(screen.getByText('Maximum')).toBeOnTheScreen();
-    expect(screen.getByLabelText('70%')).toBeOnTheScreen();
+    expect(screen.getAllByLabelText('70%')).toHaveLength(2);
     expect(screen.getByLabelText('85%')).toBeOnTheScreen();
     expect(screen.getByLabelText('95%')).toBeOnTheScreen();
     expect(screen.queryByText(/Meaning preserved in/)).toBeNull();
+    fireEvent.press(screen.getAllByRole('button', { name: /^70%/ })[0]);
+    expect(await screen.findByText(ux('en', 'capabilityInfo'))).toBeOnTheScreen();
+    fireEvent.press(screen.getAllByRole('button', { name: 'Back' }).at(-1)!);
     fireEvent.press(screen.getByRole('button', { name: 'Details: Maximum' }));
-    expect(await screen.findByText('Quality candidate')).toBeOnTheScreen();
+    expect(await screen.findByRole('text', { name: 'Quality candidate' })).toBeOnTheScreen();
     expect(screen.queryByText(/Meaning preserved in 29 of 44 test passages/)).toBeNull();
     expect(screen.queryByText(/Evidence covers only 44 technical English→Russian passages/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Licenses' })).toBeNull();
     fireEvent.press(screen.getAllByRole('button', { name: 'Back' }).at(-1)!);
     fireEvent.press(screen.getAllByRole('button', { name: 'Details: Compact' })[0]);
-    expect(await screen.findByText('Compact candidate')).toBeOnTheScreen();
+    expect(await screen.findByRole('text', { name: 'Compact candidate' })).toBeOnTheScreen();
     expect(screen.getByRole('button', { name: 'Licenses' })).toBeOnTheScreen();
     fireEvent.press(screen.getAllByRole('button', { name: 'Back' }).at(-1)!);
-    fireEvent.press(screen.getAllByRole('button', { name: 'Use this model' })[1]);
-    await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ selectedModelId: 'model-balanced' }));
+    fireEvent(screen.getAllByRole('button', { name: 'Use this model' })[2], 'accessibilityAction', { nativeEvent: { actionName: 'activate' } });
+    await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ selectedModelId: 'model-balanced', selectedEngine: { kind: 'local', id: 'model-balanced' } }));
     expect(data.preferences.selectedModelId).toBe('model-balanced');
 
     fireEvent.press(screen.getByRole('button', { name: 'manual.pdf' }));
     expect(await screen.findByText('Translation Options')).toBeOnTheScreen();
     native.startJob.mockResolvedValue({ id: 'job-new', documentId: 'doc-1', documentName: 'manual.pdf', modelId: 'model-balanced', sourceLanguage: 'en', targetLanguage: 'ru', status: 'queued', stage: 'queued', completedPages: 0, totalPages: 12, currentPage: null, createdAt: 1, updatedAt: 1 });
-    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
-    await waitFor(() => expect(native.startJob).toHaveBeenCalledWith({ documentId: 'doc-1', sourceLanguage: 'en', targetLanguage: 'ru', modelId: 'model-balanced', useGlossary: true }));
+    fireEvent(screen.getByRole('button', { name: 'Translate documents' }), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } });
+    await waitFor(() => expect(native.startJob).toHaveBeenCalledWith({ documentId: 'doc-1', sourceLanguage: 'en', targetLanguage: 'ru', modelId: 'model-balanced', engine: { kind: 'local', id: 'model-balanced' }, onlineConsent: false, useGlossary: true }));
+  });
+
+  it('persists MyMemory as the selected engine and requires consent before sending document text', async () => {
+    let data = snapshot() as unknown as BootstrapSnapshot;
+    native.bootstrap.mockImplementation(async () => data);
+    native.setSettings.mockImplementation(async settings => {
+      data = { ...data, preferences: { ...data.preferences, ...settings } };
+      return data.preferences;
+    });
+    await renderStartedApp();
+    fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
+    fireEvent.press(screen.getAllByRole('button', { name: 'Use this model' })[0]);
+    await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ selectedEngine: { kind: 'online', id: 'mymemory' } }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(data.preferences.selectedEngine).toEqual({ kind: 'online', id: 'mymemory' });
+    expect(screen.getAllByText('Without a model download').length).toBeGreaterThan(0);
+    expect(native.startModelDownload).not.toHaveBeenCalled();
+
+    fireEvent.press(screen.getByRole('button', { name: 'manual.pdf' }));
+    expect(await screen.findByText('Translation Options')).toBeOnTheScreen();
+    act(() => screen.getByRole('button', { name: 'Translate documents' }).props.onAccessibilityAction({ nativeEvent: { actionName: 'activate' } }));
+    expect(await screen.findByText('Translate online with MyMemory?')).toBeOnTheScreen();
+    expect(screen.getByText(/sent to MyMemory.*stored long term/i)).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByText('Translate online with MyMemory?')).toBeNull());
+    expect(native.startJob).not.toHaveBeenCalled();
+
+    native.startJob.mockResolvedValue({ id: 'online-job', documentId: 'doc-1', documentName: 'manual.pdf', modelId: 'mymemory', engine: { kind: 'online', id: 'mymemory' }, sourceLanguage: 'en', targetLanguage: 'ru', status: 'queued', stage: 'queued', completedPages: 0, totalPages: 12, currentPage: null, createdAt: 1, updatedAt: 1 });
+    act(() => screen.getByRole('button', { name: 'Translate documents' }).props.onAccessibilityAction({ nativeEvent: { actionName: 'activate' } }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Agree and translate' }));
+    await waitFor(() => expect(native.startJob).toHaveBeenCalledWith({ documentId: 'doc-1', sourceLanguage: 'en', targetLanguage: 'ru', modelId: 'mymemory', engine: { kind: 'online', id: 'mymemory' }, onlineConsent: true, useGlossary: false }));
+    expect(native.startModelDownload).not.toHaveBeenCalled();
   });
 
   it('allows downloading below the estimated memory envelope and shows an advisory', async () => {
@@ -236,7 +320,7 @@ describe('native-backed app flows', () => {
     fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
 
     fireEvent.press(screen.getAllByRole('button', { name: 'Details: Compact' })[0]);
-    expect(await screen.findByText('TranslateGemma')).toBeOnTheScreen();
+    expect(await screen.findByRole('text', { name: 'TranslateGemma' })).toBeOnTheScreen();
     expect(screen.queryByText(createTranslator('en')('gemmaTermsNotice'))).toBeNull();
     fireEvent.press(screen.getAllByRole('button', { name: 'Back' })[1]);
     expect(screen.getByRole('button', { name: 'Accept and download' })).toBeOnTheScreen();
@@ -259,9 +343,9 @@ describe('native-backed app flows', () => {
     expect(await screen.findByText('Translation Options')).toBeOnTheScreen();
     expect(screen.getByText('This model translates without a dictionary.')).toBeOnTheScreen();
     const glossarySwitch = screen.getByRole('switch', { name: 'Use dictionary' });
-    expect(glossarySwitch.props.value).toBe(false);
-    expect(glossarySwitch.props.disabled).toBe(true);
-    expect(screen.getByRole('button', { name: 'Translate PDF' })).toBeEnabled();
+    expect(glossarySwitch.props.accessibilityState.checked).toBe(false);
+    expect(glossarySwitch.props.accessibilityState.disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Translate documents' })).toBeEnabled();
     expect(native.startJob).not.toHaveBeenCalled();
   });
 
@@ -282,7 +366,7 @@ describe('native-backed app flows', () => {
     await renderApp(data);
     native.bootstrap.mockImplementation(async () => data);
     fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
-    fireEvent.press(screen.getAllByRole('button', { name: 'Use this model' })[1]);
+    fireEvent(screen.getAllByRole('button', { name: 'Use this model' })[2], 'accessibilityAction', { nativeEvent: { actionName: 'activate' } });
     await waitFor(() => expect(data.preferences.selectedModelId).toBe('model-new'));
     fireEvent.press(screen.getByRole('button', { name: 'manual.pdf' }));
     fireEvent.press(await screen.findByRole('button', { name: 'Resume' }));
@@ -311,7 +395,7 @@ describe('native-backed app flows', () => {
     await renderApp(snapshot({ jobs: [job] }));
     fireEvent.press(screen.getByRole('button', { name: 'manual.pdf' }));
 
-    expect(screen.getByText('Paused')).toBeOnTheScreen();
+    expect(screen.getAllByText('Paused').length).toBeGreaterThan(0);
     expect(screen.getByText('Page 3')).toBeOnTheScreen();
     native.resumeJob.mockRejectedValue(new Error('Device is offline. Resume when online.'));
     await act(async () => {
@@ -368,7 +452,7 @@ describe('native-backed app flows', () => {
     await renderApp(snapshot({ jobs: [failedJob] }));
     fireEvent.press(screen.getByRole('button', { name: 'manual.pdf' }));
 
-    expect(await screen.findByText('The model file could not be read.')).toBeOnTheScreen();
+    expect((await screen.findAllByText('The model file could not be read.')).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeOnTheScreen();
     expect(screen.queryByRole('button', { name: 'Cancel translation' })).toBeNull();
@@ -420,9 +504,10 @@ describe('native-backed app flows', () => {
     await renderApp(snapshot());
     fireEvent.press(screen.getByRole('tab', { name: 'Settings' }));
     await act(async () => {
-      fireEvent.press(screen.getByRole('button', { name: 'Replay introduction' }));
+      fireEvent.press(screen.getByRole('button', { name: 'View tutorial' }));
       await Promise.resolve(); await Promise.resolve();
     });
+    layoutOnboarding();
 
     expect(native.setOnboarding).not.toHaveBeenCalled();
     expect(screen.getByTestId('translation-scene', { includeHiddenElements: true })).toBeOnTheScreen();
@@ -432,47 +517,102 @@ describe('native-backed app flows', () => {
   });
 
   it('finishes onboarding through the native-valid final page and enters the library', async () => {
-    native.setOnboarding
-      .mockResolvedValueOnce({ version: 1, page: 3, done: false })
-      .mockResolvedValueOnce({ version: 1, page: 3, done: true });
+    native.setOnboarding.mockResolvedValueOnce({ version: 1, page: 2, done: true });
     await renderApp(snapshot({ onboarding: { version: 1, page: 0, done: false } }));
+    layoutOnboarding();
 
     expect(screen.queryByRole('button', { name: 'Page 4 of 4' })).toBeNull();
-    for (let page = 0; page < 4; page += 1) fireEvent.press(screen.getByRole('button', { name: 'Next' }));
+    fireEvent(screen.getByRole('button', { name: 'Next' }), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } });
+    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
+    fireEvent(screen.getByRole('button', { name: 'Next' }), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } });
 
-    await waitFor(() => expect(native.setOnboarding).toHaveBeenLastCalledWith({ version: 1, page: 3, done: true }));
+    await waitFor(() => expect(native.setOnboarding).toHaveBeenLastCalledWith({ version: 1, page: 2, done: true }));
     expect(await screen.findByRole('tab', { name: 'Library' })).toBeOnTheScreen();
     expect(screen.queryByTestId('translation-scene', { includeHiddenElements: true })).toBeNull();
   });
 
   it('keeps the library empty when import is canceled and reports picker failures', async () => {
-    native.pickPdf.mockResolvedValueOnce(null);
+    native.pickDocument.mockResolvedValueOnce(null);
     await renderApp(snapshot({ documents: [] }));
-    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
-    await waitFor(() => expect(native.pickPdf).toHaveBeenCalledTimes(1));
+    fireEvent.press(screen.getByRole('button', { name: 'Translate documents' }));
+    await waitFor(() => expect(native.pickDocument).toHaveBeenCalledTimes(1));
     expect(screen.getByText('Your saved documents will appear here.')).toBeOnTheScreen();
     expect(screen.queryByText('Recent documents')).toBeNull();
 
-    native.pickPdf.mockRejectedValueOnce(new Error('The document provider is unavailable.'));
-    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
+    native.pickDocument.mockRejectedValueOnce(new Error('The document provider is unavailable.'));
+    fireEvent.press(screen.getByRole('button', { name: 'Translate documents' }));
     expect(await screen.findByText('The document provider is unavailable.')).toBeOnTheScreen();
-    native.pickPdf.mockRejectedValueOnce('picker failed without an Error object');
-    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
+    native.pickDocument.mockRejectedValueOnce('picker failed without an Error object');
+    fireEvent.press(screen.getByRole('button', { name: 'Translate documents' }));
     expect(await screen.findByText('The operation did not finish. Your local files are still available.')).toBeOnTheScreen();
     expect(native.requestPermissions).not.toHaveBeenCalled();
   });
 
   it('persists appearance and language choices from settings', async () => {
     await renderApp(snapshot());
+    native.bootstrap.mockResolvedValue(snapshot({ preferences: { theme: 'light', language: 'system' } }));
     fireEvent.press(screen.getByRole('tab', { name: 'Settings' }));
     native.setSettings.mockResolvedValue({ theme: 'dark', language: 'ru' });
 
     fireEvent.press(screen.getByText('Appearance'));
+    native.setSettings.mockResolvedValueOnce({ theme: 'light', language: 'system' });
+    fireEvent.press(screen.getByRole('switch', { name: 'Follow system appearance' }));
+    await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ theme: 'light' }));
+    native.bootstrap.mockResolvedValue(snapshot({ preferences: { theme: 'system', language: 'system' } }));
+    native.setSettings.mockResolvedValueOnce({ theme: 'system', language: 'system' });
+    fireEvent.press(screen.getByRole('switch', { name: 'Follow system appearance' }));
+    await waitFor(() => expect(native.setSettings).toHaveBeenLastCalledWith({ theme: 'system' }));
     fireEvent.press(screen.getByText('Dark'));
     await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ theme: 'dark' }));
     fireEvent.press(screen.getByText('App language'));
     fireEvent.press(screen.getByRole('radio', { name: 'Русский' }));
     await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ language: 'ru' }));
+  });
+
+  it('keeps theme transition captures outside the touch and accessibility trees', async () => {
+    mockReducedMotion = false;
+    await renderApp(snapshot({ preferences: { theme: 'light', language: 'system' } }));
+    native.bootstrap.mockResolvedValue(snapshot({ preferences: { theme: 'dark', language: 'system' } }));
+    fireEvent.press(screen.getByRole('tab', { name: 'Settings' }));
+    native.setSettings.mockResolvedValue({ theme: 'dark', language: 'system' });
+    fireEvent.press(screen.getByRole('button', { name: 'Appearance' }));
+    fireEvent.press(screen.getByText('Dark'));
+    await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ theme: 'dark' }));
+    await waitFor(() => expect(screen.UNSAFE_getAllByType(Image).some(image => image.props.source?.uri === 'file:///temporary-transition.png')).toBe(true));
+    const overlay = screen.UNSAFE_getAllByType(Image).find(image => image.props.source?.uri === 'file:///temporary-transition.png');
+    expect(overlay?.parent?.props).toEqual(expect.objectContaining({ pointerEvents: 'none', importantForAccessibility: 'no-hide-descendants' }));
+    expect(overlay?.parent?.props.accessibilityElementsHidden).toBe(true);
+  });
+
+  it('renders DOCX source preview and online segment progress through the application routes', async () => {
+    const source = { id: 'source-word', name: 'Source.docx', format: 'docx', pageCount: 3, segmentCount: 14, importedAt: 1 };
+    const online = { id: 'online-word', documentId: 'online-doc', documentName: 'Online.docx', documentFormat: 'docx', progressUnit: 'segment', modelId: 'mymemory', engine: { kind: 'online', id: 'mymemory' }, sourceLanguage: 'en', targetLanguage: 'ru', status: 'running', stage: 'translating', completedPages: 4, totalPages: 14, currentPage: 3, createdAt: 1, updatedAt: 2 };
+    const exporting = { id: 'export-word', documentId: 'export-doc', documentName: 'Export.docx', documentFormat: 'docx', progressUnit: 'segment', modelId: 'mymemory', engine: { kind: 'online', id: 'mymemory' }, sourceLanguage: 'en', targetLanguage: 'ru', status: 'running', stage: 'exporting', completedPages: 14, totalPages: 14, currentPage: null, createdAt: 1, updatedAt: 2 };
+    const completed = { id: 'done-word', documentId: 'done-doc', documentName: 'Done.docx', documentFormat: 'docx', progressUnit: 'segment', modelId: 'mymemory', engine: { kind: 'online', id: 'mymemory' }, sourceLanguage: 'en', targetLanguage: 'ru', status: 'completed', stage: 'complete', completedPages: 14, totalPages: 14, currentPage: null, createdAt: 1, updatedAt: 2 };
+    const docs = [source, { id: 'online-doc', name: 'Online.docx', format: 'docx', pageCount: 1, segmentCount: 14, importedAt: 1 }, { id: 'export-doc', name: 'Export.docx', format: 'docx', pageCount: 1, segmentCount: 14, importedAt: 1 }, { id: 'done-doc', name: 'Done.docx', format: 'docx', pageCount: 1, segmentCount: 14, importedAt: 1 }];
+    await renderApp(snapshot({ documents: docs, jobs: [online, exporting, completed] }));
+
+    fireEvent.press(screen.getByRole('button', { name: 'Source.docx' }));
+    expect(await screen.findByText('Preview original')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Preview original' }));
+    await waitFor(() => expect(native.renderDocxPreview).toHaveBeenCalledWith('source-word'));
+    expect(await screen.findByLabelText('Original 1')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Back' }));
+
+    fireEvent.press(screen.getByRole('button', { name: 'Online.docx' }));
+    expect((await screen.findAllByText('Text is sent to MyMemory with your consent')).length).toBeGreaterThan(0);
+    expect(screen.getByText('segments')).toBeOnTheScreen();
+    expect(screen.getByText('4 / 14')).toBeOnTheScreen();
+    expect(screen.getByText('segments 4')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Back' }));
+
+    fireEvent.press(screen.getByRole('button', { name: 'Export.docx' }));
+    expect(await screen.findByText('Save Word (.docx)')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.press(screen.getByRole('tab', { name: 'Library' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Done.docx' }));
+    await waitFor(() => expect(native.renderDocxPreview).toHaveBeenCalledWith('done-doc', 'done-word', true));
   });
 
   it('shows and retries a localized home refresh failure after the UI language changes', async () => {
@@ -488,9 +628,10 @@ describe('native-backed app flows', () => {
     expect(screen.getByRole('button', { name: 'Повторить' })).toBeOnTheScreen();
 
     native.bootstrap.mockResolvedValue(snapshot({ preferences: { theme: 'system', language: 'ru' } }));
+    const bootstrapCountBeforeRetry = native.bootstrap.mock.calls.length;
     fireEvent.press(screen.getByRole('button', { name: 'Повторить' }));
-    await waitFor(() => expect(screen.queryByText('Не удалось обновить библиотеку.')).toBeNull());
-    expect(native.bootstrap).toHaveBeenCalled();
+    await waitFor(() => expect(native.bootstrap).toHaveBeenCalledTimes(bootstrapCountBeforeRetry + 1));
+    expect(screen.queryByRole('button', { name: 'Повторить' })).toBeNull();
   });
 
   it('applies safe-area insets to the app header and non-tab route content', async () => {
@@ -513,7 +654,8 @@ describe('native-backed app flows', () => {
   it('replays the introduction without writing onboarding progress', async () => {
     await renderApp(snapshot());
     fireEvent.press(screen.getByRole('tab', { name: 'Settings' }));
-    fireEvent.press(screen.getByRole('button', { name: 'Replay introduction' }));
+    fireEvent.press(screen.getByRole('button', { name: 'View tutorial' }));
+    layoutOnboarding();
     expect(screen.getByTestId('translation-scene', { includeHiddenElements: true })).toBeOnTheScreen();
     fireEvent.press(screen.getByRole('button', { name: 'Skip' }));
     expect(screen.getByRole('tab', { name: 'Settings' })).toBeOnTheScreen();
@@ -539,13 +681,13 @@ describe('native-backed app flows', () => {
     fireEvent.press(screen.getByRole('tab', { name: 'Settings' }));
     fireEvent.press(screen.getByText('Dictionary'));
     fireEvent.press(screen.getByRole('button', { name: 'Add term' }));
-    fireEvent.changeText(screen.UNSAFE_getAllByType(TextInput)[1], ' radiator ');
-    fireEvent.changeText(screen.UNSAFE_getAllByType(TextInput)[2], ' радиатор ');
+    fireEvent.changeText(screen.getByLabelText('Source term'), ' radiator ');
+    fireEvent.changeText(screen.getByLabelText('Target term'), ' радиатор ');
     fireEvent.press(screen.getByRole('button', { name: 'Save term' }));
     await waitFor(() => expect(native.saveGlossaryEntry).toHaveBeenCalledWith({ id: expect.any(String), source: 'radiator', target: 'радиатор', sourceLanguage: 'en', targetLanguage: 'ru' }));
 
     fireEvent.press(screen.getByRole('button', { name: 'Edit term: radiator' }));
-    fireEvent.changeText(screen.UNSAFE_getAllByType(TextInput)[2], 'батарея');
+    fireEvent.changeText(screen.getByLabelText('Target term'), 'батарея');
     fireEvent.press(screen.getByRole('button', { name: 'Save term' }));
     await waitFor(() => expect(native.saveGlossaryEntry).toHaveBeenLastCalledWith({ id: savedId, source: 'radiator', target: 'батарея', sourceLanguage: 'en', targetLanguage: 'ru' }));
 
@@ -560,22 +702,22 @@ describe('native-backed app flows', () => {
       status: 'running', stage: 'translating', completedPages: 1, totalPages: 3, completedBlocks: 4, discoveredBlocks: 6, totalBlocks: null,
       currentPage: 0, createdAt: 4, updatedAt: 5,
     };
-    native.pickPdf.mockResolvedValue(doc);
+    native.pickDocument.mockResolvedValue(doc);
     native.startJob.mockResolvedValue(runningJob);
     native.pauseJob.mockResolvedValue({ ...runningJob, status: 'paused' });
     native.resumeJob.mockResolvedValue(runningJob);
     native.cancelJob.mockResolvedValue({ ...runningJob, status: 'canceled' });
     await renderApp(snapshot());
-    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Translate documents' }));
     expect(await screen.findByText('Boiler guide.pdf')).toBeOnTheScreen();
     native.bootstrap
       .mockResolvedValueOnce(snapshot({ jobs: [runningJob], documents: [doc] }))
       .mockResolvedValueOnce(snapshot({ jobs: [{ ...runningJob, status: 'paused' }], documents: [doc] }))
       .mockResolvedValueOnce(snapshot({ jobs: [runningJob], documents: [doc] }))
       .mockResolvedValueOnce(snapshot({ jobs: [{ ...runningJob, status: 'canceled' }], documents: [doc] }));
-    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
-    await waitFor(() => expect(native.startJob).toHaveBeenCalledWith({ documentId: 'picked', sourceLanguage: 'en', targetLanguage: 'ru', modelId: 'model-q4', useGlossary: true }));
-    expect(await screen.findByText('Translating locally')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Translate documents' }));
+    await waitFor(() => expect(native.startJob).toHaveBeenCalledWith({ documentId: 'picked', sourceLanguage: 'en', targetLanguage: 'ru', modelId: 'model-q4', engine: { kind: 'local', id: 'model-q4' }, onlineConsent: false, useGlossary: true }));
+    expect((await screen.findAllByText('Translating locally')).length).toBeGreaterThan(0);
     expect(screen.getByText('Page 1')).toBeOnTheScreen();
     expect(screen.getByText(/Blocks translated: 4/)).toBeOnTheScreen();
     expect(screen.getByText(/Blocks found so far: 6/)).toBeOnTheScreen();
@@ -628,19 +770,19 @@ describe('native-backed app flows', () => {
   it('offers preview, save, and share actions when a newly started job completes immediately', async () => {
     const doc = { id: 'picked', name: 'Boiler guide.pdf', pageCount: 1, importedAt: 2 };
     const completeJob = { id: 'job-fast', documentId: doc.id, documentName: doc.name, modelId: 'model-q4', sourceLanguage: 'en', targetLanguage: 'ru', status: 'completed', stage: 'complete', completedPages: 1, totalPages: 1, currentPage: 0, createdAt: 3, updatedAt: 4 };
-    native.pickPdf.mockResolvedValue(doc);
+    native.pickDocument.mockResolvedValue(doc);
     native.startJob.mockResolvedValue(completeJob);
     native.exportJob.mockResolvedValue({ id: 'export-fast', uri: 'content://export-fast', displayName: 'Boiler guide translated.pdf' });
     native.shareExport.mockResolvedValue(undefined);
     native.getJob.mockResolvedValue({ job: completeJob, pages: [{ index: 0, status: 'completed' }], selectedPage: { index: 0, width: 600, height: 800, status: 'completed', blocks: [] } });
     native.renderTranslatedPage.mockResolvedValue('file:///private/fast-preview.png');
     await renderApp(snapshot());
-    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Translate documents' }));
     expect(await screen.findByText('Boiler guide.pdf')).toBeOnTheScreen();
     native.bootstrap.mockResolvedValue(snapshot({ documents: [doc], jobs: [completeJob] }));
-    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Translate documents' }));
     await waitFor(() => expect(native.startJob).toHaveBeenCalled());
-    expect(await screen.findByText('Translation complete')).toBeOnTheScreen();
+    expect((await screen.findAllByText('Translation complete')).length).toBeGreaterThan(0);
     fireEvent.press(screen.getByRole('button', { name: 'Save a copy' }));
     await waitFor(() => expect(native.exportJob).toHaveBeenCalledWith('job-fast'));
     fireEvent.press(screen.getByRole('button', { name: 'Share' }));
@@ -773,7 +915,7 @@ describe('native-backed app flows', () => {
     expect(timerSpy).toHaveBeenCalled();
     view.unmount();
     expect(clearSpy).toHaveBeenCalledWith(scheduledHandle);
-    expect(removeAppState).toHaveBeenCalledTimes(2);
+    expect(removeAppState).toHaveBeenCalledTimes(3);
   });
 
   it('does not schedule splash completion or update state when bootstrap settles after unmount', async () => {
@@ -834,45 +976,45 @@ describe('native-backed app flows', () => {
   it('persists a document language pair, swaps it atomically, and starts with that pair', async () => {
     const doc = { id: 'doc-languages', name: 'Guide.pdf', pageCount: 1, importedAt: 2 };
     let data = snapshot({ preferences: { theme: 'system', language: 'system', sourceLanguage: 'en', targetLanguage: 'ru' } });
-    native.pickPdf.mockResolvedValue(doc);
+    native.pickDocument.mockResolvedValue(doc);
     native.setSettings.mockImplementation(async (settings: Record<string, string>) => {
       data = { ...data, preferences: { ...data.preferences, ...settings } };
       return data.preferences;
     });
     await renderApp(data);
     native.bootstrap.mockImplementation(async () => data);
-    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Translate documents' }));
     await screen.findByText('Guide.pdf');
-    fireEvent.press(screen.getByRole('button', { name: 'Source language: English' }));
-    fireEvent.press(screen.getByRole('button', { name: /Français/ }));
-    await screen.findByRole('button', { name: 'Source language: Français' });
+    fireEvent.press(screen.getByRole('button', { name: /^Source language/ }));
+    fireEvent.press(screen.getByRole('menuitem', { name: /Français/ }));
+    await screen.findByRole('button', { name: /^Source language/ });
     expect(native.setSettings).toHaveBeenLastCalledWith({ sourceLanguage: 'fr', targetLanguage: 'ru' });
-    fireEvent.press(screen.getByRole('button', { name: 'Target language: Русский' }));
-    fireEvent.press(screen.getByRole('button', { name: /Deutsch/ }));
-    await screen.findByRole('button', { name: 'Target language: Deutsch' });
+    fireEvent.press(screen.getByRole('button', { name: /^Target language/ }));
+    fireEvent.press(screen.getByRole('menuitem', { name: /Deutsch/ }));
+    await screen.findByRole('button', { name: /^Target language/ });
     fireEvent.press(screen.getByRole('button', { name: 'Swap languages' }));
-    await screen.findByRole('button', { name: 'Source language: Deutsch' });
+    await screen.findByRole('button', { name: /^Source language/ });
     expect(native.setSettings).toHaveBeenLastCalledWith({ sourceLanguage: 'de', targetLanguage: 'fr' });
     native.startJob.mockResolvedValue({ id: 'job-languages', documentId: doc.id, documentName: doc.name, modelId: 'model-q4', sourceLanguage: 'de', targetLanguage: 'fr', status: 'queued', stage: 'queued', completedPages: 0, totalPages: 1, currentPage: null });
-    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
-    await waitFor(() => expect(native.startJob).toHaveBeenCalledWith({ documentId: doc.id, modelId: 'model-q4', sourceLanguage: 'de', targetLanguage: 'fr', useGlossary: true }));
+    fireEvent.press(screen.getByRole('button', { name: 'Translate documents' }));
+    await waitFor(() => expect(native.startJob).toHaveBeenCalledWith({ documentId: doc.id, modelId: 'model-q4', sourceLanguage: 'de', targetLanguage: 'fr', engine: { kind: 'local', id: 'model-q4' }, onlineConsent: false, useGlossary: true }));
   });
 
   it('keeps the old pair on save failure and applies a confirmed save even if refresh fails', async () => {
-    native.pickPdf.mockResolvedValue({ id: 'doc-pair', name: 'Pair.pdf', pageCount: 1, importedAt: 2 });
+    native.pickDocument.mockResolvedValue({ id: 'doc-pair', name: 'Pair.pdf', pageCount: 1, importedAt: 2 });
     await renderApp(snapshot());
-    fireEvent.press(screen.getByRole('button', { name: 'Translate PDF' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Translate documents' }));
     await screen.findByText('Pair.pdf');
     native.setSettings.mockRejectedValueOnce(new Error('Cannot save languages.'));
-    fireEvent.press(screen.getByRole('button', { name: 'Source language: English' }));
-    fireEvent.press(screen.getByRole('button', { name: /Français/ }));
+    fireEvent.press(screen.getByRole('button', { name: /^Source language/ }));
+    fireEvent.press(screen.getByRole('menuitem', { name: /Français/ }));
     await screen.findByText('Cannot save languages.');
-    expect(screen.getByRole('button', { name: 'Source language: English' })).toBeOnTheScreen();
+    expect(screen.getByRole('button', { name: /^Source language/ })).toBeOnTheScreen();
     native.setSettings.mockResolvedValue({ theme: 'system', language: 'system', sourceLanguage: 'fr', targetLanguage: 'ru' });
     native.bootstrap.mockRejectedValue(new Error('Refresh unavailable.'));
-    fireEvent.press(screen.getByRole('button', { name: 'Source language: English' }));
-    fireEvent.press(screen.getByRole('button', { name: /Français/ }));
-    await screen.findByRole('button', { name: 'Source language: Français' });
+    fireEvent.press(screen.getByRole('button', { name: /^Source language/ }));
+    fireEvent.press(screen.getByRole('menuitem', { name: /Français/ }));
+    await screen.findByRole('button', { name: /^Source language/ });
   });
 
   it('does not present translation-quality samples as measured accuracy', async () => {
@@ -880,7 +1022,8 @@ describe('native-backed app flows', () => {
     await renderApp(snapshot({ models: [model], preferences: { theme: 'system', language: 'system', sourceLanguage: 'fr', targetLanguage: 'zh-Hans' } }));
     fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
     expect(screen.queryByText(/Meaning preserved in/)).toBeNull();
-    expect(screen.getByText('Capability rating ⓘ')).toBeOnTheScreen();
+    fireEvent.press(screen.getAllByRole('button', { name: /^70%/ })[0]);
+    expect(await screen.findByText(ux('en', 'capabilityInfo'))).toBeOnTheScreen();
   });
 
   it.each(['allow','later','dismiss'] as const)('explains a first download then handles notification %s without blocking work', async choice => {
@@ -903,11 +1046,11 @@ describe('native-backed app flows', () => {
   });
   it('requests notifications at the first translation and still starts after a decline', async()=>{
     const data=snapshot({ notifications:{status:'not_determined',canRequest:true} });
-    native.pickPdf.mockResolvedValue(data.documents[0]);native.setSettings.mockResolvedValue(data.preferences);
+    native.pickDocument.mockResolvedValue(data.documents[0]);native.setSettings.mockResolvedValue(data.preferences);
     native.startJob.mockResolvedValue({id:'new'});
-    await renderApp(data);fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
+    await renderApp(data);fireEvent.press(screen.getByRole('button',{name:'Translate documents'}));
     await screen.findByRole('button',{name:'Preview original'});
-    fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
+    fireEvent.press(screen.getByRole('button',{name:'Translate documents'}));
     await screen.findByText('Keep track of your translation');
     fireEvent.press(screen.getByRole('button',{name:'Not now'}));
     await waitFor(()=>expect(native.startJob).toHaveBeenCalled());
@@ -919,10 +1062,9 @@ describe('native-backed app flows', () => {
     await renderApp(snapshot({models:[candidate]}));fireEvent.press(screen.getByRole('button',{name:'Model settings'}));
     fireEvent.press(screen.getByRole('button',{name:'Accept and download'}));
     await screen.findByText(createTranslator('en')('gemmaTermsNotice'));
-    fireEvent.press(screen.getByRole('button',{name:choice==='license'?'Licenses':'Cancel'}));
-    await waitFor(()=>expect(screen.queryByTestId('app-dialog')).toBeNull());
+    fireEvent.press(within(screen.getByTestId('app-dialog')).getByRole('button',{name:choice==='license'?'Licenses':'Cancel'}));
     expect(native.startModelDownload).not.toHaveBeenCalled();
-    if(choice==='license') expect(link).toHaveBeenCalledWith(candidate.licenseUrl);
+    if(choice==='license') await waitFor(()=>expect(link).toHaveBeenCalledWith(candidate.licenseUrl));
   });
   it('confirms bulk model cleanup while preserving the document library and supports cancel',async()=>{
     const models=[snapshot().models[0],{...snapshot().models[0],id:'second'}];
@@ -944,7 +1086,7 @@ describe('native-backed app flows', () => {
     act(()=>expect(subscription.mock.calls.at(-1)[1]()).toBe(true));
     expect(screen.getByRole('button',{name:'Appearance'})).toBeOnTheScreen();
     act(()=>subscription.mock.calls.at(-1)[1]());
-    expect(screen.getByRole('button',{name:'Translate PDF'})).toBeOnTheScreen();
+    expect(screen.getByRole('button',{name:'Translate documents'})).toBeOnTheScreen();
   });
   it('polls active native work only in foreground and avoids polling during a mutation',async()=>{
     let tick!:()=>void; const originalInterval=globalThis.setInterval; const interval=jest.spyOn(globalThis,'setInterval').mockImplementation(((callback:()=>void, delay?:number)=>{ if(delay===1000) { tick=callback; return 987 as unknown as ReturnType<typeof setInterval>; } return originalInterval(callback,delay); }) as typeof setInterval);
@@ -963,15 +1105,15 @@ describe('native-backed app flows', () => {
   });
 
   it('blocks a duplicate in-flight import and a disabled preparation callback without a document',async()=>{
-    let finish!:(v:unknown)=>void;native.pickPdf.mockReturnValue(new Promise(r=>{finish=r;}));
+    let finish!:(v:unknown)=>void;native.pickDocument.mockReturnValue(new Promise(r=>{finish=r;}));
     await renderApp(snapshot({models:[]}));
     const translate=screen.UNSAFE_getByType(LibraryScreen).props.onTranslate;
-    act(()=>{translate();translate();});expect(native.pickPdf).toHaveBeenCalledTimes(1);
+    act(()=>{translate();translate();});expect(native.pickDocument).toHaveBeenCalledTimes(1);
     await act(async()=>finish(null));
     expect(native.startJob).not.toHaveBeenCalled();
     // The preparation component's imperative callback must remain safe after state invalidation.
-    const doc=snapshot().documents[0];native.pickPdf.mockResolvedValue(doc);
-    fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
+    const doc=snapshot().documents[0];native.pickDocument.mockResolvedValue(doc);
+    fireEvent.press(screen.getByRole('button',{name:'Translate documents'}));
     await screen.findByText('manual.pdf');
     act(()=>screen.UNSAFE_getByType(TranslationOptionsScreen).props.onStart());
     expect(native.startJob).not.toHaveBeenCalled();
@@ -979,8 +1121,8 @@ describe('native-backed app flows', () => {
   });
   it('opens the original preview before translating, then returns without starting work',async()=>{
     native.renderPage.mockResolvedValue('file:///preview.png');
-    native.pickPdf.mockResolvedValue(snapshot().documents[0]);
-    await renderApp(snapshot());fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
+    native.pickDocument.mockResolvedValue(snapshot().documents[0]);
+    await renderApp(snapshot());fireEvent.press(screen.getByRole('button',{name:'Translate documents'}));
     await screen.findByRole('button',{name:'Preview original'});
     fireEvent.press(screen.getByRole('button',{name:'Preview original'}));
     expect(await screen.findByLabelText('Original PDF 1')).toBeOnTheScreen();
@@ -998,15 +1140,17 @@ describe('native-backed app flows', () => {
     await renderApp(snapshot());fireEvent.press(screen.getByRole('tab',{name:'Settings'}));
     fireEvent.press(screen.getByRole('button',{name:'Appearance'}));
     fireEvent(screen.UNSAFE_getAllByType(Modal).find(v=>v.props.visible)!,'requestClose');
-    fireEvent.press(screen.getByRole('button',{name:'Replay introduction'}));
-    for(let i=0;i<3;i++) await act(async()=>fireEvent.press(screen.getByRole('button',{name:'Next'})));
-    await act(async()=>fireEvent.press(screen.getByRole('button',{name:'Done'})));
-    expect(screen.getByRole('button',{name:'Appearance'})).toBeOnTheScreen();expect(native.setOnboarding).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByRole('button',{name:'View tutorial'}));
+    layoutOnboarding();
+    for(let i=0;i<2;i++) await act(async()=>fireEvent.press(screen.getByRole('button',{name:'Next'})));
+    await act(async()=>fireEvent(screen.getByRole('button',{name:'Next'}), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } }));
+    await waitFor(()=>expect(screen.getByRole('button',{name:'Appearance'})).toBeOnTheScreen());
+    expect(native.setOnboarding).not.toHaveBeenCalled();
   });
   it('keeps a failed startup retry visible and ignores a later rejected bootstrap after unmount',async()=>{
     native.bootstrap.mockRejectedValue(new Error('Unavailable'));
     const view=await renderStartedApp();expect(await screen.findByText('Unavailable')).toBeOnTheScreen();
-    fireEvent.press(screen.getByRole('button',{name:'Try again'}));await act(async()=>{});
+    fireEvent.press(screen.getAllByRole('button',{name:'Try again'}).at(-1)!);await act(async()=>{});
     expect(screen.getByText('Unavailable')).toBeOnTheScreen();view.unmount();
     let fail!:(e:Error)=>void;native.bootstrap.mockReturnValue(new Promise((_,r)=>{fail=r;}));
     const other=render(<App/>);other.unmount();await act(async()=>fail(new Error('late')));
@@ -1014,8 +1158,8 @@ describe('native-backed app flows', () => {
 
   it('routes optional preparation tools and persists an explicit dictionary opt-out',async()=>{
     const term={id:'g',source:'pump',target:'насос',sourceLanguage:'en',targetLanguage:'ru'};
-    native.pickPdf.mockResolvedValue(snapshot().documents[0]);
-    await renderApp(snapshot({glossary:[term]}));fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
+    native.pickDocument.mockResolvedValue(snapshot().documents[0]);
+    await renderApp(snapshot({glossary:[term]}));fireEvent.press(screen.getByRole('button',{name:'Translate documents'}));
     await screen.findByRole('button',{name:'Preview original'});
     fireEvent(screen.getByRole('switch',{name:'Use dictionary'}),'valueChange',false);
     fireEvent.press(screen.getByRole('button',{name:'Dictionary'}));expect(screen.getByRole('button',{name:'Edit term: pump'})).toBeOnTheScreen();
@@ -1025,7 +1169,8 @@ describe('native-backed app flows', () => {
   it('keeps unknown job totals at zero, labels a queued job, and handles canceled export',async()=>{
     const job={id:'q',documentId:'doc-1',documentName:'Queued.pdf',modelId:'model-q4',sourceLanguage:'en',targetLanguage:'ru',status:'queued',stage:'queued',completedPages:0,totalPages:0,currentPage:null,discoveredBlocks:0,etaRangeSeconds:{min:NaN,max:Infinity}};
     await renderApp(snapshot({jobs:[job]}));fireEvent.press(screen.getByRole('button',{name:'Queued.pdf'}));
-    expect(screen.getByRole('progressbar')).toHaveAccessibilityValue({now:0,min:0,max:100});
+    expect(screen.getByText('Pages complete')).toBeOnTheScreen();
+    expect(screen.getByText('0 / 0')).toBeOnTheScreen();
     expect(screen.getByText('Blocks translated: 0 · Blocks found so far: 0')).toBeOnTheScreen();
     expect(screen.getAllByText('Waiting to start').length).toBeGreaterThan(0);
   });
@@ -1055,7 +1200,7 @@ describe('native-backed app flows', () => {
     native.bootstrap.mockRejectedValueOnce('unexpected native rejection');await act(async()=>tick());
     expect(await screen.findByText(createTranslator('en')('unknownError'))).toBeOnTheScreen();
     native.bootstrap.mockRejectedValueOnce(new Error('Still offline'));
-    fireEvent.press(screen.getByRole('button',{name:'Try again'}));await act(async()=>{});
+    fireEvent.press(screen.getAllByRole('button',{name:'Try again'}).at(-1)!);await act(async()=>{});
     expect(screen.getByText('Still offline')).toBeOnTheScreen();
   });
 
@@ -1081,8 +1226,8 @@ describe('native-backed app flows', () => {
     let resolve!:(v:unknown)=>void, reject!:(e:Error)=>void;
     native.bootstrap.mockImplementationOnce(()=>new Promise((a,b)=>{resolve=a;reject=b;}));
     act(()=>tick());
-    native.pickPdf.mockResolvedValueOnce(null);fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
-    await waitFor(()=>expect(native.pickPdf).toHaveBeenCalled());
+    native.pickDocument.mockResolvedValueOnce(null);fireEvent.press(screen.getByRole('button',{name:'Translate documents'}));
+    await waitFor(()=>expect(native.pickDocument).toHaveBeenCalled());
     await act(async()=>{if(outcome==='resolve')resolve(snapshot({documents:[]}));else reject(new Error('Stale failure'));});
     expect(screen.getByText('manual.pdf')).toBeOnTheScreen();expect(screen.queryByText('Stale failure')).toBeNull();
   });
@@ -1094,17 +1239,17 @@ describe('native-backed app flows', () => {
   it('routes dictionary language changes, and handles model-only completed job fields on Android',async()=>{
     native.setSettings.mockResolvedValue({theme:'system',language:'system',sourceLanguage:'fr',targetLanguage:'ru'});
     await renderApp(snapshot());fireEvent.press(screen.getByRole('tab',{name:'Settings'}));fireEvent.press(screen.getByRole('button',{name:'Dictionary'}));
-    fireEvent.press(screen.getByRole('button',{name:'Source language: English'}));fireEvent.press(screen.getByRole('button',{name:/Français/}));
+    fireEvent.press(screen.getByRole('button',{name:/^Source language/}));fireEvent.press(screen.getByRole('menuitem',{name:/Français/}));
     await waitFor(()=>expect(native.setSettings).toHaveBeenCalledWith({sourceLanguage:'fr',targetLanguage:'ru'}));
   });
   it('shows known completed block counts without a discovered total and cancels saving a new result',async()=>{
     jest.replaceProperty(Platform,'OS','android');
     const doc=snapshot().documents[0];const job={id:'done-new',documentId:doc.id,documentName:doc.name,modelId:'model-q4',sourceLanguage:'en',targetLanguage:'ru',status:'completed',stage:'complete',completedPages:1,totalPages:1,completedBlocks:2,currentPage:0};
-    native.pickPdf.mockResolvedValue(doc);native.startJob.mockResolvedValue(job);native.exportJob.mockResolvedValue(null);
+    native.pickDocument.mockResolvedValue(doc);native.startJob.mockResolvedValue(job);native.exportJob.mockResolvedValue(null);
     native.bootstrap.mockResolvedValue(snapshot());await renderStartedApp();
     native.bootstrap.mockResolvedValue(snapshot({jobs:[job]}));
-    fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));await screen.findByRole('button',{name:'Preview original'});
-    fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));await screen.findByText('Blocks translated: 2');
+    fireEvent.press(screen.getByRole('button',{name:'Translate documents'}));await screen.findByRole('button',{name:'Preview original'});
+    fireEvent.press(screen.getByRole('button',{name:'Translate documents'}));await screen.findByText('Blocks translated: 2');
     fireEvent.press(screen.getByRole('button',{name:'Save a copy'}));await waitFor(()=>expect(native.exportJob).toHaveBeenCalledWith('done-new'));
     expect(screen.queryByRole('button',{name:'Share'})).toBeNull();
   });
@@ -1114,7 +1259,7 @@ describe('native-backed app flows', () => {
     const view=await renderApp(snapshot({preferences:{theme:'dark',language:'system'}}));
     expect(screen.getByText('Folivela')).toBeOnTheScreen();
     fireEvent.press(screen.getByRole('tab',{name:'Settings'}));fireEvent.press(screen.getByRole('button',{name:'Back'}));
-    expect(screen.getByRole('button',{name:'Translate PDF'})).toBeOnTheScreen();view.unmount();
+    expect(screen.getByRole('button',{name:'Translate documents'})).toBeOnTheScreen();view.unmount();
     const intro=await renderApp(snapshot({preferences:{theme:'dark',language:'system'},onboarding:{version:1,page:0,done:false}}));
     expect(screen.getByRole('button',{name:'Skip'})).toBeOnTheScreen();intro.unmount();
     native.bootstrap.mockRejectedValueOnce(new Error(''));

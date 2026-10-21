@@ -17,6 +17,8 @@ internal class ModelDownloadCanceled : IllegalStateException("Model download was
 internal class ModelDownloader(
   context: Context,
   private val database: TranslatorDatabase,
+  private val definitionLookup: (String) -> ModelDefinition = ModelCatalog::get,
+  private val cancellationWaitMillis: Long = 50_000,
 ) {
   private val appContext = context.applicationContext
   private val modelDirectory = File(appContext.filesDir, "models").apply { mkdirs() }
@@ -25,13 +27,19 @@ internal class ModelDownloader(
   // the service-owned socket and wait for its worker before unlinking files.
   private val active: ConcurrentHashMap<String, Transfer> = transfers
 
-  fun fileFor(modelId: String): File = File(modelDirectory, "${ModelCatalog.get(modelId).id}.gguf")
-  fun partialLength(modelId: String): Long = File(modelDirectory, "${ModelCatalog.get(modelId).id}.part").length()
+  fun fileFor(modelId: String): File = File(modelDirectory, "${definitionLookup(modelId).id}.gguf")
+  fun partialLength(modelId: String): Long = File(modelDirectory, "${definitionLookup(modelId).id}.part").length()
   fun installedLength(modelId: String): Long = fileFor(modelId).length()
   fun storedLength(modelId: String): Long = installedLength(modelId) + partialLength(modelId)
 
+  /** Process-local work includes reserved starts, before the service claims them. */
+  fun hasActiveTransfer(modelId: String): Boolean {
+    val transfer = active[modelId] ?: return false
+    return synchronized(transfer) { !transfer.stopRequested }
+  }
+
   fun isReady(modelId: String): Boolean {
-    val definition = ModelCatalog.get(modelId)
+    val definition = definitionLookup(modelId)
     val file = fileFor(modelId)
     return file.isFile && file.length() == definition.bytes && sha256(file) == definition.sha256
   }
@@ -39,12 +47,12 @@ internal class ModelDownloader(
   fun isInstalled(modelId: String): Boolean {
     val state = database.modelState(modelId)
     val file = fileFor(modelId)
-    return state?.first == "ready" && file.isFile && file.length() == ModelCatalog.get(modelId).bytes
+    return state?.first == "ready" && file.isFile && file.length() == definitionLookup(modelId).bytes
   }
 
   /** Reserve before enqueueing the foreground service so delete can tombstone queued starts. */
   fun reserve(modelId: String): String {
-    ModelCatalog.get(modelId)
+    definitionLookup(modelId)
     while (true) {
       val current=active[modelId]
       if (current != null) {
@@ -115,7 +123,7 @@ internal class ModelDownloader(
   }
 
   fun start(modelId: String, onProgress: (Long) -> Unit, onFinished: (Result<File>) -> Unit, downloadUrl: URL? = null, transferToken: String? = null) {
-    val definition = ModelCatalog.get(modelId)
+    val definition = definitionLookup(modelId)
     val transfer=if (transferToken != null) {
       val reserved=active[modelId]
       if (reserved == null || reserved.token != transferToken) {
@@ -240,10 +248,10 @@ internal class ModelDownloader(
       current.connection?.disconnect()
       if (!current.started) current.finished.countDown()
     } }
-    if (transfer != null && !transfer.finished.await(50, TimeUnit.SECONDS)) {
+    if (transfer != null && !transfer.finished.await(cancellationWaitMillis, TimeUnit.MILLISECONDS)) {
       throw IllegalStateException("The model transfer has not stopped yet. Retry deletion after it pauses.")
     }
-    val definition = ModelCatalog.get(modelId)
+    val definition = definitionLookup(modelId)
     File(modelDirectory, "${definition.id}.part").delete()
     File(modelDirectory, "${definition.id}.gguf").delete()
   }

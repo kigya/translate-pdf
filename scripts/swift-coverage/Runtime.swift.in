@@ -1,0 +1,75 @@
+// Generated test-only recorder. The full registry exists before any production code runs.
+import Foundation
+import CryptoKit
+import ObjectiveC
+private final class __FBCovImageMarker: NSObject {}
+private let __fbDeclaredModule = "@@MODULE@@"
+private let __fbRegistry: [String:[String]] = @@REGISTRY@@
+private let __fbDigest = "@@DIGEST@@"
+enum __FBCov {
+  private static let lock = NSLock()
+  private static var hits = __fbRegistry.mapValues { Dictionary(uniqueKeysWithValues:$0.map { ($0, UInt64(0)) }) }
+  private static var invalid = false
+  private static func record(_ id: String, _ outcome: String) {
+    lock.lock(); defer { lock.unlock() }
+    guard let count = hits[id]?[outcome], count < UInt64.max else { invalid = true; return }
+    hits[id]![outcome] = count + 1
+  }
+  final class AvailabilityToken {
+    let id: String; var passed = false
+    init(_ id: String) { self.id = id }
+  }
+  static func beginAvailable(_ id: String) -> AvailabilityToken { AvailabilityToken(id) }
+  static func passAvailable(_ token: AvailabilityToken) -> Bool { token.passed = true; record(token.id,"true"); return true }
+  static func finishAvailable(_ token: AvailabilityToken) { if !token.passed { record(token.id,"false") } }
+  static func selected(_ id: String, _ outcome: String) { record(id,outcome) }
+  static func attempt<T>(_ id: String, _ body: @autoclosure () throws -> T) rethrows -> T {
+    do { let result = try body(); record(id,"success"); return result }
+    catch { record(id,"error"); throw error }
+  }
+  static func boolean(_ id: String, _ value: Bool) -> Bool { record(id,value ? "true" : "false"); return value }
+  static func optional<T>(_ id: String, _ value: T?) -> T? { record(id,value == nil ? "nil" : "some"); return value }
+  struct ObservedSequence<Base:Sequence>: Sequence {
+    let id: String; let base: Base
+    struct Iterator: IteratorProtocol {
+      let id: String; var base: Base.Iterator
+      mutating func next() -> Base.Element? { let value = base.next(); record(id,value == nil ? "exhausted" : "item"); return value }
+    }
+    func makeIterator() -> Iterator { Iterator(id:id,base:base.makeIterator()) }
+  }
+  static func sequence<S:Sequence>(_ id: String, _ sequence: S) -> ObservedSequence<S> { ObservedSequence(id:id,base:sequence) }
+  // Only export is called by a test driver. There is no public mark-covered API.
+  static func export(to path: String, runID: String) throws {
+    lock.lock(); let snapshot = hits; let failure = invalid; lock.unlock()
+    let actualModule = String(reflecting:__FBCov.self).components(separatedBy:".")[0]
+    guard __fbDeclaredModule.isEmpty || __fbDeclaredModule == actualModule else { throw NSError(domain:"SwiftBranch",code:15) }
+    guard let imageName = class_getImageName(__FBCovImageMarker.self) else { throw NSError(domain:"SwiftBranch",code:16) }
+    let executable = URL(fileURLWithPath:String(cString:imageName)).standardizedFileURL
+    let handle = try FileHandle(forReadingFrom:executable)
+    defer { try? handle.close() }
+    guard let header = try handle.read(upToCount:32), header.count == 32 else { throw NSError(domain:"SwiftBranch",code:10) }
+    var bytes = Array(header)
+    func u32(_ offset: Int) -> UInt32 { UInt32(bytes[offset]) | UInt32(bytes[offset+1]) << 8 | UInt32(bytes[offset+2]) << 16 | UInt32(bytes[offset+3]) << 24 }
+    guard u32(0) == 0xfeedfacf else { throw NSError(domain:"SwiftBranch",code:11) }
+    let loadCommandSize = Int(u32(20))
+    guard loadCommandSize <= 16*1024*1024, let commands = try handle.read(upToCount:loadCommandSize), commands.count == loadCommandSize else { throw NSError(domain:"SwiftBranch",code:17) }
+    bytes.append(contentsOf:commands)
+    var offset = 32
+    var binaryUUID: String?
+    for _ in 0..<u32(16) {
+      guard offset + 8 <= bytes.count else { throw NSError(domain:"SwiftBranch",code:12) }
+      let command = u32(offset), size = Int(u32(offset+4))
+      guard size >= 8, offset + size <= bytes.count else { throw NSError(domain:"SwiftBranch",code:13) }
+      if command == 0x1b, size == 24 { binaryUUID = bytes[(offset+8)..<(offset+24)].map { String(format:"%02x",$0) }.joined() }
+      offset += size
+    }
+    guard let binaryUUID else { throw NSError(domain:"SwiftBranch",code:14) }
+    try handle.seek(toOffset:0)
+    var hasher = SHA256()
+    while let chunk = try handle.read(upToCount:1024*1024), !chunk.isEmpty { hasher.update(data:chunk) }
+    let executableSHA = hasher.finalize().map { String(format:"%02x",$0) }.joined()
+    let record: [String:Any] = ["schemaVersion":1,"registryDigest":__fbDigest,"runID":runID,"hits":snapshot,"invalid":failure,"binarySHA256":executableSHA,"binaryUUID":binaryUUID,"binaryPath":executable.path,"processID":ProcessInfo.processInfo.processIdentifier,"runtimeOS":ProcessInfo.processInfo.operatingSystemVersionString,"recorderModule":actualModule,"declaredModule":__fbDeclaredModule,"binaryRole":"loaded-instrumented-image","processExecutablePath":CommandLine.arguments[0],"recordedAtEpoch":Date().timeIntervalSince1970]
+    let data = try JSONSerialization.data(withJSONObject:record,options:[.prettyPrinted,.sortedKeys])
+    try data.write(to:URL(fileURLWithPath:path),options:.atomic)
+  }
+}

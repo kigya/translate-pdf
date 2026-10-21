@@ -4,6 +4,28 @@ import Svg, { Circle, Path } from 'react-native-svg';
 import Animated, { cancelAnimation, interpolate, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { Palette } from '../ui/theme';
 
+/** Contrast tuning is scoped to the onboarding illustrations. */
+export function onboardingScenePalette(colors: Palette): Palette {
+  if (colors.background.toLowerCase() === '#000000') {
+    return {
+      ...colors,
+      surface: '#0A0A0A',
+      raised: '#606060',
+      border: '#B8B8B8',
+      muted: '#F0F0F0',
+      accent: '#FFB0B0',
+      onAccent: '#271313',
+      softAccent: '#606060',
+    };
+  }
+  return {
+    ...colors,
+    raised: '#EDEDED',
+    border: '#595959',
+    muted: '#595959',
+  };
+}
+
 function useLoop(duration: number, active: boolean, reduced: boolean) {
   const progress = useSharedValue(0);
   useEffect(() => {
@@ -30,7 +52,7 @@ export function TranslationScene({ colors, active, reduced }: { colors: Palette;
   const reveal = useAnimatedStyle(() => ({ width: `${interpolate(progress.value, [0, 0.46, 0.68, 1], [4, 5, 100, 100])}%` }));
   return <View testID="translation-scene" style={{ width: 250, height: 330, alignItems: 'center', justifyContent: 'center' }}>
     <Animated.View style={translate}><DocumentPage colors={colors} chinese /></Animated.View>
-    <View style={{ position: 'absolute', top: 153, left: 19, right: 19, height: 33, borderRadius: 16, backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center', elevation: 3 }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}><View style={{ width: 35, height: 4, borderRadius: 4, backgroundColor: '#FFFFFF' }} /><Svg width={18} height={18} viewBox="0 0 18 18"><Path d="M2 9h13m-5-5 5 5-5 5" stroke="#FFFFFF" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></Svg><View style={{ width: 35, height: 4, borderRadius: 4, backgroundColor: '#FFFFFF' }} /></View></View>
+    <View style={{ position: 'absolute', top: 153, left: 19, right: 19, height: 33, borderRadius: 16, backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center', elevation: 3 }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}><View style={{ width: 35, height: 4, borderRadius: 4, backgroundColor: colors.onAccent }} /><Svg width={18} height={18} viewBox="0 0 18 18"><Path d="M2 9h13m-5-5 5 5-5 5" stroke={colors.onAccent} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></Svg><View style={{ width: 35, height: 4, borderRadius: 4, backgroundColor: colors.onAccent }} /></View></View>
     <View style={{ position: 'absolute', bottom: 34, left: 30, width: 190, height: 238, overflow: 'hidden', borderRadius: 12, borderWidth: 2, borderColor: colors.accent }}><Animated.View style={[{ overflow: 'hidden' }, reveal]}><DocumentPage colors={colors} /></Animated.View></View>
   </View>;
 }

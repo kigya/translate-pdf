@@ -11,7 +11,9 @@ xcrun swiftc \
   "$IOS_DIR/TranslatePDF/ModelCatalog.swift" \
   "$IOS_DIR/TranslatePDF/ModelDownloadCoordinator.swift" \
   "$IOS_DIR/TranslatePDF/TranslatorStore.swift" \
+  "$IOS_DIR/TranslatePDF/MyMemoryTranslator.swift" \
   "$IOS_DIR/tests/TranslatorStorePipelineTest.swift" \
   -o "$TEMP_DIR/translator-store-pipeline-tests"
 
 "$TEMP_DIR/translator-store-pipeline-tests"
+python3 "$IOS_DIR/tests/docx_module_contract_test.py"

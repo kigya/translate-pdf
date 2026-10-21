@@ -63,6 +63,7 @@ make_static_framework() {
     mkdir -p "$fw/Headers" "$fw/Modules"
     cp "$archive" "$fw/TranslateCore"
     cp "$ROOT/native/core.hpp" "$fw/Headers/core.hpp"
+    cp "$ROOT/native/docx.hpp" "$fw/Headers/docx.hpp"
     cat > "$fw/Modules/module.modulemap" <<'MAP'
 framework module TranslateCore {
   umbrella header "core.hpp"

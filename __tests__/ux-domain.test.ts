@@ -29,7 +29,7 @@ describe('concise product presentation', () => {
         );
       }
     }
-    expect(ux('system', 'translatePdf')).toBe('Translate PDF');
+    expect(ux('system', 'translatePdf')).toBe('Translate documents');
     expect(ux('ru', 'termsCount', { count: 3 })).toContain('3');
   });
   it('keeps capability scores independent of measured sample evaluation', () => {

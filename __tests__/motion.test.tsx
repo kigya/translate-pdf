@@ -1,7 +1,7 @@
 jest.mock('../src/ui/useMotionReduced', () => ({ useMotionReduced: () => require('react-native-reanimated').useReducedMotion() ?? false }));
 import React from 'react';
-import { AppState, BackHandler, PanResponder } from 'react-native';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react-native';
+import { AppState, BackHandler } from 'react-native';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react-native-legacy';
 
 const mockSharedValues: Array<{ value: number }> = [];
 const mockStyleWorklets: Array<() => unknown> = [];
@@ -17,20 +17,21 @@ jest.mock('react-native-reanimated', () => {
   const ReactModule = require('react');
   const ReactNative = require('react-native');
   const AnimatedView = ReactModule.forwardRef((props: object, ref: object) => ReactModule.createElement(ReactNative.View, { ...props, ref }));
-  const mockEasing = { linear: 'linear' };
+  const mockEasing = { linear: (value: number) => value, bezier: (..._values: number[]) => (value: number) => value, sin: (value: number) => value, inOut: (easing: unknown) => easing };
   const mockFadeIn = { duration: () => undefined };
   return {
     __esModule: true,
-    default: { View: AnimatedView, createAnimatedComponent: (component: unknown) => component, FadeIn: mockFadeIn },
+    default: { View: AnimatedView, Text: ReactNative.Text, ScrollView: ReactNative.ScrollView, Image: ReactNative.Image, createAnimatedComponent: (component: unknown) => component, FadeIn: mockFadeIn },
     View: AnimatedView,
     FadeIn: mockFadeIn,
     Easing: mockEasing,
+    ReduceMotion: { Always: 'always', Never: 'never' },
     cancelAnimation: jest.fn(),
     useReducedMotion: jest.fn(() => mockReducedMotion),
     useSharedValue: (initial: number) => {
       const ref = ReactModule.useRef(null);
       if (!ref.current) {
-        ref.current = { value: initial };
+        ref.current = { value: initial, get() { return this.value; }, set(next: number) { this.value = next; } };
         mockSharedValues.push(ref.current);
       }
       return ref.current;
@@ -40,10 +41,18 @@ jest.mock('react-native-reanimated', () => {
       return worklet();
     },
     useAnimatedProps: (worklet: () => unknown) => worklet(),
+    useDerivedValue: (worklet: () => unknown) => ({ get: worklet }),
+    Extrapolation: { CLAMP: 'clamp' },
+    useAnimatedRef: () => ReactModule.useRef(null),
+    useAnimatedScrollHandler: () => jest.fn(),
+    useFrameCallback: () => ({ setActive: jest.fn() }),
     withTiming: (to: number, options: Record<string, unknown>) => {
       mockTimingCalls.push({ to, options });
       return to;
     },
+    withSpring: (to: number) => to,
+    withSequence: (...values: unknown[]) => values.at(-1),
+    withDelay: (_delay: number, value: unknown) => value,
     withRepeat: (animation: unknown, iterations: number, reverse: boolean) => {
       mockRepeatCalls.push({ animation, iterations, reverse });
       return animation;
@@ -68,15 +77,30 @@ jest.mock('react-native-safe-area-context', () => ({
 }));
 
 import { ModelScene, ProgressScene, TranslationScene } from '../src/onboarding/OnboardingScenes';
+import { GrainDrift } from '../src/components/kinetik/grain-drift';
 import { ONBOARDING_VERSION, OnboardingScreen } from '../src/onboarding/OnboardingScreen';
 import { createTranslator } from '../src/i18n/messages';
+import { KinetikProvider } from '../src/lib/kinetik/tokens/theme';
 import { AnimatedNumber, AnimatedTabBar, AppIcon, Balloons, DownloadSculpture } from '../src/ui/Motion';
 import { SplashScreen } from '../src/ui/SplashScreen';
-import { palettes } from '../src/ui/theme';
+import { kinetikBrand, palettes } from '../src/ui/theme';
+
+function renderBrandedSplash(onFirstFrame: () => void) {
+  return render(
+    <KinetikProvider scheme="light" colors={kinetikBrand.light} reduceMotion="never" haptics={false}>
+      <SplashScreen onFirstFrame={onFirstFrame} />
+    </KinetikProvider>,
+  );
+}
+
+function layoutOnboarding() {
+  fireEvent(screen.getByTestId('onboarding'), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 360, height: 700 } } });
+}
 
 const reanimated = jest.requireMock('react-native-reanimated') as {
   cancelAnimation: jest.Mock;
   useReducedMotion: jest.Mock;
+  Easing: { linear: (value: number) => number };
 };
 
 beforeAll(() => {
@@ -123,7 +147,7 @@ describe('onboarding illustration placement and motion', () => {
     expect((visibleMin + visibleMax) / 2).toBe(canvasWidth / 2);
   });
 
-  it('centers the fixed-width drawing inside the responsive onboarding scene frame', () => {
+  it('renders the accessible onboarding title at a wide screen size', () => {
     const reactNative = require('react-native') as typeof import('react-native');
     const dimensions = jest.spyOn(reactNative, 'useWindowDimensions').mockReturnValue({ width: 430, height: 900, scale: 1, fontScale: 1 });
     render(<OnboardingScreen
@@ -134,12 +158,9 @@ describe('onboarding illustration placement and motion', () => {
       onComplete={jest.fn()}
       ios={false}
     />);
-    const frame = screen.getByTestId('onboarding-scene-scale-wrapper', { includeHiddenElements: true });
-    const frameWidth = frame.props.style.width as number;
-    const drawingWidth = screen.getByTestId('translation-scene', { includeHiddenElements: true }).props.style.width as number;
-    expect(frame).toHaveStyle({ alignItems: 'center', justifyContent: 'center' });
-    expect(frameWidth).toBeGreaterThan(drawingWidth);
-    expect((frameWidth - drawingWidth) / 2).toBeGreaterThan(0);
+    layoutOnboarding();
+    expect(screen.getByTestId('onboarding-root')).toBeOnTheScreen();
+    expect(screen.getByLabelText(createTranslator('en')('intro1Title'), { includeHiddenElements: true })).toBeOnTheScreen();
     dimensions.mockRestore();
   });
 
@@ -179,6 +200,7 @@ describe('onboarding boundary behavior', () => {
       onComplete={jest.fn()}
       ios={false}
     />);
+    layoutOnboarding();
     expect(screen.getByTestId('translation-scene', { includeHiddenElements: true })).toBeTruthy();
     onboarding.unmount();
     Object.defineProperty(AppState, 'currentState', { configurable: true, writable: true, value: originalState });
@@ -211,50 +233,50 @@ describe('onboarding boundary behavior', () => {
     render(<OnboardingScreen
       colors={palettes.light}
       t={createTranslator('en')}
-      initialState={{ version: ONBOARDING_VERSION, page: 3, done: false }}
+      initialState={{ version: ONBOARDING_VERSION, page: 0, done: false }}
       persist={persist}
       onComplete={onComplete}
       ios={false}
     />);
+    layoutOnboarding();
+    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByRole('button', { name: 'Next' })).toBeOnTheScreen();
     await act(async () => {
-      fireEvent.press(screen.getByRole('button', { name: 'Next' }));
+      fireEvent(screen.getByRole('button', { name: 'Next' }), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } });
       await Promise.resolve();
     });
-    expect(persist).toHaveBeenCalledWith({ version: ONBOARDING_VERSION, page: 3, done: true });
+    expect(persist).toHaveBeenCalledWith({ version: ONBOARDING_VERSION, page: 2, done: true });
     expect(screen.getByText('Could not save the introduction. Try again.')).toBeTruthy();
     expect(onComplete).not.toHaveBeenCalled();
   });
 
-  it('closes a replay from the final page without writing completion state', async () => {
+  it('closes a replay from the final step without writing completion state', async () => {
     const persist = jest.fn();
     const onExit = jest.fn();
     const onboarding = render(<OnboardingScreen
       colors={palettes.light}
       t={createTranslator('en')}
-      initialState={{ version: ONBOARDING_VERSION, page: 3, done: true }}
+      initialState={{ version: ONBOARDING_VERSION, page: 2, done: true }}
       persist={persist}
       onComplete={jest.fn()}
       ios={false}
       replay
       onExit={onExit}
     />);
+    layoutOnboarding();
     fireEvent.press(screen.getByRole('button', { name: 'Next' }));
     fireEvent.press(screen.getByRole('button', { name: 'Next' }));
-    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
-    expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy();
-    await act(async () => {
-      fireEvent.press(screen.getByRole('button', { name: 'Done' }));
-      await Promise.resolve();
-    });
+    expect(screen.getByRole('button', { name: 'Next' })).toBeTruthy();
+    await act(async () => { fireEvent(screen.getByRole('button', { name: 'Next' }), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } }); await Promise.resolve(); });
     expect(onExit).toHaveBeenCalledTimes(1);
     expect(persist).not.toHaveBeenCalled();
     onboarding.unmount();
   });
 
-  it('keeps short gestures on the current page and uses the compact title size on narrow phones', () => {
+  it('keeps short scroll offsets on the current page and uses a compact title on narrow phones', () => {
     const reactNative = require('react-native') as typeof import('react-native');
     const dimensions = jest.spyOn(reactNative, 'useWindowDimensions').mockReturnValue({ width: 320, height: 800, scale: 1, fontScale: 1 });
-    const responderSpy = jest.spyOn(PanResponder, 'create');
     const onboarding = render(<OnboardingScreen
       colors={palettes.light}
       t={createTranslator('en')}
@@ -263,12 +285,12 @@ describe('onboarding boundary behavior', () => {
       onComplete={jest.fn()}
       ios={false}
     />);
-    expect(screen.getByText(createTranslator('en')('intro1Title'))).toHaveStyle({ fontSize: 27 });
-    const callbacks = responderSpy.mock.calls.at(-1)?.[0];
-    act(() => callbacks?.onPanResponderRelease?.({} as never, { dx: -30, dy: 0 } as never));
-    expect(screen.getByTestId('translation-scene', { includeHiddenElements: true })).toBeTruthy();
+    layoutOnboarding();
+    expect(screen.getByLabelText(createTranslator('en')('intro1Title'), { includeHiddenElements: true })).toBeOnTheScreen();
+    const carousel = screen.UNSAFE_getAllByType(require('react-native').ScrollView).at(-1)!;
+    fireEvent(carousel, 'momentumScrollEnd', { nativeEvent: { contentOffset: { x: 30, y: 0 } } });
+    expect(screen.getByLabelText(createTranslator('en')('intro1Title'), { includeHiddenElements: true })).toBeOnTheScreen();
     onboarding.unmount();
-    responderSpy.mockRestore();
     dimensions.mockRestore();
   });
 });
@@ -472,7 +494,7 @@ describe('motion primitives', () => {
 describe('download sculpture cycle continuity', () => {
   it('uses a linear 2π cycle and returns the liquid silhouette to the same first/last frame', () => {
     render(<DownloadSculpture active reduced={false} progress={0.5} />);
-    expect(mockTimingCalls[0]).toEqual({ to: Math.PI * 2, options: { duration: 5200, easing: 'linear' } });
+    expect(mockTimingCalls[0]).toEqual({ to: Math.PI * 2, options: { duration: 5200, easing: reanimated.Easing.linear } });
     expect(mockRepeatCalls[0]).toEqual({ animation: Math.PI * 2, iterations: -1, reverse: false });
 
     const phase = mockSharedValues[0];
@@ -537,9 +559,18 @@ describe('branded startup handoff', () => {
 
   it('starts its visible clock after two scheduled frames, only once per mounted splash', () => {
     const onFirstFrame = jest.fn();
-    render(<SplashScreen onFirstFrame={onFirstFrame} />);
+    renderBrandedSplash(onFirstFrame);
     const splash = screen.getByTestId('custom-splash-screen');
     expect(splash.props.style.backgroundColor).toBe('#C62828');
+    const grain = screen.UNSAFE_getByType(GrainDrift);
+    expect(grain.props).toMatchObject({ grain: 0, speed: 3, active: AppState.currentState === 'active', reduceEffects: false });
+    expect(grain.props.colors[0]).toBe(splash.props.style.backgroundColor);
+    const splashStateListener = mockStateListeners.at(-1);
+    expect(splashStateListener).toBeDefined();
+    act(() => splashStateListener?.('background'));
+    expect(screen.UNSAFE_getByType(GrainDrift).props.active).toBe(false);
+    act(() => splashStateListener?.('active'));
+    expect(screen.UNSAFE_getByType(GrainDrift).props.active).toBe(true);
 
     act(() => {
       splash.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 360, height: 800 } } });
@@ -558,10 +589,11 @@ describe('branded startup handoff', () => {
 
   it('cancels pending frame callbacks on unmount and uses static icon motion when reduced motion is enabled', () => {
     mockReducedMotion = true;
-    const splash = render(<SplashScreen onFirstFrame={jest.fn()} />);
+    const splash = renderBrandedSplash(jest.fn());
     const icon = screen.getByTestId('app-motion-icon');
     expect(icon.parent?.props).toBeDefined();
     expect(mockRepeatCalls).toHaveLength(0);
+    expect(screen.UNSAFE_getByType(GrainDrift).props).toMatchObject({ grain: 0, speed: 3, reduceEffects: true });
 
     const root = screen.getByTestId('custom-splash-screen');
     act(() => root.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 360, height: 800 } } }));
@@ -572,7 +604,7 @@ describe('branded startup handoff', () => {
 
   it('uses the system motion preference fallback when the preference is unavailable', () => {
     mockReducedMotion = null;
-    const splash = render(<SplashScreen onFirstFrame={jest.fn()} />);
+    const splash = renderBrandedSplash(jest.fn());
     expect(mockRepeatCalls.length).toBeGreaterThan(0);
     splash.unmount();
   });

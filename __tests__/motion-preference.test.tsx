@@ -1,10 +1,10 @@
 import React from 'react';
 import { AccessibilityInfo, Text } from 'react-native';
-import { act, cleanup, render, screen } from '@testing-library/react-native';
+import { act, cleanup, render, screen } from '@testing-library/react-native-legacy';
 import { useMotionReduced } from '../src/ui/useMotionReduced';
 
 let mockInitial: boolean | undefined;
-jest.mock('react-native-reanimated', () => ({ useReducedMotion: () => mockInitial }));
+jest.mock('react-native-reanimated', () => ({ useReducedMotion: () => mockInitial, Easing: { bezier: (..._values: number[]) => (value: number) => value, linear: (value: number) => value, sin: (value: number) => value, inOut: (easing: unknown) => easing }, useSharedValue: (value: number) => ({ value, get() { return this.value; }, set(next: number) { this.value = next; } }), useAnimatedStyle: (fn: () => object) => fn(), useDerivedValue: (fn: () => unknown) => ({ get: fn }), useFrameCallback: () => ({ setActive: jest.fn() }), useAnimatedRef: () => require('react').useRef(null), withTiming: (value: number) => value, withSpring: (value: number) => value, withSequence: (...v: number[]) => v.at(-1), withDelay: (_d: number, v: number) => v, interpolate: (_value: number, _input: number[], output: number[]) => output[0], interpolateColor: (_value: number, _input: number[], output: string[]) => output[0] }));
 
 function Preference() {
   return <Text>{useMotionReduced() ? 'reduced' : 'animated'}</Text>;

@@ -2,6 +2,9 @@ import { NativeModules } from 'react-native';
 import type { TranslationLanguage } from '../domain/translationLanguages';
 export type { TranslationLanguage } from '../domain/translationLanguages';
 
+export type TranslationEngine = { kind: 'local'; id: string } | { kind: 'online'; id: 'mymemory' };
+export type DocumentFormat = 'pdf' | 'docx';
+
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type LanguagePreference = 'system' | string;
 
@@ -12,6 +15,9 @@ export type ModelStatus =
   | 'verifying'
   | 'ready'
   | 'error';
+export type DocumentColor = 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple';
+export type LibrarySort = 'recent' | 'color';
+
 export type JobStatus =
   | 'queued'
   | 'running'
@@ -106,14 +112,21 @@ export interface DocumentSnapshot {
   id: string;
   name: string;
   pageCount: number;
+  format?: DocumentFormat;
+  segmentCount?: number;
   importedAt: number;
 }
 
 export interface JobSnapshot {
+  labelColor?: DocumentColor | null;
   id: string;
   documentId: string;
   documentName: string;
   modelId: string;
+  engine?: TranslationEngine;
+  documentFormat?: DocumentFormat;
+  warnings?: Array<string | { code?: string; message: string }>;
+  progressUnit?: 'page' | 'segment';
   sourceLanguage: TranslationLanguage;
   targetLanguage: TranslationLanguage;
   status: JobStatus;
@@ -171,10 +184,13 @@ export interface BootstrapSnapshot {
   schemaVersion: number;
   device: DeviceSnapshot;
   preferences: {
+    appRating?: number;
+    librarySort?: LibrarySort;
     notificationExplanationShown?: boolean;
     theme: ThemePreference;
     language: LanguagePreference;
     selectedModelId?: string;
+    selectedEngine?: TranslationEngine;
     sourceLanguage?: TranslationLanguage;
     targetLanguage?: TranslationLanguage;
   };
@@ -213,8 +229,12 @@ export interface ExportedPdf {
   id: string;
   uri: string;
   displayName: string;
+  mimeType?: string;
+  format?: DocumentFormat;
 }
 export interface StartJobInput {
+  engine?: TranslationEngine;
+  onlineConsent?: boolean;
   documentId: string;
   sourceLanguage: TranslationLanguage;
   targetLanguage: TranslationLanguage;
@@ -229,6 +249,9 @@ export interface OnboardingState {
   done: boolean;
 }
 export interface SettingsUpdate {
+  appRating?: number;
+  librarySort?: LibrarySort;
+  selectedEngine?: TranslationEngine;
   notificationExplanationShown?: boolean;
   theme?: ThemePreference;
   language?: LanguagePreference;
@@ -238,8 +261,12 @@ export interface SettingsUpdate {
 }
 
 interface NativePdfTranslatorModule {
+  setJobColor(jobId: string, color: string): Promise<string>;
   bootstrap(): Promise<string>;
   pickPdf(): Promise<string>;
+  pickDocument(): Promise<string>;
+  renderDocxPreview(documentId: string, jobId: string | null, translated: boolean): Promise<string>;
+  exportDocument(jobId: string, format: DocumentFormat): Promise<string>;
   startModelDownload(modelId: string): Promise<string>;
   pauseModelDownload(modelId: string): Promise<string>;
   deleteModel(modelId: string): Promise<string>;
@@ -306,6 +333,16 @@ export const PdfTranslator = {
 
   async pickPdf(): Promise<ImportedDocument | null> {
     return parseNullable(await requireNativeModule().pickPdf(), 'pickPdf');
+  },
+
+  async pickDocument(): Promise<ImportedDocument | null> {
+    return parseNullable(await requireNativeModule().pickDocument(), 'pickDocument');
+  },
+  async renderDocxPreview(documentId: string, jobId: string | null = null, translated = false): Promise<{uri: string; pageCount: number}> {
+    return parseJson(await requireNativeModule().renderDocxPreview(documentId, jobId, translated), 'renderDocxPreview');
+  },
+  async exportDocument(jobId: string, format: DocumentFormat): Promise<ExportedPdf> {
+    return parseJson(await requireNativeModule().exportDocument(jobId, format), 'exportDocument');
   },
 
   async startModelDownload(modelId: string): Promise<ModelSnapshot> {
@@ -403,6 +440,9 @@ export const PdfTranslator = {
       await requireNativeModule().setOnboarding(JSON.stringify(state)),
       'setOnboarding',
     );
+  },
+  async setJobColor(jobId: string, color: DocumentColor | null): Promise<JobSnapshot> {
+    return parseJson(await requireNativeModule().setJobColor(jobId, color ?? ''), 'setJobColor');
   },
   async setSettings(
     settings: SettingsUpdate,

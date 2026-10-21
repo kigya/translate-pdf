@@ -52,4 +52,33 @@ class PageExportIssuesTest {
       PageExportIssues.pageError(null, blocks, true, JSONArray()))
     assertNull(PageExportIssues.pageError(null, blocks, false, JSONArray()))
   }
+
+  @Test
+  fun malformedAndUnmatchedLayoutRecordsAreIgnoredAndFallbacksAreStable() {
+    val blocks = JSONArray()
+      .put(JSONObject.NULL)
+      .put(JSONObject().put("id", "b1").put("status", "partial").put("error", " "))
+      .put(JSONObject().put("id", "b2").put("status", "translated"))
+    val issues = JSONArray()
+      .put(JSONObject.NULL)
+      .put(JSONObject().put("blockId", " ").put("message", "Ignored without an id."))
+      .put(JSONObject().put("blockId", "unknown").put("message", "Ignored unmatched issue."))
+      .put(JSONObject().put("blockId", "b1").put("reason", "line_overflow"))
+
+    assertTrue(PageExportIssues.applyToBlocks(blocks, issues))
+    assertEquals("partial", blocks.getJSONObject(1).getString("status"))
+    assertEquals("line overflow", blocks.getJSONObject(1).getString("error"))
+    assertEquals("translated", blocks.getJSONObject(2).getString("status"))
+
+    val fallbackIssues = JSONArray()
+      .put(JSONObject.NULL)
+      .put(JSONObject().put("message", " ").put("reason", " "))
+    val error = PageExportIssues.pageError(
+      " ",
+      JSONArray().put(JSONObject.NULL).put(JSONObject().put("status", "failed").put("error", " ")),
+      true,
+      fallbackIssues,
+    )
+    assertEquals("Some translated content could not be placed safely; review this page.", error)
+  }
 }

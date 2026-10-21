@@ -157,7 +157,7 @@ std::string objectText(FPDF_PAGEOBJECT obj,FPDF_TEXTPAGE tp) {
 }
 uint16_t be16(const std::vector<unsigned char>& d,size_t p){return p+2<=d.size()?static_cast<uint16_t>((d[p]<<8)|d[p+1]):0;}
 uint32_t be32(const std::vector<unsigned char>& d,size_t p){return p+4<=d.size()?(static_cast<uint32_t>(d[p])<<24)|(static_cast<uint32_t>(d[p+1])<<16)|(static_cast<uint32_t>(d[p+2])<<8)|d[p+3]:0;}
-FontCoverage::FontCoverage(const std::vector<unsigned char>& bytes):data(bytes){
+FontCoverage::FontCoverage(const std::vector<unsigned char>& bytes):data(bytes),subtable(0),format(0){
   if(data.size()<12)return;const uint16_t count=be16(data,4);
   for(size_t i=0;i<count;i++){size_t entry=12+i*16;if(entry+16>data.size())break;if(std::string(reinterpret_cast<const char*>(data.data()+entry),4)!="cmap")continue;
    const size_t base=be32(data,entry+8);if(base+4>data.size())break;uint16_t records=be16(data,base+2);size_t best12=0,best4=0;

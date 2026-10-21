@@ -13,6 +13,9 @@ jacoco {
  * By default you don't need to apply any configuration, just uncomment the lines you need.
  */
 react {
+    entryFile = file([System.getenv("NODE_BINARY") ?: "node", "-e", "require('expo/scripts/resolveAppEntry')", rootDir.getAbsoluteFile().getParentFile().getAbsolutePath(), "android", "absolute"].execute(null, rootDir).text.trim())
+    cliFile = file("../../node_modules/expo/bin/cli")
+    bundleCommand = "export:embed"
     nodeExecutableAndArgs = [System.getenv("NODE_BINARY") ?: "node"]
     /* Folders */
     //   The root of your project, i.e. where "package.json" lives. Default is '../..'
@@ -135,6 +138,14 @@ tasks.named("preBuild").configure { dependsOn(tasks.named("copyThirdPartyLicense
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    // Fresco's Android HTTP integration pulls vulnerable Okio 2.x transitively.
+    // Keep the override narrow and use the compatible fixed JVM artifact pair.
+    implementation("com.squareup.okio:okio:3.18.2") {
+        because("Fixes GHSA-w33c-445m-f8w7 in the React Native/Fresco runtime graph")
+    }
+    implementation("com.squareup.okio:okio-jvm:3.18.2") {
+        because("Pin the runtime implementation to the same patched Okio release")
+    }
     implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
     implementation("androidx.core:core-ktx:1.15.0")
     testImplementation("junit:junit:4.13.2")
@@ -152,14 +163,27 @@ tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
         languageVersion = JavaLanguageVersion.of(21)
     }
     jvmArgs("--add-exports=java.base/jdk.internal.access=ALL-UNNAMED")
+    jacoco {
+        // Robolectric's sandbox can define instrumented app classes without
+        // normal CodeSource locations. Include those classes in the execution
+        // data while excluding JDK internals from the owned-source report.
+        includeNoLocationClasses = true
+        excludes = ["jdk.internal.*"]
+    }
 }
 
 def coverageClassDirs = files(
     fileTree("$buildDir/tmp/kotlin-classes/debug") {
+        // Include every compiled production class from both app-owned packages.
+        // Source-name globs silently omitted top-level classes declared beside
+        // their primary class (for example NativeTesseractApi in OcrEngine.kt).
+        // Keep exclusions explicit and limited to generated resources and the
+        // debug-only device QA activity; nested and file-facade classes remain
+        // part of the JaCoCo denominator.
+        include "dev/kigya/translatepdf/**/*.class"
+        include "com/translatepdf/**/*.class"
         exclude "**/BuildConfig.*", "**/R.class", '**/R$*.class', "**/Manifest*.*"
-    },
-    fileTree("$buildDir/intermediates/javac/debug/compileDebugJavaWithJavac/classes") {
-        exclude "**/BuildConfig.*", "**/R.class", '**/R$*.class', "**/Manifest*.*"
+        exclude "dev/kigya/translatepdf/NativeSliceQaActivity*.class"
     }
 )
 def coverageExecutionData = files(layout.buildDirectory.file("jacoco/testDebugUnitTest.exec"))

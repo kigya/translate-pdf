@@ -1,3 +1,14 @@
+import { ScrambleText } from '../components/kinetik/scramble-text';
+import { RingSpinner } from '../components/kinetik/ring-spinner';
+import { ReadMore } from '../components/kinetik/read-more';
+import { UsageMeter } from '../components/kinetik/usage-meter';
+import { StarRating } from '../components/kinetik/star-rating';
+import { libraryUx } from '../i18n/libraryUx';
+import { DocumentLibrary, DocumentLibraryProps } from '../ui/DocumentLibrary';
+import { MorphSelect } from '../components/kinetik/morph-select';
+import { Profile } from '../components/kinetik/screens/profile';
+import { PulseToggle } from '../components/kinetik/pulse-toggle';
+import { ONLINE_MODEL } from '../domain/presentation';
 import { useMotionReduced } from '../ui/useMotionReduced';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -5,22 +16,17 @@ import {
   Linking,
   Pressable,
   ScrollView,
-  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import Animated, {
   FadeIn,
-  useSharedValue,
-  useAnimatedStyle,
-  withTiming,
 } from 'react-native-reanimated';
 import type {
   BootstrapSnapshot,
   DocumentSnapshot,
   GlossaryEntry,
-  JobSnapshot,
   ModelSnapshot,
 } from '../native/PdfTranslator';
 import { PdfTranslator } from '../native/PdfTranslator';
@@ -40,13 +46,12 @@ import {
 } from '../domain/modelEligibility';
 import {
   translationLanguages,
-  translationLanguageName,
   TranslationLanguage,
 } from '../domain/translationLanguages';
 import { Button, Field, Notice, ProgressBar, Row } from '../ui/components';
 import { Icon, IconButton, SettingsRow, Sheet } from '../ui/Controls';
 import { useDialog } from '../ui/Dialog';
-import { AnimatedNumber, Balloons, DownloadSculpture } from '../ui/Motion';
+import { AnimatedNumber, Balloons } from '../ui/Motion';
 
 type Base = { colors: Palette; t: Translator; locale: Locale; busy?: boolean };
 const content = {
@@ -72,175 +77,7 @@ function useInfo(closeLabel: string) {
   const show = useDialog();
   return (title: string, message: string) => { void show({ title, message, actions: [{ id: 'close', label: closeLabel }] }); };
 }
-export function LibraryScreen({
-  colors,
-  t,
-  locale,
-  busy,
-  snapshot,
-  model,
-  onTranslate,
-  onModel,
-  onJob,
-  onDocument,
-}: {
-  snapshot: BootstrapSnapshot;
-  model?: ModelSnapshot | null;
-  onTranslate: () => void;
-  onModel: () => void;
-  onJob: (job: JobSnapshot) => void;
-  onDocument: (doc: DocumentSnapshot) => void;
-} & Base) {
-  const empty = !snapshot.jobs.length && !snapshot.documents.length;
-  return (
-    <ScrollView contentContainerStyle={content}>
-      <View style={{ paddingVertical: 20, gap: 22 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-          <Icon name="document" size={42} color={colors.accent} />
-          <Text
-            style={{
-              color: colors.text,
-              fontSize: 32,
-              fontWeight: '800',
-              letterSpacing: -1,
-            }}
-          >
-            {t('appName')}
-          </Text>
-        </View>
-        <Button
-          label={ux(locale, 'translatePdf')}
-          onPress={onTranslate}
-          colors={colors}
-          loading={busy}
-        />
-      </View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={t('useModel')}
-        onPress={onModel}
-        style={{
-          paddingVertical: 15,
-          borderTopWidth: 1,
-          borderBottomWidth: 1,
-          borderColor: colors.border,
-          gap: 7,
-        }}
-      >
-        <Row style={{ justifyContent: 'space-between' }}>
-          <Text style={{ color: colors.muted, fontSize: 13 }}>
-            {t('model')}
-          </Text>
-          <Icon name="chevron" color={colors.muted} size={18} />
-        </Row>
-        <Row style={{ justifyContent: 'space-between' }}>
-          <Title colors={colors}>
-            {model
-              ? ux(locale, modelPresentation(model).title)
-              : t('chooseModel')}
-          </Title>
-          <Text
-            style={{
-              color: model?.status === 'ready' ? colors.success : colors.muted,
-              fontSize: 13,
-            }}
-          >
-            {model?.status === 'ready'
-              ? t('modelReady')
-              : model?.status === 'downloading'
-              ? `${Math.round((100 * model.downloadedBytes) / model.bytes)}%`
-              : t('modelMissing')}
-          </Text>
-        </Row>
-        {model?.status === 'downloading' || model?.status === 'verifying' ? (
-          <ProgressBar
-            colors={colors}
-            value={model.downloadedBytes / model.bytes}
-            label={t('downloaded')}
-          />
-        ) : null}
-      </Pressable>
-      {empty ? (
-        <View style={{ alignItems: 'center', paddingVertical: 40, gap: 18 }}>
-          <View style={{ transform: [{ rotate: '-8deg' }], opacity: 0.45 }}>
-            <Icon name="document" size={76} color={colors.muted} />
-          </View>
-          <Text
-            style={{
-              color: colors.muted,
-              textAlign: 'center',
-              fontSize: 15,
-              maxWidth: 280,
-              lineHeight: 22,
-            }}
-          >
-            {ux(locale, 'emptyLibrary')}
-          </Text>
-        </View>
-      ) : (
-        <View style={{ gap: 8 }}>
-          <Title colors={colors}>{t('recent')}</Title>
-          {snapshot.jobs.map(job => (
-            <Pressable
-              key={job.id}
-              accessibilityRole="button"
-              accessibilityLabel={job.documentName}
-              onPress={() => onJob(job)}
-              style={{
-                flexDirection: 'row',
-                gap: 16,
-                alignItems: 'center',
-                paddingVertical: 18,
-                borderBottomColor: colors.border,
-                borderBottomWidth: 0.5,
-              }}
-            >
-              <Icon name="document" size={30} color={colors.accent} />
-              <View style={{ flex: 1, gap: 5 }}>
-                <Text
-                  numberOfLines={2}
-                  style={{
-                    color: colors.text,
-                    fontWeight: '600',
-                    fontSize: 16,
-                  }}
-                >
-                  {job.documentName}
-                </Text>
-                <Text style={{ color: colors.muted, fontSize: 12 }}>
-                  {job.completedPages}/{job.totalPages} ·{' '}
-                  {translationLanguageName(job.sourceLanguage)} →{' '}
-                  {translationLanguageName(job.targetLanguage)}
-                </Text>
-              </View>
-              <Icon
-                name={job.status === 'completed' ? 'check' : 'chevron'}
-                size={20}
-                color={
-                  job.status === 'completed' ? colors.success : colors.muted
-                }
-              />
-            </Pressable>
-          ))}
-          {snapshot.documents
-            .filter(
-              doc => !snapshot.jobs.some(job => job.documentId === doc.id),
-            )
-            .map(doc => (
-              <SettingsRow
-                key={doc.id}
-                icon="document"
-                label={doc.name}
-                value={`${doc.pageCount} ${t('pages')}`}
-                onPress={() => onDocument(doc)}
-                colors={colors}
-              />
-            ))}
-        </View>
-      )}
-    </ScrollView>
-  );
-}
+export function LibraryScreen(props: DocumentLibraryProps) { return <DocumentLibrary {...props} />; }
 export function ModelScreen({
   colors,
   t,
@@ -295,6 +132,13 @@ export function ModelScreen({
   return (
     <>
       <ScrollView contentContainerStyle={content}>
+        <View style={{ paddingVertical: 22, gap: 14, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+          <Row style={{ justifyContent: 'space-between' }}><Title colors={colors}>{ux(locale, 'modelOnline')}</Title><Icon name="globe" color={colors.accent} /></Row>
+          <Text style={{ color: colors.success }}>{ux(locale, 'onlineAvailable')}</Text>
+          <Text style={{ color: colors.muted }}>{ux(locale, 'onlineQuota')}</Text>
+          <Row><AnimatedNumber value={70} suffix="%" color={colors.accent} /><IconButton name="info" label={`70% · ${ux(locale, 'details')}`} colors={colors} onPress={() => info('70%', ux(locale, 'capabilityInfo'))} /></Row>
+          <Button colors={colors} label={t('useThisModel')} disabled={busy || selected?.id === 'mymemory'} onPress={() => onSelect(ONLINE_MODEL)} />
+        </View>
         {!snapshot.models.some(m => m.translationEnabled) ? (
           <View style={{ gap: 12 }}>
             <Title colors={colors}>{ux(locale, 'modelsUnavailable')}</Title>
@@ -354,27 +198,10 @@ export function ModelScreen({
                       {t('fileSize')}
                     </Text>
                   </View>
-                  <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                    <AnimatedNumber
-                      value={p.score}
-                      suffix="%"
-                      color={colors.accent}
-                    />
-                    <Pressable
-                      accessibilityRole="button"
-                      onPress={() =>
-                        info(
-                          ux(locale, 'capability'),
-                          ux(locale, 'capabilityInfo'),
-                        )
-                      }
-                      style={{ minHeight: 40, justifyContent: 'center' }}
-                    >
-                      <Text style={{ color: colors.muted, fontSize: 12 }}>
-                        {ux(locale, 'capability')} ⓘ
-                      </Text>
-                    </Pressable>
-                  </View>
+                  <Row>
+                    <AnimatedNumber value={p.score} suffix="%" color={colors.accent} />
+                    <IconButton name="info" label={`${p.score}% · ${ux(locale, 'details')}`} colors={colors} onPress={() => info(`${p.score}%`, ux(locale, 'capabilityInfo'))} />
+                  </Row>
                 </Row>
                 {downloading ? (
                   <>
@@ -385,13 +212,7 @@ export function ModelScreen({
                         justifyContent: 'center',
                       }}
                     >
-                      <DownloadSculpture
-                        progress={
-                          model.bytes ? model.downloadedBytes / model.bytes : 0
-                        }
-                        active
-                        color={colors.accent}
-                      />
+                      <RingSpinner progress={model.bytes > 0 ? model.downloadedBytes / model.bytes : undefined} size={88} color={colors.accent} accessibilityLabel={t('downloaded')} />
                     </View>
                     <ProgressBar
                       colors={colors}
@@ -498,7 +319,12 @@ export function ModelScreen({
       >
         {details ? (
           <View style={{ gap: 16 }}>
-            <Title colors={colors}>{details.label}</Title>
+            <ScrambleText text={details.label} duration={480} style={{ color: colors.text, fontSize: 21, fontWeight: '700' }} />
+            <ReadMore moreLabel={libraryUx(locale, 'readMore')} lessLabel={libraryUx(locale, 'readLess')} fadeColor={colors.surface} textStyle={{ color: colors.text, fontSize: 16, lineHeight: 23 }}>{`${details.label} · ${formatBytes(details.bytes)}
+
+${t('qualityPending')}
+
+${ux(locale, 'capabilityInfo')}`}</ReadMore>
             {licenseError ? <Notice colors={colors} text={licenseError}/> : null}
             {details.licenseUrl ? (
               <SettingsRow
@@ -603,90 +429,12 @@ export function PairPicker({
   target: TranslationLanguage;
   onChange: (s: TranslationLanguage, t: TranslationLanguage) => void;
 } & Base) {
-  const [picker, setPicker] = useState<'source' | 'target' | null>(null);
-  const turn = useSharedValue(0);
-  const reduced = useMotionReduced();
-  const swapStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${turn.value}deg` }],
-  }));
-  return (
-    <>
-      <Row style={{ gap: 6, justifyContent: 'space-between' }}>
-        {(['source', 'swap', 'target'] as const).map(kind =>
-          kind === 'swap' ? (
-            <Animated.View key={kind} style={swapStyle}>
-              <IconButton
-                name="swap"
-                label={t('swapLanguages')}
-                disabled={busy}
-                onPress={() => {
-                  turn.value = reduced
-                    ? turn.value + 180
-                    : withTiming(turn.value + 180, { duration: 300 });
-                  onChange(target, source);
-                }}
-                colors={colors}
-              />
-            </Animated.View>
-          ) : (
-            <Pressable
-              key={kind}
-              accessibilityRole="button"
-              accessibilityLabel={`${t(
-                kind === 'source' ? 'sourceLanguage' : 'targetLanguage',
-              )}: ${translationLanguageName(
-                kind === 'source' ? source : target,
-              )}`}
-              disabled={busy}
-              accessibilityState={{ disabled: !!busy }}
-              onPress={() => setPicker(kind)}
-              style={{
-                flex: 1,
-                minHeight: 90,
-                justifyContent: 'center',
-                alignItems: 'center',
-                gap: 9,
-              }}
-            >
-              <Text style={{ fontSize: 32 }}>
-                {localeFlags[kind === 'source' ? source : target]}
-              </Text>
-              <Text
-                numberOfLines={1}
-                style={{ color: colors.text, fontSize: 14, fontWeight: '700' }}
-              >
-                {translationLanguageName(kind === 'source' ? source : target)}
-              </Text>
-            </Pressable>
-          ),
-        )}
-      </Row>
-      <Sheet
-        visible={!!picker}
-        title={t(picker === 'source' ? 'sourceLanguage' : 'targetLanguage')}
-        onClose={() => setPicker(null)}
-        colors={colors}
-        closeLabel={t('back')}
-      >
-        {translationLanguages.map(([code, name]) => (
-          <SettingsRow
-            key={code}
-            icon="globe"
-            label={`${localeFlags[code]}  ${name}`}
-            onPress={() => {
-              const s =
-                picker === 'source' ? code : code === source ? target : source;
-              const d =
-                picker === 'target' ? code : code === target ? source : target;
-              onChange(s, d);
-              setPicker(null);
-            }}
-            colors={colors}
-          />
-        ))}
-      </Sheet>
-    </>
-  );
+  const options = translationLanguages.map(([value, name]) => ({ value, label: `${localeFlags[value]} ${name}` }));
+  return <Row style={{ alignItems: 'flex-start' }}>
+    <View style={{ flex: 1 }}><MorphSelect label={t('sourceLanguage')} value={source} options={options} disabled={busy} onValueChange={value => onChange(value as TranslationLanguage, value === target ? source : target)} /></View>
+    <IconButton name="swap" label={t('swapLanguages')} colors={colors} disabled={busy} onPress={() => onChange(target, source)} />
+    <View style={{ flex: 1 }}><MorphSelect label={t('targetLanguage')} value={target} options={options} disabled={busy} onValueChange={value => onChange(value === source ? target : source, value as TranslationLanguage)} /></View>
+  </Row>;
 }
 export function TranslationOptionsScreen({
   colors,
@@ -724,7 +472,7 @@ export function TranslationOptionsScreen({
     let live = true;
     setThumbnail('');
     if (document)
-      PdfTranslator.renderPage(document.id, 0, 420)
+      (document.format === 'docx' ? PdfTranslator.renderDocxPreview(document.id).then(() => PdfTranslator.renderPage(document.id, 0, 420)) : PdfTranslator.renderPage(document.id, 0, 420))
         .then(uri => {
           if (live) setThumbnail(uri);
         })
@@ -762,7 +510,7 @@ export function TranslationOptionsScreen({
           >
             {thumbnail ? (
               <Image
-                accessibilityLabel={ux(locale, 'sourcePdf')}
+                accessibilityLabel={ux(locale, document.format === 'docx' ? 'original' : 'sourcePdf')}
                 source={{ uri: thumbnail }}
                 style={{
                   width: 74,
@@ -782,7 +530,7 @@ export function TranslationOptionsScreen({
                 {document.name}
               </Text>
               <Text style={{ color: colors.muted }}>
-                {document.pageCount} {t('pages')}
+                {document.format === 'docx' ? document.segmentCount ?? document.pageCount : document.pageCount} {document.format === 'docx' ? ux(locale, 'segments') : t('pages')}
               </Text>
               <Text style={{ color: colors.accent, fontWeight: '600' }}>
                 {ux(locale, 'previewSource')}
@@ -803,13 +551,11 @@ export function TranslationOptionsScreen({
             <Text style={{ color: colors.muted }}>
               {ux(locale, 'useDictionary')}
             </Text>
-            <Switch
+            <PulseToggle
               accessibilityLabel={ux(locale, 'useDictionary')}
               value={useGlossary && model?.supportsGlossary !== false}
               disabled={!terms || model?.supportsGlossary === false || busy}
               onValueChange={onUseGlossary}
-              trackColor={{ false: colors.border, true: colors.accent }}
-              thumbColor="#FFFFFF"
             />
           </Row>
           {model?.supportsGlossary === false ? (
@@ -855,7 +601,7 @@ export function TranslationOptionsScreen({
         <Text
           style={{ color: colors.muted, fontSize: 12, textAlign: 'center' }}
         >
-          {ux(locale, 'localProcessing')}
+          {ux(locale, model?.id === 'mymemory' ? 'onlineProcessing' : 'localProcessing')}
         </Text>
       </View>
     </>
@@ -870,81 +616,30 @@ export function SettingsScreen({
   onAppearance,
   onPrivacy,
   onReplay,
+  onRate,
 }: {
   snapshot: BootstrapSnapshot;
   onRoute: (r: 'language' | 'storage' | 'dictionary' | 'licenses') => void;
   onAppearance: () => void;
   onPrivacy: () => void;
   onReplay: () => void;
+  onRate?: (value: number) => void;
 } & Base) {
-  return (
-    <ScrollView contentContainerStyle={content}>
-      <View>
-        <SettingsRow
-          icon="globe"
-          label={t('language')}
-          value={`${localeFlags[snapshot.preferences.language] ?? '🌐'} ${
-            snapshot.preferences.language === 'system'
-              ? ux(locale, 'systemDefault')
-              : localeOptions.find(
-                  ([id]) => id === snapshot.preferences.language,
-                )?.[1] ?? ''
-          }`}
-          onPress={() => onRoute('language')}
-          colors={colors}
-        />
-        <SettingsRow
-          icon="moon"
-          label={t('appearance')}
-          value={t(snapshot.preferences.theme)}
-          onPress={onAppearance}
-          colors={colors}
-        />
-      </View>
-      <View>
-        <SettingsRow
-          icon="storage"
-          label={ux(locale, 'storage')}
-          value={formatBytes(
-            snapshot.device.storage?.installedModelBytes ??
-              snapshot.models.reduce(
-                (sum, m) => sum + (m.status === 'ready' ? m.bytes : 0),
-                0,
-              ),
-          )}
-          onPress={() => onRoute('storage')}
-          colors={colors}
-        />
-        <SettingsRow
-          icon="book"
-          label={ux(locale, 'glossary')}
-          value={ux(locale, 'termsCount', { count: snapshot.glossary.length })}
-          onPress={() => onRoute('dictionary')}
-          colors={colors}
-        />
-      </View>
-      <View>
-        <SettingsRow
-          icon="shield"
-          label={t('privacy')}
-          onPress={onPrivacy}
-          colors={colors}
-        />
-        <SettingsRow
-          icon="license"
-          label={t('licenses')}
-          onPress={() => onRoute('licenses')}
-          colors={colors}
-        />
-        <SettingsRow
-          icon="replay"
-          label={t('replay')}
-          onPress={onReplay}
-          colors={colors}
-        />
-      </View>
-    </ScrollView>
-  );
+  return <View style={{ flex: 1 }}><Profile sections={[
+    { rows: [
+      { key: 'language', label: t('language'), icon: <Icon name="globe" color={colors.accent} />, detail: `${localeFlags[snapshot.preferences.language] ?? '🌐'} ${snapshot.preferences.language === 'system' ? ux(locale, 'systemDefault') : localeOptions.find(([id]) => id === snapshot.preferences.language)?.[1] ?? ''}`, onPress: () => onRoute('language') },
+      { key: 'appearance', label: t('appearance'), icon: <Icon name="moon" color={colors.accent} />, detail: t(snapshot.preferences.theme), onPress: onAppearance },
+    ] },
+    { rows: [
+      { key: 'storage', label: ux(locale, 'storage'), icon: <Icon name="storage" color={colors.accent} />, detail: formatBytes(snapshot.device.storage?.installedModelBytes ?? snapshot.models.reduce((sum, m) => sum + (m.status === 'ready' ? m.bytes : 0), 0)), onPress: () => onRoute('storage') },
+      { key: 'dictionary', label: ux(locale, 'glossary'), icon: <Icon name="book" color={colors.accent} />, onPress: () => onRoute('dictionary') },
+    ] },
+    { rows: [
+      { key: 'privacy', label: t('privacy'), icon: <Icon name="shield" color={colors.accent} />, onPress: onPrivacy },
+      { key: 'licenses', label: t('licenses'), icon: <Icon name="license" color={colors.accent} />, onPress: () => onRoute('licenses') },
+      { key: 'tutorial', label: ux(locale, 'viewTutorial'), icon: <Icon name="replay" color={colors.accent} />, onPress: onReplay },
+    ] },
+  ]} /><View style={{ paddingHorizontal: 24, paddingBottom: 20, gap: 8 }}><Text style={{ color: colors.text, fontSize: 18, fontWeight: '700' }}>{libraryUx(locale, 'rateApp')}</Text><StarRating value={snapshot.preferences.appRating ?? 0} onValueChange={value => onRate?.(value)} accessibilityLabel={libraryUx(locale, 'rateApp')} color={colors.accent} /><Text style={{ color: colors.muted, fontSize: 13 }}>{libraryUx(locale, 'ratingLocal')}</Text></View></View>;
 }
 export function StorageScreen({
   colors,
@@ -974,6 +669,7 @@ export function StorageScreen({
       );
   return (
     <ScrollView contentContainerStyle={content}>
+      <UsageMeter title={ux(locale, 'storage')} segments={[{ label: ux(locale, 'modelsStored'), value: installed / 1e9 }, { label: ux(locale, 'partialDownloads'), value: partial / 1e9 }]} total={(installed + partial + (storage?.freeDiskBytes ?? snapshot.device.availableDiskBytes)) / 1e9} unit="GB" remainingLabel={libraryUx(locale, 'remaining')} overLimitLabel={libraryUx(locale, 'overLimit')} />
       <Row style={{ justifyContent: 'space-between' }}>
         <View style={{ gap: 8 }}>
           <Text style={{ color: colors.muted }}>{ux(locale, 'freeSpace')}</Text>
@@ -1232,6 +928,7 @@ export function SourcePreviewScreen({
   locale,
   document,
 }: { document: DocumentSnapshot | null } & Base) {
+  const [count, setCount] = useState(document?.format === 'docx' ? 0 : document?.pageCount ?? 0);
   const [page, setPage] = useState(0),
     [zoom, setZoom] = useState(1),
     [uri, setUri] = useState(''),
@@ -1241,7 +938,7 @@ export function SourcePreviewScreen({
     setUri('');
     setError('');
     if (document)
-      PdfTranslator.renderPage(document.id, page, 1200)
+      (document.format === 'docx' ? PdfTranslator.renderDocxPreview(document.id).then(preview => { if (live) setCount(preview.pageCount); return PdfTranslator.renderPage(document.id, page, 1200); }) : PdfTranslator.renderPage(document.id, page, 1200))
         .then(value => {
           if (live) setUri(value);
         })
@@ -1268,7 +965,7 @@ export function SourcePreviewScreen({
         <ScrollView horizontal contentContainerStyle={{ alignItems: 'center' }}>
           {uri ? (
             <Image
-              accessibilityLabel={`${ux(locale, 'sourcePdf')} ${page + 1}`}
+              accessibilityLabel={`${ux(locale, document?.format === 'docx' ? 'original' : 'sourcePdf')} ${page + 1}`}
               source={{ uri }}
               style={{
                 width: 330 * zoom,
@@ -1296,7 +993,7 @@ export function SourcePreviewScreen({
         <Text style={{ color: colors.text }}>
           {ux(locale, 'pageOf', {
             page: page + 1,
-            total: document?.pageCount ?? 0,
+            total: count,
           })}
         </Text>
         <IconButton
@@ -1309,7 +1006,7 @@ export function SourcePreviewScreen({
           label={t('next')}
           colors={colors}
           variant="quiet"
-          disabled={!document || page >= document.pageCount - 1}
+          disabled={!document || page >= count - 1}
           onPress={() => {
             setPage(p => p + 1);
             setZoom(1);

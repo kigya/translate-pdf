@@ -104,6 +104,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 5
 
+      - name: Preserve Android JaCoCo coverage input
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-native-coverage
+          path: android/app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml
+          if-no-files-found: ignore
+          retention-days: 5
+
   ios:
     name: iOS tests and unsigned Release build
     runs-on: macos-26
@@ -137,10 +146,24 @@ jobs:
           if-no-files-found: ignore
           retention-days: 5
 
+      - name: Preserve iOS native coverage inputs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-native-coverage
+          path: |
+            .local-private/build/ios-native-coverage/ios-native-coverage-llvm.json
+            .local-private/build/ios-native-coverage/ios-xccov-report.json
+            .local-private/build/ios-native-coverage/test.log
+          if-no-files-found: ignore
+          retention-days: 5
+
   native:
     name: PDFium native host tests
     runs-on: macos-26
     timeout-minutes: 90
+    needs: [android, ios]
+    if: always()
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -153,14 +176,32 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Set up JDK headers for the JNI boundary tests
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+
       - name: Cache checksum-pinned native dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .local-private/deps
           key: ${{ runner.os }}-host-native-${{ hashFiles('scripts/setup-native.py', 'native/CMakeLists.txt', 'package-lock.json') }}
 
+      - name: Download iOS native coverage evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ios-native-coverage
+          path: .local-private/build/ios-native-coverage
+
+      - name: Download Android native coverage evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-native-coverage
+          path: .local-private/build/android-native-coverage
+
       - name: Run C++ host integration and regression tests
-        run: bash scripts/check-local.sh native
+        run: TRANSLATEPDF_JACOCO_XML=.local-private/build/android-native-coverage/jacocoTestReport.xml bash scripts/check-local.sh native
 
       - name: Preserve native host test evidence
         if: always()

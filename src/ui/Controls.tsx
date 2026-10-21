@@ -1,6 +1,9 @@
+import { MorphSheet } from '../components/kinetik/morph-sheet';
+import { useUiLocale } from '../i18n/UiLocaleContext';
+import { libraryUx } from '../i18n/libraryUx';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useMotionReduced } from './useMotionReduced';
 import React, { useEffect } from 'react';
-import Animated, { useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -171,92 +174,27 @@ export function SettingsRow({
     </Pressable>
   );
 }
-export function Sheet({
-  visible,
-  title,
-  onClose,
-  colors,
-  children,
-  closeLabel = 'Close',
-}: {
-  visible: boolean;
-  title: string;
-  onClose: () => void;
-  colors: Palette;
-  children: React.ReactNode;
-  closeLabel?: string;
+export function Sheet({ visible, title, onClose, colors, children, closeLabel = 'Close' }: {
+  visible: boolean; title: string; onClose: () => void; colors: Palette; children: React.ReactNode; closeLabel?: string;
 }) {
+  const locale = useUiLocale();
   const insets = useSafeAreaInsets();
   const reduced = useMotionReduced();
-  const reveal = useSharedValue(0);
-  useEffect(() => { reveal.value = visible ? (reduced ? 1 : withTiming(1, { duration: 260 })) : 0; }, [reduced, reveal, visible]);
-  const sheetStyle = useAnimatedStyle(() => ({ opacity: reveal.value, transform: [{ translateY: (1 - reveal.value) * 34 }] }));
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="none"
-      onRequestClose={onClose}
-    >
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{
-          flex: 1,
-          justifyContent: 'flex-end',
-          backgroundColor: '#00000066',
-        }}
-      >
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={closeLabel}
-          onPress={onClose}
-          style={{ flex: 1 }}
-        />
-        <Animated.View
-          accessibilityViewIsModal
-          style={[sheetStyle, {
-            maxHeight: '80%',
-            backgroundColor: colors.surface,
-            borderTopLeftRadius: 28,
-            borderTopRightRadius: 28,
-            paddingHorizontal: 24,
-            paddingBottom: Math.max(20, insets.bottom),
-          }]}
-        >
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              paddingTop: 10,
-              paddingBottom: 8,
-            }}
-          >
-            <Text
-              accessibilityRole="header"
-              style={{
-                color: colors.text,
-                fontWeight: '800',
-                fontSize: 21,
-                flex: 1,
-              }}
-            >
-              {title}
-            </Text>
-            <IconButton
-              name="close"
-              label={closeLabel}
-              onPress={onClose}
-              colors={colors}
-            />
-          </View>
-          <ScrollView
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ paddingBottom: 12 }}
-          >
-            {children}
-          </ScrollView>
-        </Animated.View>
+  const [mounted, setMounted] = React.useState(visible);
+  useEffect(() => {
+    if (visible) { setMounted(true); return; }
+    const timer = setTimeout(() => setMounted(false), reduced ? 0 : 500);
+    return () => clearTimeout(timer);
+  }, [visible, reduced]);
+  if (!mounted && !visible) return null;
+  return <Modal visible={mounted || visible} transparent animationType="none" onRequestClose={onClose}>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <MorphSheet open={visible} onOpenChange={open => { if (!open) onClose(); }} initialSnap={1} snapPoints={[0.5, 0.9]} blur={false} accessibilityLabel={title} closeLabel={closeLabel} expandLabel={libraryUx(locale, 'expand')} collapseLabel={libraryUx(locale, 'collapse')}
+          sheet={<View style={{ flex: 1, paddingHorizontal: 24, paddingBottom: Math.max(20, insets.bottom) }}><View style={{ flexDirection: 'row', alignItems: 'center', paddingBottom: 12 }}><Text accessibilityRole="header" style={{ flex: 1, color: colors.text, fontSize: 21, fontWeight: '800' }}>{title}</Text><IconButton name="close" label={closeLabel} colors={colors} onPress={onClose} /></View><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 18, paddingBottom: 24 }}>{children}</ScrollView></View>}>
+          <View style={{ flex: 1 }} />
+        </MorphSheet>
       </KeyboardAvoidingView>
-    </Modal>
-  );
+    </GestureHandlerRootView>
+  </Modal>;
 }

@@ -18,6 +18,7 @@ buildscript {
     }
 }
 
+apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"
 
 // Native libraries resolve React Native without relying on the GUI daemon's PATH.

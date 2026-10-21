@@ -23,7 +23,7 @@ describe('interface preferences', () => {
 
   it('offers all 30 product locales and localizes the core controls', () => {
     expect(localeOptions.filter(([locale]) => locale !== 'system')).toHaveLength(30);
-    expect(createTranslator('ru')('importPdf')).toBe('Перевести PDF');
+    expect(createTranslator('ru')('importPdf')).toBe('Перевести документ');
     expect(createTranslator('fr')('settings')).toBe('Paramètres');
     expect(createTranslator('en')('settings')).toBe('Settings');
   });

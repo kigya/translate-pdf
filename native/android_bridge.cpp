@@ -1,4 +1,5 @@
 #include "core.hpp"
+#include "docx.hpp"
 #include <jni.h>
 #include <android/bitmap.h>
 #include <cstring>
@@ -11,6 +12,9 @@ jstring result(JNIEnv* e,const std::string& s){auto input=std::wstring_convert<s
 }
 extern "C" {
 JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_inspect(JNIEnv*e,jobject,jstring p){return result(e,translatepdf::inspect(str(e,p)));}
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_inspectDocx(JNIEnv*e,jobject,jstring p){return result(e,translatepdf::inspectDocx(str(e,p)));}
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_readDocxSegment(JNIEnv*e,jobject,jstring p,jint i){return result(e,translatepdf::readDocxSegment(str(e,p),i));}
+JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_exportDocx(JNIEnv*e,jobject,jstring s,jstring b,jstring d){return result(e,translatepdf::exportDocx(str(e,s),str(e,b),str(e,d)));}
 JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_readPage(JNIEnv*e,jobject,jstring p,jint i){return result(e,translatepdf::readPage(str(e,p),i));}
 JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_loadModel(JNIEnv*e,jobject,jstring p,jint c,jint t,jstring profile){return result(e,translatepdf::loadModel(str(e,p),c,t,str(e,profile)));}
 JNIEXPORT jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_translate(JNIEnv*e,jobject,jstring p,jstring g,jstring c,jstring s,jstring t){return result(e,translatepdf::translate(str(e,p),str(e,g),str(e,c),str(e,s),str(e,t)));}

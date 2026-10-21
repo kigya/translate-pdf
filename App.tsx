@@ -1,3 +1,15 @@
+import { useAppRating } from './src/ui/useAppRating';
+import { ReviewLayout, ReviewColumn } from './src/ui/ReviewLayout';
+import { TranslationActivity } from './src/ui/TranslationActivity';
+import { UiLocaleContext } from './src/i18n/UiLocaleContext';
+import { WordResultScreen } from './src/screens/WordResultScreen';
+import { useLocalSearchParams, router } from 'expo-router';
+import { KinetikProvider } from './src/lib/kinetik/tokens/theme';
+import { usePaletteTransition } from './src/ui/usePaletteTransition';
+import { LiquidTabs } from './src/components/kinetik/liquid-tabs';
+import { ThemeSwitch } from './src/components/kinetik/theme-switch';
+import { PulseToggle } from './src/components/kinetik/pulse-toggle';
+import { Icon } from './src/ui/Controls';
 import { useMotionReduced } from './src/ui/useMotionReduced';
 import React, {
   useCallback,
@@ -43,14 +55,13 @@ import {
   MessageKey,
   Locale,
 } from './src/i18n/messages';
-import { resolveTheme, palettes } from './src/ui/theme';
+import { resolveTheme, palettes, kinetikBrand } from './src/ui/theme';
 import {
   Button,
   Card,
   Header,
   Label,
   Notice,
-  ProgressBar,
   Row,
   Screen,
 } from './src/ui/components';
@@ -59,9 +70,8 @@ import {
   OnboardingScreen,
 } from './src/onboarding/OnboardingScreen';
 
-import { AnimatedTabBar } from './src/ui/Motion';
 import { SplashScreen } from './src/ui/SplashScreen';
-import { Sheet, SettingsRow } from './src/ui/Controls';
+import { Sheet } from './src/ui/Controls';
 import { DialogContext, useDialogController } from './src/ui/Dialog';
 import {
   LibraryScreen,
@@ -75,7 +85,7 @@ import {
   LicensesScreen,
 } from './src/screens/AppScreens';
 import { ux } from './src/i18n/ux';
-import { PRIVACY_URL } from './src/domain/presentation';
+import { PRIVACY_URL, ONLINE_MODEL } from './src/domain/presentation';
 
 import {
   resolveTranslationPair,
@@ -152,7 +162,9 @@ function AppContent() {
   // a non-null snapshot, including across refresh failures.
   const [snapshot, setSnapshot] = useState<BootstrapSnapshot | null>(null);
   const [bootstrapError, setBootstrapError] = useState('');
-  const [route, setRoute] = useState<Route>('home');
+  const { screen } = useLocalSearchParams<{ screen?: Route }>();
+  const route: Route = screen ?? 'home';
+  const setRoute = (next: Route) => router.setParams({ screen: next });
   const routeStack = useRef<Route[]>([]);
   const [selectedDocument, setSelectedDocument] =
     useState<DocumentSnapshot | null>(null);
@@ -188,7 +200,9 @@ function AppContent() {
     () => resolveTheme(preferenceTheme, scheme as ColorSchemeName),
     [preferenceTheme, scheme],
   );
-  const colors = palettes[activeTheme];
+  const transition = usePaletteTransition(activeTheme, reducedMotion);
+  const colors = palettes[transition.mode];
+  const frame = (children: React.ReactNode) => <UiLocaleContext.Provider value={locale}><KinetikProvider scheme={transition.mode} colors={kinetikBrand[transition.mode]} reduceMotion={reducedMotion ? 'always' : 'never'}><View ref={transition.view} collapsable={false} style={{ flex: 1 }}>{children}{transition.image ? <View pointerEvents="none" collapsable={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}><Animated.Image source={{ uri: transition.image }} onLoad={transition.reveal} onError={transition.reveal} style={[{ width: '100%', height: '100%' }, transition.overlay]} /></View> : null}</View></KinetikProvider></UiLocaleContext.Provider>;
   const savedLanguage = snapshot?.preferences.language ?? 'system';
   const locale: Locale =
     savedLanguage === 'system'
@@ -198,7 +212,7 @@ function AppContent() {
   const currentTranslator = useRef(t);
   currentTranslator.current = t;
   const direction = localeDirection(locale);
-  const { showDialog, dialog, dialogOpen } = useDialogController(colors, direction);
+  const { showDialog, dialog, dialogOpen } = useDialogController(colors, direction, locale);
   const onboarding =
     onboardingOverride ?? snapshot?.onboarding ?? BASE_ONBOARDING;
   const showIntro = replayIntro || !onboarding.done;
@@ -213,7 +227,7 @@ function AppContent() {
     snapshot?.models.find(
       model => model.id === snapshot.device.recommendedModelId,
     ) ?? null;
-  const selectedModel =
+  const selectedModel = snapshot?.preferences.selectedEngine?.kind === 'online' ? ONLINE_MODEL :
     snapshot?.models.find(
       model =>
         model.id === snapshot.preferences.selectedModelId &&
@@ -324,7 +338,7 @@ function AppContent() {
   }, [route, selectedJob, selectedJobId, showIntro, snapshot]);
 
   useEffect(() => {
-    if (!selectedJobId || route !== 'preview') return;
+    if (!selectedJobId || route !== 'preview' || selectedJob?.documentFormat === 'docx') return;
     let live = true;
     setRenderedUri('');
     PdfTranslator.getJob(selectedJobId, selectedPage)
@@ -358,7 +372,7 @@ function AppContent() {
     return () => {
       live = false;
     };
-  }, [route, selectedJobId, selectedPage, previewOriginal, t, width]);
+  }, [route, selectedJobId, selectedPage, previewOriginal, t, width, selectedJob?.documentFormat]);
 
   const go = (next: Route) => {
     setInlineError('');
@@ -406,9 +420,11 @@ function AppContent() {
     }
   };
 
+  const saveAppRating = useAppRating(value => PdfTranslator.setSettings({ appRating: value }), refresh, () => setInlineError(t('unknownError')));
+
   const pickPdf = () =>
     safely(
-      () => PdfTranslator.pickPdf(),
+      () => PdfTranslator.pickDocument(),
       document => {
         if (!document) return;
         setSelectedDocument(document);
@@ -487,8 +503,15 @@ function AppContent() {
     if (!selectedDocument || !selectedModel) return;
     void safely(
       async () => {
+        const online = selectedModel.id === 'mymemory';
+        if (online) {
+          const answer = await showDialog({ title: ux(locale, 'onlineConsentTitle'), message: ux(locale, 'onlineConsentBody'), icon: 'globe', actions: [{ id: 'cancel', label: ux(locale, 'cancel'), quiet: true }, { id: 'agree', label: ux(locale, 'onlineContinue') }] });
+          if (answer !== 'agree') return null;
+        }
         await explainNotifications(false);
         return PdfTranslator.startJob({
+          engine: online ? { kind: 'online', id: 'mymemory' } : { kind: 'local', id: selectedModel.id },
+          onlineConsent: online,
           documentId: selectedDocument.id,
           sourceLanguage,
           targetLanguage,
@@ -497,6 +520,7 @@ function AppContent() {
         });
       },
       job => {
+        if (!job) return;
         setSelectedJobId(job.id);
         setSelectedPage(0);
         go('job');
@@ -505,7 +529,7 @@ function AppContent() {
   };
   const selectModel = (model: ModelSnapshot) =>
     safely(
-      () => PdfTranslator.setSettings({ selectedModelId: model.id }),
+      () => PdfTranslator.setSettings(model.id === 'mymemory' ? { selectedEngine: { kind: 'online', id: 'mymemory' } } : { selectedModelId: model.id, selectedEngine: { kind: 'local', id: model.id } }),
       () => back(),
     );
   const setTranslationPair = (
@@ -533,10 +557,10 @@ function AppContent() {
     setOnboardingOverride(saved);
   };
 
-  if (!bootComplete) return <SplashScreen onFirstFrame={markSplashShown} />;
+  if (!bootComplete) return frame(<SplashScreen onFirstFrame={markSplashShown} />);
 
   if (!snapshot)
-    return (
+    return frame(
       <Screen colors={colors} direction={direction}>
         <StatusBar
           barStyle={activeTheme === 'dark' ? 'light-content' : 'dark-content'}
@@ -562,7 +586,7 @@ function AppContent() {
     );
 
   if (showIntro)
-    return (
+    return frame(
       <>
         <StatusBar
           barStyle={activeTheme === 'dark' ? 'light-content' : 'dark-content'}
@@ -579,7 +603,7 @@ function AppContent() {
           initialState={replayIntro ? BASE_ONBOARDING : onboarding}
           persist={persistOnboarding}
           onComplete={() => {
-            setOnboardingOverride({ version: ONBOARDING_VERSION, page: 3, done: true });
+            setOnboardingOverride({ version: ONBOARDING_VERSION, page: 2, done: true });
             setRoute('home');
             routeStack.current = [];
           }}
@@ -598,20 +622,7 @@ function AppContent() {
       backLabel={t('back')}
     />
   );
-  const tabBar = () => (
-    <AnimatedTabBar
-      direction={direction}
-      colors={colors}
-      labels={{ library: t('home'), settings: t('settings') }}
-      bottomInset={insets.bottom}
-      active={route === 'settings' ? 'settings' : 'library'}
-      onChange={tab => {
-        routeStack.current = [];
-        setRoute(tab === 'library' ? 'home' : 'settings');
-        setInlineError('');
-      }}
-    />
-  );
+  const tabBar = () => <View style={{ padding: 12, paddingBottom: Math.max(12, insets.bottom), backgroundColor: colors.background }}><LiquidTabs tabs={[{ key: 'home', label: t('home'), icon: <Icon name="document" color={route === 'home' ? colors.onPrimary : colors.muted} size={18} /> }, { key: 'settings', label: t('settings'), icon: <Icon name="monitor" color={route === 'settings' ? colors.onPrimary : colors.muted} size={18} /> }]} value={route} onChange={value => { routeStack.current = []; setRoute(value as Route); }} /></View>;
   const base = { colors, t, locale, busy };
   const renderHome = () => (
     <LibraryScreen
@@ -633,7 +644,10 @@ function AppContent() {
         setSelectedDocument(document);
         go('prepare');
       }}
-    />
+
+        onSetColor={async (job, color) => { const changed = await PdfTranslator.setJobColor(job.id, color); await refresh(); return changed; }}
+        onSort={value => void safely(() => PdfTranslator.setSettings({ librarySort: value }))}
+      />
   );
   const renderModel = () => (
     <>
@@ -682,12 +696,7 @@ function AppContent() {
           </View>
         </>
       );
-    const rawRatio =
-      job.totalPages > 0 ? job.completedPages / job.totalPages : 0;
-    const ratio =
-      job.status === 'completed' || job.status === 'partial'
-        ? rawRatio
-        : Math.min(0.99, rawRatio);
+
     const done = job.status === 'completed' || job.status === 'partial';
     const etaRange =
       job.etaRangeSeconds &&
@@ -810,12 +819,12 @@ function AppContent() {
             <Text
               style={{ fontSize: 21, color: colors.text, fontWeight: '800' }}
             >
-              {t(stageKeys[job.stage])}
+              {job.engine?.kind === 'online' && job.stage === 'translating' ? ux(locale, 'onlineProcessing') : job.documentFormat === 'docx' && job.stage === 'exporting' ? ux(locale, 'exportDocx') : t(stageKeys[job.stage])}
             </Text>
-            <ProgressBar colors={colors} value={ratio} label={t('progress')} />
+            <TranslationActivity job={job} colors={colors} t={t} locale={locale} active={appState === 'active'} />
             <Row style={{ justifyContent: 'space-between' }}>
               <Text style={{ color: colors.text, fontWeight: '700' }}>
-                {t('pageProgress')}
+                {job.progressUnit === 'segment' ? ux(locale, 'segments') : t('pageProgress')}
               </Text>
               <Text style={{ color: colors.muted }}>
                 {job.completedPages} / {job.totalPages}
@@ -824,7 +833,7 @@ function AppContent() {
             {job.currentPage != null || job.status === 'queued' ? (
               <Text style={{ color: colors.muted, fontSize: 12 }}>
                 {job.currentPage != null
-                  ? `${t('page')} ${job.currentPage + 1}`
+                  ? `${job.progressUnit === 'segment' ? ux(locale, 'segments') : t('page')} ${job.currentPage + 1}`
                   : t('stageQueued')}
               </Text>
             ) : null}
@@ -868,7 +877,7 @@ function AppContent() {
     );
   };
 
-  const renderPreview = () => (
+  const renderPreview = () => selectedJob?.documentFormat === 'docx' ? <>{screenHeader(selectedJob.documentName)}<WordResultScreen job={selectedJob} colors={colors} t={t} locale={locale} /></> : (
     <>
       {screenHeader(
         t('previewTitle'),
@@ -897,11 +906,8 @@ function AppContent() {
           onPress={() => setPreviewOriginal(false)}
         />
       </View>
-      <View style={{ flex: 1, flexDirection: wide ? 'row' : 'column' }}>
-        <ScrollView
-          style={{ flex: wide ? 1.15 : undefined }}
-          contentContainerStyle={{ padding: 18, gap: 14 }}
-        >
+      <ReviewLayout wide={wide}>
+        <ReviewColumn wide={wide} weight={1.15} gap={14}>
           {renderedUri ? (
             <Image
               accessibilityLabel={`${t('page')} ${selectedPage + 1}`}
@@ -944,11 +950,8 @@ function AppContent() {
               )}
             />
           </Row>
-        </ScrollView>
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{ padding: 18, gap: 13 }}
-        >
+        </ReviewColumn>
+        <ReviewColumn wide={wide} gap={13}>
           {details?.selectedPage?.error ? (
             <Notice text={details.selectedPage.error} colors={colors} />
           ) : null}
@@ -1093,6 +1096,7 @@ function AppContent() {
             colors={colors}
             disabled={busy || !selectedJob}
           />
+
           {exported ? (
             <Button
               label={t('share')}
@@ -1105,8 +1109,8 @@ function AppContent() {
             />
           ) : null}
           {inlineError ? <Notice text={inlineError} colors={colors} /> : null}
-        </ScrollView>
-      </View>
+        </ReviewColumn>
+      </ReviewLayout>
     </>
   );
 
@@ -1120,6 +1124,7 @@ function AppContent() {
         onAppearance={() => setAppearanceOpen(true)}
         onPrivacy={openPrivacy}
         onReplay={() => setReplayIntro(true)}
+        onRate={saveAppRating}
       />
     </>
   );
@@ -1199,7 +1204,7 @@ function AppContent() {
       </>
     ) : route === 'sourcePreview' ? (
       <>
-        {screenHeader(ux(locale, 'sourcePdf'))}
+        {screenHeader(ux(locale, selectedDocument?.format === 'docx' ? 'original' : 'sourcePdf'))}
         <SourcePreviewScreen {...base} document={selectedDocument} />
       </>
     ) : (
@@ -1209,7 +1214,7 @@ function AppContent() {
       </>
     );
 
-  return (
+  return frame(
     <DialogContext.Provider value={showDialog}>
     <View style={{ flex: 1 }} accessibilityElementsHidden={dialogOpen} importantForAccessibility={dialogOpen ? 'no-hide-descendants' : 'auto'}>
     <Screen colors={colors} direction={direction}>
@@ -1287,20 +1292,8 @@ function AppContent() {
         colors={colors}
         closeLabel={t('back')}
       >
-        {(['system', 'light', 'dark'] as const).map(value => (
-          <SettingsRow
-            key={value}
-            icon={value === 'system' ? 'monitor' : value === 'light' ? 'sun' : 'moon'}
-            label={`${t(value)}${value === preferenceTheme ? ' ✓' : ''}`}
-            onPress={() =>
-              void safely(
-                () => PdfTranslator.setSettings({ theme: value }),
-                () => setAppearanceOpen(false),
-              )
-            }
-            colors={colors}
-          />
-        ))}
+        <PulseToggle label={ux(locale, 'followSystem')} value={preferenceTheme === 'system'} onValueChange={follow => void safely(() => PdfTranslator.setSettings({ theme: follow ? 'system' : activeTheme }))} />
+        <ThemeSwitch label={t('dark')} stateLabel={t(activeTheme)} value={activeTheme} onValueChange={theme => void safely(() => PdfTranslator.setSettings({ theme }))} />
       </Sheet>
     </Screen>
     </View>

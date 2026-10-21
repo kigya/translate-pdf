@@ -13,6 +13,8 @@ Pod::Spec.new do |spec|
     'TranslatePDF/PdfTranslatorBridge.m',
     'TranslatePDF/TranslateCoreBridge.{h,mm}',
     'TranslatePDF/TranslatorStore.swift',
+    'TranslatePDF/MyMemoryTranslator.swift',
+    'TranslatePDF/DocxPreviewRenderer.swift',
     'TranslatePDF/ModelCatalog.swift',
     'TranslatePDF/ModelDownloadCoordinator.swift'
   ]
@@ -22,7 +24,8 @@ Pod::Spec.new do |spec|
       'TranslateCore/Resources/fonts/NotoSans-Regular.ttf',
       'TranslateCore/Resources/fonts/NotoSansSC-Regular.ttf'
     ],
-    'TranslatePDFLicenses' => ['TranslateCore/Licenses/*']
+    'TranslatePDFLicenses' => ['TranslateCore/Licenses/*'],
+    'FolivelaDocxPreview' => ['../assets/docx-preview/*']
   }
   spec.vendored_frameworks = ['Frameworks/TranslateCore.xcframework', 'Frameworks/PDFium.xcframework']
   spec.pod_target_xcconfig = {

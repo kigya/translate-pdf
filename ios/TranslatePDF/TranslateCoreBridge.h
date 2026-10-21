@@ -5,6 +5,9 @@ NS_ASSUME_NONNULL_BEGIN
 @interface TranslateCoreBridge : NSObject
 + (NSString *)inspect:(NSString *)path;
 + (NSString *)readPage:(NSString *)path index:(NSInteger)index;
++ (NSString *)inspectDocx:(NSString *)path;
++ (NSString *)readDocxSegment:(NSString *)path index:(NSInteger)index;
++ (NSString *)exportDocx:(NSString *)source segmentsJSON:(NSString *)segmentsJSON destination:(NSString *)destination;
 + (nullable NSData *)renderPNG:(NSString *)path index:(NSInteger)index width:(NSInteger)width;
 + (NSString *)loadModel:(NSString *)path context:(NSInteger)context threads:(NSInteger)threads profile:(NSString *)profile;
 + (NSString *)translate:(NSString *)text glossary:(NSString *)glossary context:(NSString *)context sourceLanguage:(NSString *)sourceLanguage targetLanguage:(NSString *)targetLanguage;

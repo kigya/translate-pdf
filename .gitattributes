@@ -1,0 +1,5 @@
+# Preserve audited third-party source and legal-notice bytes across checkouts.
+native/vendor/** -text
+assets/docx-preview/*.js -text
+licenses/** -text
+ios/TranslateCore/Licenses/** -text

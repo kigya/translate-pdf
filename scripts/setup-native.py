@@ -12,6 +12,8 @@ PDFIUM = {
 }
 MODELS = {
  'q4': ('tencent/Hy-MT2-1.8B-GGUF', 'a0c709d9fac510f2c807aa3af52872340dc37a4a', 'Hy-MT2-1.8B-Q4_K_M.gguf', 'dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699'),
+ 'gemma': ('bullerwins/translategemma-4b-it-GGUF', '7c938465a870d8624bcfa98a8e4a3510053c19a8', 'translategemma-4b-it-Q4_K_M.gguf', '7f7357c14abd9da4eb200b38b05da502cd6e10d7e1d403fbc9f78c19f3209b72'),
+ 'hy7': ('tencent/Hy-MT2-7B-GGUF', 'ab8472660ac61fac25f1af43fac2599d52a8a775', 'Hy-MT2-7B-Q4_K_M.gguf', '9f96256500f3fc1ab4d64336b58f52a949a95ad7516b0c229476eef782f9f77b'),
  'iq3': ('mradermacher/Hy-MT2-1.8B-i1-GGUF', '9f5c7d98d8b625800775e6197e55c7ed38f2f33a', 'Hy-MT2-1.8B.i1-IQ3_XS.gguf', 'f37758217de25a512e6ff7a728a3cd4fa8f4843041468889bc8a9811a2a894b5'),
  'iq2': ('mradermacher/Hy-MT2-1.8B-i1-GGUF', '9f5c7d98d8b625800775e6197e55c7ed38f2f33a', 'Hy-MT2-1.8B.i1-IQ2_M.gguf', '917ee7286326a2881ba6f519b3e43ed41ff6b1c0db8288ff52f3fae5930080d9'),
 }

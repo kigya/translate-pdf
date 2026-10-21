@@ -64,6 +64,17 @@ class PdfExportTest(unittest.TestCase):
         self.assertNotIn('A short line.', text)
         self.assertFalse(Path(str(self.output) + '.part').exists())
 
+    def test_whitespace_only_translation_keeps_original_text(self):
+        for whitespace in ('\n', ' \t\r\n'):
+            with self.subTest(whitespace=repr(whitespace)):
+                self.blocks[0]['translatedText'] = whitespace
+                result = self.export()
+                self.assertTrue(result['partial'])
+                self.assertEqual('missing_translation', result['issues'][0]['reason'])
+                text = ' '.join(block['text'] for block in run('page', self.output, 0)['blocks'])
+                self.assertIn('A short line.', text)
+                self.assertIn('Коротко.', text)
+
     @unittest.skipUnless((ROOT / 'assets/fonts/NotoSansSC-Regular.ttf').is_file(), 'CJK font asset is not present in this checkout')
     def test_simplified_chinese_font_fallback_and_no_space_wrapping(self):
         block = self.blocks[0]

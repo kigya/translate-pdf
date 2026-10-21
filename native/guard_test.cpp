@@ -1,6 +1,13 @@
 #include "translation_guard.hpp"
 #include <iostream>
+#include <vector>
 int main(){
+ if(translatepdf::protectedNumbers("−1,5 −2.5 7")!=std::vector<std::string>{"-1.5","-2.5","7"}){std::cerr<<"Number normalization failed\n";return 1;}
+ if(!translatepdf::containsAny("text",{"missing","text"})||translatepdf::containsAny("text",{}) ){std::cerr<<"Term matching failed\n";return 1;}
+ if(!translatepdf::wordByte('a')||!translatepdf::wordByte('Z')||!translatepdf::wordByte('4')||!translatepdf::wordByte('_')||!translatepdf::wordByte(0xe9)||translatepdf::wordByte('-')||translatepdf::wordByte('{')||translatepdf::wordByte('[')){std::cerr<<"Token byte classification failed\n";return 1;}
+ if(!translatepdf::containsToken("not", "not")||!translatepdf::containsToken("(not)","not")||translatepdf::containsToken("_not", "not")||translatepdf::containsToken("not_", "not")||!translatepdf::containsToken("notnot not!","not")){std::cerr<<"Token boundaries failed\n";return 1;}
+ if(translatepdf::hasNegation("N'ouvrez pas le cache","fr")!=true||translatepdf::hasNegation("No retire la cubierta jamás","es")!=true||translatepdf::hasNegation("Vérifiez le passage","fr")||translatepdf::hasNegation("Check the panel","unknown")){std::cerr<<"Language negation detection failed\n";return 1;}
+ if(!translatepdf::hasNegation("N'oubliez le cache","fr")||!translatepdf::hasNegation("Can't remove it","en")){std::cerr<<"Contraction negation detection failed\n";return 1;}
  struct Case{std::string source,target;bool expected;};
  const Case cases[]={
  {"Do not exceed 1.5 N.m at −11 °C.","Не превышайте 1,5 Нм при -11 °C.",true},
@@ -9,6 +16,7 @@ int main(){
  {"Never remove the cover.","Нельзя снимать крышку.",true},
  {"Check P0400 and B120-1.","Проверьте P0400 и B120-1.",true},
  {"Check P0400.","Проверьте P4000.",false},
+ {"Check P0400 and Q0400.","Проверьте P0400 и P0400.",false},
  {"Read page 10 before step 2.","До шага 2 прочитайте страницу 10.",true},
  {"Keep -11 °C.","Сохраняйте 11 °C.",false},
  {"Check the cover.","Проверьте крышку.",true}};

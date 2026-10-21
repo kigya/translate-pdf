@@ -12,10 +12,11 @@ SMOKE = os.environ.get('TRANSLATEPDF_NATIVE_SMOKE', str(ROOT / '.local-private/b
 ENV = dict(os.environ, DYLD_LIBRARY_PATH=str(ROOT / '.local-private/deps/pdfium/mac-arm64/lib'))
 
 
-def sample_pdf(path):
+def sample_pdf(path, dimensions=(612, 792)):
     stream = b'BT /F1 18 Tf 70 710 Td (A short line.) Tj 0 -55 Td (Another line.) Tj ET 1 0 0 RG 70 590 180 50 re S'
     objects = [b'<< /Type /Catalog /Pages 2 0 R >>', b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-               b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+               (f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {dimensions[0]} {dimensions[1]}] '
+                '/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>').encode(),
                b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
                b'<< /Length ' + str(len(stream)).encode() + b' >>\nstream\n' + stream + b'\nendstream']
     data = b'%PDF-1.4\n'; offsets = [0]
@@ -144,7 +145,24 @@ class PdfExportTest(unittest.TestCase):
         self.assertEqual(200, raster['width'])
         self.assertLessEqual(raster['height'], 4096)
         self.assertEqual(raster['width'] * raster['height'] * 4, raster['bytes'])
+        self.assertEqual(128, run('render', self.source, 0, 1)['width'])
+        self.assertEqual(1800, run('render', self.source, 0, 2000)['width'])
         self.assertIn('error', run('render', self.source, 999999, 200))
+
+    def test_unloaded_translation_and_unknown_model_profile_return_errors(self):
+        self.assertEqual('Model is not loaded', run('translate-unloaded', 'Sample text')['error'])
+        unknown = run('load-model', self.source, 2048, 4, 'unknown-profile')
+        self.assertEqual('Unknown translation profile', unknown['error'])
+
+    def test_export_rejects_missing_optional_cjk_font_and_malformed_blocks(self):
+        self.blocks[0]['translatedText'] = '中文说明'
+        missing_font = run('export', self.source, 0, json.dumps(self.blocks, ensure_ascii=False),
+                           self.output, ROOT / 'assets/fonts/NotoSans-Regular.ttf',
+                           self.directory / 'missing-cjk.ttf')
+        self.assertEqual('Simplified Chinese export font is missing', missing_font['error'])
+        malformed = run('export', self.source, 0, '{', self.output,
+                        ROOT / 'assets/fonts/NotoSans-Regular.ttf')
+        self.assertIn('error', malformed)
 
     def test_invalid_model_is_rejected_without_inference(self):
         result = run('translate', self.source, 'Hello')
@@ -173,6 +191,10 @@ class PdfExportTest(unittest.TestCase):
         result = run('merge', json.dumps([str(self.output), str(self.output)]), merged)
         self.assertEqual(2, result['pageCount'])
         self.assertEqual(2, run('inspect', merged)['pageCount'])
+
+    def test_merge_rejects_empty_or_invalid_page_lists(self):
+        self.assertEqual('No completed pages to export', run('merge', '[]', self.output)['error'])
+        self.assertIn('error', run('merge', '{"page":"missing"}', self.output))
 
 
 if __name__ == '__main__':

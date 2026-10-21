@@ -7,7 +7,9 @@
 #include <chrono>
 int main(int argc,char**argv){
  if(argc<3)return 2;std::string op=argv[1];
- if(op=="inspect")std::cout<<translatepdf::inspect(argv[2]);
+ if(op=="load-model"&&argc>4){std::cout<<translatepdf::loadModel(argv[2],std::stoi(argv[3]),std::stoi(argv[4]),argc>5?argv[5]:"hy-mt2");translatepdf::releaseModel();}
+ else if(op=="translate-unloaded")std::cout<<translatepdf::translate(argv[2],"","","en","ru");
+ else if(op=="inspect")std::cout<<translatepdf::inspect(argv[2]);
  else if(op=="model-configuration"){
   auto first=nlohmann::json::parse(translatepdf::loadModel(argv[2],1024,1));
   auto second=nlohmann::json::parse(translatepdf::loadModel(argv[2],2048,2));

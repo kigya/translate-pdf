@@ -60,12 +60,23 @@ else()
   enable_testing()
   add_executable(translation-guard-test guard_test.cpp)
   add_test(NAME translation-consistency COMMAND translation-guard-test)
+  # Compile the production JNI adapter on macOS with the host JDK's real JNI
+  # declarations and a narrow AndroidBitmap boundary shim. The test drives the
+  # exported entrypoints and native PDFium/core implementation; it does not
+  # replace Android device validation.
+  find_package(JNI REQUIRED)
+  add_executable(jni-bridge-test tests/jni_bridge_test.cpp android_bridge.cpp)
+  target_include_directories(jni-bridge-test PRIVATE
+   "${JNI_INCLUDE_DIRS}" "${CMAKE_CURRENT_LIST_DIR}/tests/jni_shim" "${DEPS}/include")
+  target_link_libraries(jni-bridge-test PRIVATE translatepdf)
+  add_test(NAME android-jni-bridge COMMAND jni-bridge-test)
   if(TRANSLATEPDF_HOST_COVERAGE)
-   foreach(owned translatepdf translation-guard-test)
+   foreach(owned translatepdf translation-guard-test jni-bridge-test)
     target_compile_options(${owned} PRIVATE -fprofile-instr-generate -fcoverage-mapping)
    endforeach()
    target_link_options(native-smoke PRIVATE -fprofile-instr-generate)
    target_link_options(translation-guard-test PRIVATE -fprofile-instr-generate)
+   target_link_options(jni-bridge-test PRIVATE -fprofile-instr-generate)
   endif()
  endif()
 endif()

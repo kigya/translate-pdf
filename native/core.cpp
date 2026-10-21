@@ -154,11 +154,10 @@ void annotate(FPDF_PAGE page,const json& block,double height,const std::string& 
 }
 void unload(){if(ctx){llama_free(ctx);ctx=nullptr;}if(model){llama_model_free(model);model=nullptr;}loadedPath.clear();loadedProfile.clear();}
 bool abortInference(void*){return stopped.load();}
-bool supportedLanguage(const std::string& code){return code=="ru"||code=="zh-Hans"||code=="fr"||code=="en"||code=="de"||code=="es";}
 std::string languageName(const std::string& code){
  if(code=="ru")return "Russian";if(code=="zh-Hans")return "Simplified Chinese";if(code=="fr")return "French";
  if(code=="en")return "English";if(code=="de")return "German";if(code=="es")return "Spanish";
- throw std::runtime_error("Unsupported language code");
+ throw std::runtime_error("Unsupported language pair");
 }
 std::string gemmaLanguageCode(const std::string& code){return code=="zh-Hans"?"zh":code;}
 
@@ -289,11 +288,10 @@ std::string loadModel(const std::string& path,int context,int threads,const std:
 }catch(const std::exception&e){return failure(e);}}
 std::string translate(const std::string& text,const std::string& glossary,const std::string& context,const std::string& sourceLanguage,const std::string& targetLanguage){try{
  std::lock_guard<std::mutex> lock(modelMutex);if(!ctx||!model)throw std::runtime_error("Model is not loaded");if(stopped)throw std::runtime_error("Canceled");
- if(!supportedLanguage(sourceLanguage)||!supportedLanguage(targetLanguage))throw std::runtime_error("Unsupported language pair");
+ const auto sourceName=languageName(sourceLanguage),targetName=languageName(targetLanguage);
  if(sourceLanguage==targetLanguage)throw std::runtime_error("Source and target languages must differ");
  if(text.empty())return json{{"text",text},{"tokens",0},{"seconds",0},{"skipped",true}}.dump();
  if(loadedProfile!="hy-mt2"&&!glossary.empty())throw std::runtime_error("This model uses direct translation without a glossary. Choose a glossary-capable model to apply saved terms.");
- const auto sourceName=languageName(sourceLanguage),targetName=languageName(targetLanguage);
  std::string instruction;
  if(!glossary.empty())instruction+="Reference the following translations:\n"+glossary+"\n\n";
  if(!context.empty())instruction+="[Background Information]\n"+context+"\n";

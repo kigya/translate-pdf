@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Privacy Policy for Folivela by KIGYA.">
+  <meta name="description" content="Privacy Policy for Folivela.">
   <title>Folivela Privacy Policy</title>
   <style>
     :root { color-scheme: light dark; font: 16px/1.65 system-ui, sans-serif; }
@@ -18,15 +18,15 @@
 <body>
   <main>
     <h1>Folivela Privacy Policy</h1>
-    <p class="updated">Effective date: October 20, 2026</p>
+    <p class="updated">Effective date: October 21, 2026</p>
 
-    <p>Folivela is an offline-first PDF translation app developed by KIGYA. This policy describes the prototype's current data handling. It does not claim legal certification or replace the disclosures required for a particular store release.</p>
+    <p>Folivela translates PDF and Word documents on mobile devices. This policy describes the prototype's current data handling. It does not claim legal certification or replace the disclosures required for a particular store release.</p>
 
     <h2>Information the app stores on your device</h2>
-    <p>When you use the app, it stores the PDFs you choose, translated pages and job checkpoints, dictionary entries, language and appearance preferences, and downloaded model files in app storage. The app reads local storage and memory availability to show storage information and help decide whether a model can run. Translation and OCR are performed on the device; PDF contents, translations, and dictionary entries are not sent to a translation server.</p>
+    <p>When you use the app, it stores the PDF and DOCX documents you choose, translated pages and job checkpoints, dictionary entries, language and appearance preferences, and downloaded model files in app storage. The app reads local storage and memory availability to show storage information and help decide whether a model can run. When you select a local model, translation and OCR run on your device and document text is not sent to a translation server. When you explicitly choose online translation and agree for that document, the extracted text is sent to MyMemory.</p>
 
     <h2>Network connections</h2>
-    <p>The app needs an internet connection to download a model you choose. Model files are hosted on Hugging Face, fetched over HTTPS, and checked against the expected file size and SHA-256 hash before use. A download request can expose your IP address, the requested model file, request time, and ordinary connection metadata to Hugging Face and the network providers involved in delivering the file. Those providers handle network requests under their own policies. The app does not upload your PDF or use a remote translation service.</p>
+    <p>The app needs an internet connection to download a model you choose. Model files are hosted on Hugging Face, fetched over HTTPS, and checked against the expected file size and SHA-256 hash before use. A download request can expose your IP address, the requested model file, request time, and ordinary connection metadata to Hugging Face and the network providers involved in delivering the file. Those providers handle network requests under their own policies. The original PDF or DOCX file is not uploaded for translation. Optional online translation sends extracted text fragments to https://api.mymemory.translated.net/get over HTTPS after your per-document agreement. MyMemory receives the submitted text, source/target languages, your IP address and ordinary connection metadata. Its terms allow long-term storage of submitted segments and processing by external machine-translation providers. Do not use this option for confidential or sensitive documents. The app cannot delete copies retained by the provider. See <a href="https://mymemory.translated.net/terms-and-conditions">MyMemory terms</a> and <a href="https://mymemory.translated.net/doc/usagelimits.php">usage limits</a>. Anonymous usage is limited to 5,000 characters per day; the provider may share limits across a network. There is no embedded API key, email submission, account or paid upgrade. The app does not contribute translations through the public-memory submission API.</p>
     <p>Opening this policy on GitHub Pages or following a model-license link opens an external website in your browser. The website host and your browser may process ordinary connection metadata under their own policies. The app does not add document, user, or device identifiers to those links.</p>
     <p>The app does not include an account service, advertising, analytics, or app telemetry in the current implementation.</p>
 
@@ -45,8 +45,8 @@
     <p>Folivela is a general-purpose document tool and is not designed specifically for children. The prototype has no account creation or age-verification flow.</p>
 
     <h2>Changes and contact</h2>
-    <p>Data handling may change as the app is developed. This page will be updated when a material change affects the described practices. For privacy questions, contact <a href="mailto:kirillborichevskiy@gmail.com">kirillborichevskiy@gmail.com</a>.</p>
-    <p>Developer: KIGYA. App: Folivela.</p>
+    <p>Data handling may change as the app is developed. This page will be updated when a material change affects the described practices. This prototype does not yet offer a public app-branded contact channel. You can stop online requests, retain local processing, remove downloaded models, and remove app-private data by uninstalling the app.</p>
+    <p>Developer: Folivela. App: Folivela.</p>
   </main>
 </body>
 </html>

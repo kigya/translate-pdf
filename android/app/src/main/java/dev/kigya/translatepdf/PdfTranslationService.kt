@@ -453,7 +453,7 @@ internal class PdfTranslationService : Service() {
     val pending = launch?.let { PendingIntent.getActivity(this, 100, it, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE) }
     return NotificationCompat.Builder(this, CHANNEL_ID)
       .setSmallIcon(R.mipmap.ic_launcher)
-      .setContentTitle("TranslatePDF")
+      .setContentTitle(getString(R.string.app_name))
       .setContentText(text)
       .setContentIntent(pending)
       .setOngoing(true)

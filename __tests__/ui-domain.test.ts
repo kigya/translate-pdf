@@ -65,3 +65,20 @@ describe('interface preferences', () => {
     expect(modelResourceReason(installed, device, false)).toBe('available');
   });
 });
+
+describe('resource policy fallbacks', () => {
+  it('uses device memory/disk estimates only when the model does not supply its own', () => {
+    const implicit = { ...model, memoryEstimateEligible: undefined, diskEstimateEligible: undefined };
+    expect(modelResourceReason(implicit, { ...device, memoryEstimateEligible: false }, false)).toBe('memory');
+    expect(modelResourceReason(implicit, { ...device, diskEstimateEligible: false }, true)).toBe('disk');
+    const legacyDevice = { ...device, memoryEstimateEligible: undefined, diskEstimateEligible: undefined } as unknown as DeviceSnapshot;
+    expect(modelResourceReason(implicit, legacyDevice, true)).toBe('available');
+    expect(modelResourceReason({ ...implicit, id: 'other' }, legacyDevice, true)).toBe('disk');
+    expect(modelResourceReason(implicit, { ...legacyDevice, recommendedModelAvailable: false }, false)).toBe('memory');
+  });
+  it('rejects unsupported artifacts before resources and reports current low-memory separately', () => {
+    expect(modelResourceReason({ ...model, checksumPinned: false }, device, true)).toBe('unsupported');
+    expect(modelResourceReason({ ...model, translationEnabled: false }, device, false)).toBe('unsupported');
+    expect(modelResourceReason(model, { ...device, systemLowMemory: true }, false)).toBe('lowMemory');
+  });
+});

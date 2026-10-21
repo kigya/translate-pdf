@@ -1,6 +1,6 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert, AppState, BackHandler, Linking, StyleSheet, TextInput } from 'react-native';
+import { AppState, BackHandler, Linking, Modal, Dimensions, Platform, StyleSheet, TextInput } from 'react-native';
 
 jest.mock('react-native-safe-area-context', () => {
   const ReactNative = require('react-native');
@@ -11,6 +11,7 @@ jest.mock('react-native-safe-area-context', () => {
   };
 });
 
+let mockReducedMotion: boolean | undefined = true;
 jest.mock('react-native-reanimated', () => {
   const ReactNative = require('react-native');
   const ReactModule = require('react');
@@ -20,7 +21,7 @@ jest.mock('react-native-reanimated', () => {
     __esModule: true,
     default: { createAnimatedComponent: (component: unknown) => component, View: AnimatedView },
     View: AnimatedView,
-    useReducedMotion: () => true,
+    useReducedMotion: () => mockReducedMotion,
     useSharedValue: (value: number) => ({ value }),
     useAnimatedStyle: (callback: () => unknown) => callback(),
     useAnimatedProps: (callback: () => unknown) => callback(),
@@ -45,6 +46,7 @@ jest.mock('../src/native/PdfTranslator', () => ({
 }));
 
 import App from '../App';
+import { LibraryScreen, TranslationOptionsScreen } from '../src/screens/AppScreens';
 import { createTranslator } from '../src/i18n/messages';
 import { PRIVACY_URL } from '../src/domain/presentation';
 
@@ -101,6 +103,7 @@ async function renderApp(data: unknown) {
 describe('native-backed app flows', () => {
   beforeEach(() => {
     cleanup();
+    mockReducedMotion = true;
     jest.clearAllMocks();
     native.bootstrap.mockReset().mockResolvedValue(snapshot());
     native.renderPage.mockResolvedValue('file:///private/source.png');
@@ -170,8 +173,8 @@ describe('native-backed app flows', () => {
     expect(screen.queryByText(/Meaning preserved in/)).toBeNull();
     fireEvent.press(screen.getByRole('button', { name: 'Details: Maximum' }));
     expect(await screen.findByText('Quality candidate')).toBeOnTheScreen();
-    expect(screen.getByText(/Meaning preserved in 29 of 44 test passages/)).toBeOnTheScreen();
-    expect(screen.getByText(/Evidence covers only 44 technical English→Russian passages/)).toBeOnTheScreen();
+    expect(screen.queryByText(/Meaning preserved in 29 of 44 test passages/)).toBeNull();
+    expect(screen.queryByText(/Evidence covers only 44 technical English→Russian passages/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Licenses' })).toBeNull();
     fireEvent.press(screen.getAllByRole('button', { name: 'Back' }).at(-1)!);
     fireEvent.press(screen.getAllByRole('button', { name: 'Details: Compact' })[0]);
@@ -233,14 +236,15 @@ describe('native-backed app flows', () => {
 
     fireEvent.press(screen.getAllByRole('button', { name: 'Details: Compact' })[0]);
     expect(await screen.findByText('TranslateGemma')).toBeOnTheScreen();
-    expect(screen.getByText(createTranslator('en')('gemmaTermsNotice'))).toBeOnTheScreen();
+    expect(screen.queryByText(createTranslator('en')('gemmaTermsNotice'))).toBeNull();
     fireEvent.press(screen.getAllByRole('button', { name: 'Back' })[1]);
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => { buttons?.find(button => button.text === 'Accept and download')?.onPress?.(); });
     expect(screen.getByRole('button', { name: 'Accept and download' })).toBeOnTheScreen();
     expect(screen.getByRole('button', { name: 'Resume' })).toBeOnTheScreen();
     await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Accept and download' })); await Promise.resolve(); await Promise.resolve(); });
-    expect(native.startModelDownload).toHaveBeenCalledWith('gemma-new');
-    alert.mockRestore();
+    expect(screen.getByText(createTranslator('en')('gemmaTermsNotice'))).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Accept and download' }));
+    await waitFor(() => expect(native.startModelDownload).toHaveBeenCalledWith('gemma-new'));
+
   });
 
   it('offers a per-job dictionary toggle when the chosen model cannot use saved terms', async () => {
@@ -656,10 +660,9 @@ describe('native-backed app flows', () => {
     await waitFor(() => expect(native.pauseModelDownload).toHaveBeenCalledWith('model-q4'));
 
     expect(await screen.findByRole('button', { name: 'Remove model' })).toBeOnTheScreen();
-    const confirmDelete = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => { buttons?.find(button => button.text === 'Remove')?.onPress?.(); });
     fireEvent.press(screen.getByRole('button', { name: 'Remove model' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(native.deleteModel).toHaveBeenCalledWith('model-q4'));
-    confirmDelete.mockRestore();
     expect(native.requestPermissions).not.toHaveBeenCalled();
   });
 
@@ -877,6 +880,252 @@ describe('native-backed app flows', () => {
     fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
     expect(screen.queryByText(/Meaning preserved in/)).toBeNull();
     expect(screen.getByText('Capability rating ⓘ')).toBeOnTheScreen();
+  });
+
+  it.each(['allow','later','dismiss'] as const)('explains a first download then handles notification %s without blocking work', async choice => {
+    const candidate = { ...snapshot().models[0], status: 'not_downloaded' };
+    const data = snapshot({ models: [candidate], notifications: { status: 'not_determined', canRequest: true } });
+    native.setSettings.mockRejectedValueOnce(new Error('Preference write unavailable'));
+    native.requestNotificationPermission.mockRejectedValueOnce(new Error('OS dialog dismissed'));
+    native.startModelDownload.mockResolvedValue(candidate);
+    await renderApp(data);
+    fireEvent.press(screen.getByRole('button',{name:'Model settings'}));
+    await act(async () => { fireEvent.press(screen.getByRole('button',{name:'Download model'})); await Promise.resolve(); });
+    expect(await screen.findByText('Keep track of your download')).toBeOnTheScreen();
+    if(choice==='dismiss') fireEvent(screen.UNSAFE_getAllByType(Modal).find(v=>v.props.visible)!, 'requestClose');
+    else fireEvent.press(screen.getByRole('button',{name:choice==='allow'?'Allow notifications':'Not now'}));
+    await waitFor(()=>expect(native.startModelDownload).toHaveBeenCalledWith('model-q4'));
+    expect(native.requestNotificationPermission).toHaveBeenCalledTimes(choice==='allow'?1:0);
+    // Retrying the operation does not ask again even if saving the explanation flag failed.
+    fireEvent.press(screen.getByRole('button',{name:'Download model'}));
+    await waitFor(()=>expect(native.startModelDownload).toHaveBeenCalledTimes(2));
+  });
+  it('requests notifications at the first translation and still starts after a decline', async()=>{
+    const data=snapshot({ notifications:{status:'not_determined',canRequest:true} });
+    native.pickPdf.mockResolvedValue(data.documents[0]);native.setSettings.mockResolvedValue(data.preferences);
+    native.startJob.mockResolvedValue({id:'new'});
+    await renderApp(data);fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
+    await screen.findByRole('button',{name:'Preview original'});
+    fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
+    await screen.findByText('Keep track of your translation');
+    fireEvent.press(screen.getByRole('button',{name:'Not now'}));
+    await waitFor(()=>expect(native.startJob).toHaveBeenCalled());
+    expect(native.requestNotificationPermission).not.toHaveBeenCalled();
+  });
+  it.each(['cancel','license'] as const)('does not download Gemma after choosing %s instead of accepting',async choice=>{
+    const candidate={...snapshot().models[0],status:'not_downloaded',licenseUrl:'https://ai.google.dev/gemma/terms'};
+    const link=jest.spyOn(Linking,'openURL').mockRejectedValueOnce(new Error('Unavailable'));
+    await renderApp(snapshot({models:[candidate]}));fireEvent.press(screen.getByRole('button',{name:'Model settings'}));
+    fireEvent.press(screen.getByRole('button',{name:'Accept and download'}));
+    await screen.findByText(createTranslator('en')('gemmaTermsNotice'));
+    fireEvent.press(screen.getByRole('button',{name:choice==='license'?'Licenses':'Cancel'}));
+    await waitFor(()=>expect(screen.queryByTestId('app-dialog')).toBeNull());
+    expect(native.startModelDownload).not.toHaveBeenCalled();
+    if(choice==='license') expect(link).toHaveBeenCalledWith(candidate.licenseUrl);
+  });
+  it('confirms bulk model cleanup while preserving the document library and supports cancel',async()=>{
+    const models=[snapshot().models[0],{...snapshot().models[0],id:'second'}];
+    native.deleteModel.mockResolvedValue(undefined);
+    await renderApp(snapshot({models}));fireEvent.press(screen.getByRole('tab',{name:'Settings'}));
+    fireEvent.press(screen.getByRole('button',{name:'Storage'}));
+    fireEvent.press(screen.getByRole('button',{name:'Remove all models'}));
+    fireEvent.press(screen.getByRole('button',{name:'Cancel'}));expect(native.deleteModel).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByRole('button',{name:'Remove all models'}));
+    fireEvent.press(screen.getByRole('button',{name:'Remove'}));
+    await waitFor(()=>expect(native.deleteModel.mock.calls).toEqual([['model-q4'],['second']]));
+    fireEvent.press(screen.getByRole('button',{name:'Back'}));fireEvent.press(screen.getByRole('tab',{name:'Library'}));
+    expect(screen.getByText('manual.pdf')).toBeOnTheScreen();
+  });
+  it('uses OS Back to unwind a settings child and then returns to the library',async()=>{
+    await renderApp(snapshot());fireEvent.press(screen.getByRole('tab',{name:'Settings'}));
+    fireEvent.press(screen.getByRole('button',{name:'App language'}));
+    const subscription=BackHandler.addEventListener as jest.Mock;
+    act(()=>expect(subscription.mock.calls.at(-1)[1]()).toBe(true));
+    expect(screen.getByRole('button',{name:'Appearance'})).toBeOnTheScreen();
+    act(()=>subscription.mock.calls.at(-1)[1]());
+    expect(screen.getByRole('button',{name:'Translate PDF'})).toBeOnTheScreen();
+  });
+  it('polls active native work only in foreground and avoids polling during a mutation',async()=>{
+    let tick!:()=>void; const originalInterval=globalThis.setInterval; const interval=jest.spyOn(globalThis,'setInterval').mockImplementation(((callback:()=>void, delay?:number)=>{ if(delay===1000) { tick=callback; return 987 as unknown as ReturnType<typeof setInterval>; } return originalInterval(callback,delay); }) as typeof setInterval);
+    const candidate={...snapshot().models[0],status:'downloading',downloadedBytes:20};
+    await renderApp(snapshot({models:[candidate]}));
+    act(() => (AppState.addEventListener as jest.Mock).mock.calls.filter(([event])=>event==='change').forEach(([,callback])=>callback('active')));
+    expect(interval).toHaveBeenCalled();const before=native.bootstrap.mock.calls.length;
+    await act(async()=>tick());expect(native.bootstrap.mock.calls.length).toBe(before+1);
+    fireEvent.press(screen.getByRole('button',{name:'Model settings'}));
+    let resolve!:(v:unknown)=>void; native.pauseModelDownload.mockReturnValue(new Promise(r=>{resolve=r;}));
+    fireEvent.press(screen.getByRole('button',{name:'Pause'}));
+    const locked=native.bootstrap.mock.calls.length;await act(async()=>tick());expect(native.bootstrap.mock.calls.length).toBe(locked);
+    await act(async()=>resolve(candidate));
+    const listeners=(AppState.addEventListener as jest.Mock).mock.calls.filter(([event])=>event==='change');
+    act(()=>listeners.forEach(([,callback])=>callback('background')));
+  });
+
+  it('blocks a duplicate in-flight import and a disabled preparation callback without a document',async()=>{
+    let finish!:(v:unknown)=>void;native.pickPdf.mockReturnValue(new Promise(r=>{finish=r;}));
+    await renderApp(snapshot({models:[]}));
+    const translate=screen.UNSAFE_getByType(LibraryScreen).props.onTranslate;
+    act(()=>{translate();translate();});expect(native.pickPdf).toHaveBeenCalledTimes(1);
+    await act(async()=>finish(null));
+    expect(native.startJob).not.toHaveBeenCalled();
+    // The preparation component's imperative callback must remain safe after state invalidation.
+    const doc=snapshot().documents[0];native.pickPdf.mockResolvedValue(doc);
+    fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
+    await screen.findByText('manual.pdf');
+    act(()=>screen.UNSAFE_getByType(TranslationOptionsScreen).props.onStart());
+    expect(native.startJob).not.toHaveBeenCalled();
+    await act(async()=>{});
+  });
+  it('opens the original preview before translating, then returns without starting work',async()=>{
+    native.renderPage.mockResolvedValue('file:///preview.png');
+    native.pickPdf.mockResolvedValue(snapshot().documents[0]);
+    await renderApp(snapshot());fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
+    await screen.findByRole('button',{name:'Preview original'});
+    fireEvent.press(screen.getByRole('button',{name:'Preview original'}));
+    expect(await screen.findByLabelText('Original PDF 1')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button',{name:'Back'}));
+    expect(screen.getByText('Translation Options')).toBeOnTheScreen();expect(native.startJob).not.toHaveBeenCalled();
+    await act(async()=>{});
+  });
+  it('surfaces a failed public policy link with the localized app-owned error',async()=>{
+    jest.spyOn(Linking,'openURL').mockRejectedValueOnce(new Error('No browser'));
+    await renderApp(snapshot());fireEvent.press(screen.getByRole('tab',{name:'Settings'}));
+    fireEvent.press(screen.getByRole('button',{name:'Privacy'}));
+    expect(await screen.findByText('Could not open the privacy policy. Check your connection and try again.')).toBeOnTheScreen();
+  });
+  it('closes the appearance sheet with system Back and completes a replay with Next',async()=>{
+    await renderApp(snapshot());fireEvent.press(screen.getByRole('tab',{name:'Settings'}));
+    fireEvent.press(screen.getByRole('button',{name:'Appearance'}));
+    fireEvent(screen.UNSAFE_getAllByType(Modal).find(v=>v.props.visible)!,'requestClose');
+    fireEvent.press(screen.getByRole('button',{name:'Replay introduction'}));
+    for(let i=0;i<3;i++) await act(async()=>fireEvent.press(screen.getByRole('button',{name:'Next'})));
+    await act(async()=>fireEvent.press(screen.getByRole('button',{name:'Done'})));
+    expect(screen.getByRole('button',{name:'Appearance'})).toBeOnTheScreen();expect(native.setOnboarding).not.toHaveBeenCalled();
+  });
+  it('keeps a failed startup retry visible and ignores a later rejected bootstrap after unmount',async()=>{
+    native.bootstrap.mockRejectedValue(new Error('Unavailable'));
+    const view=await renderStartedApp();expect(await screen.findByText('Unavailable')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button',{name:'Try again'}));await act(async()=>{});
+    expect(screen.getByText('Unavailable')).toBeOnTheScreen();view.unmount();
+    let fail!:(e:Error)=>void;native.bootstrap.mockReturnValue(new Promise((_,r)=>{fail=r;}));
+    const other=render(<App/>);other.unmount();await act(async()=>fail(new Error('late')));
+  });
+
+  it('routes optional preparation tools and persists an explicit dictionary opt-out',async()=>{
+    const term={id:'g',source:'pump',target:'насос',sourceLanguage:'en',targetLanguage:'ru'};
+    native.pickPdf.mockResolvedValue(snapshot().documents[0]);
+    await renderApp(snapshot({glossary:[term]}));fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
+    await screen.findByRole('button',{name:'Preview original'});
+    fireEvent(screen.getByRole('switch',{name:'Use dictionary'}),'valueChange',false);
+    fireEvent.press(screen.getByRole('button',{name:'Dictionary'}));expect(screen.getByRole('button',{name:'Edit term: pump'})).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button',{name:'Back'}));
+    fireEvent.press(screen.getByRole('button',{name:'Translation model'}));expect(screen.getByText('Model settings')).toBeOnTheScreen();
+  });
+  it('keeps unknown job totals at zero, labels a queued job, and handles canceled export',async()=>{
+    const job={id:'q',documentId:'doc-1',documentName:'Queued.pdf',modelId:'model-q4',sourceLanguage:'en',targetLanguage:'ru',status:'queued',stage:'queued',completedPages:0,totalPages:0,currentPage:null,discoveredBlocks:0,etaRangeSeconds:{min:NaN,max:Infinity}};
+    await renderApp(snapshot({jobs:[job]}));fireEvent.press(screen.getByRole('button',{name:'Queued.pdf'}));
+    expect(screen.getByRole('progressbar')).toHaveAccessibilityValue({now:0,min:0,max:100});
+    expect(screen.getByText('Blocks translated: 0 · Blocks found so far: 0')).toBeOnTheScreen();
+    expect(screen.getAllByText('Waiting to start').length).toBeGreaterThan(0);
+  });
+  it('renders tablet preview with failed/skipped blocks, a missing translation, and a canceled export',async()=>{
+    const dimensions=jest.spyOn(Dimensions,'get').mockReturnValue({width:1000,height:800,scale:1,fontScale:1});
+    const job={id:'partial',documentId:'doc-1',documentName:'Mixed.pdf',modelId:'model-q4',sourceLanguage:'en',targetLanguage:'ru',status:'partial',stage:'complete',completedPages:1,totalPages:1,currentPage:0};
+    const blocks=[{id:'f',sourceText:'Warning',translatedText:null,status:'failed'},{id:'s',sourceText:'123',translatedText:null,status:'skipped'},{id:'p',sourceText:'Check',translatedText:'Проверьте',status:'partial'}];
+    native.getJob.mockResolvedValue({job,pages:[{index:0,status:'partial'}],selectedPage:{index:0,status:'partial',blocks}});
+    native.renderPage.mockResolvedValue('file:///original.png');native.renderTranslatedPage.mockResolvedValue('file:///translated.png');native.exportJob.mockResolvedValue(null);
+    await renderApp(snapshot({jobs:[job]}));fireEvent.press(screen.getByRole('button',{name:'Mixed.pdf'}));
+    expect(await screen.findByLabelText('Page 1')).toHaveStyle({height:620});
+    expect(screen.getAllByText('—')).toHaveLength(2);expect(screen.getByText('• 123')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button',{name:'Original text'}));await waitFor(()=>expect(native.renderPage).toHaveBeenCalled());
+    fireEvent.press(screen.getByRole('button',{name:'Translated text'}));await waitFor(()=>expect(native.renderTranslatedPage).toHaveBeenCalledTimes(2));
+    fireEvent.press(screen.getByRole('button',{name:'Save a copy'}));await waitFor(()=>expect(native.exportJob).toHaveBeenCalled());
+    expect(screen.queryByRole('button',{name:'Share'})).toBeNull();dimensions.mockRestore();
+  });
+  it('animates child navigation when motion is enabled and tolerates an unavailable preference API',async()=>{
+    mockReducedMotion=false;await renderApp(snapshot());fireEvent.press(screen.getByRole('tab',{name:'Settings'}));
+    fireEvent.press(screen.getByRole('button',{name:'App language'}));expect(screen.getByRole('radio',{name:'English'})).toBeOnTheScreen();
+  });
+  it('keeps a refresh error recoverable without resetting the current library',async()=>{
+    let tick!:()=>void;const originalInterval=globalThis.setInterval;
+    jest.spyOn(globalThis,'setInterval').mockImplementation(((fn:()=>void,ms?:number)=>{if(ms===1000){tick=fn;return 42 as unknown as ReturnType<typeof setInterval>;}return originalInterval(fn,ms);}) as typeof setInterval);
+    await renderApp(snapshot({models:[{...snapshot().models[0],status:'verifying'}]}));
+    act(()=>(AppState.addEventListener as jest.Mock).mock.calls.filter(([event])=>event==='change').forEach(([,fn])=>fn('active')));
+    native.bootstrap.mockRejectedValueOnce('unexpected native rejection');await act(async()=>tick());
+    expect(await screen.findByText(createTranslator('en')('unknownError'))).toBeOnTheScreen();
+    native.bootstrap.mockRejectedValueOnce(new Error('Still offline'));
+    fireEvent.press(screen.getByRole('button',{name:'Try again'}));await act(async()=>{});
+    expect(screen.getByText('Still offline')).toBeOnTheScreen();
+  });
+
+  it('handles missing platform clocks/locales and an initially unknown app state',async()=>{
+    const clock=Object.getOwnPropertyDescriptor(globalThis,'performance');
+    const state=Object.getOwnPropertyDescriptor(AppState,'currentState')!;
+    try {
+      Object.defineProperty(globalThis,'performance',{value:undefined,configurable:true});
+      Object.defineProperty(AppState,'currentState',{value:null,configurable:true});
+      jest.spyOn(Intl,'DateTimeFormat').mockReturnValue({resolvedOptions:()=>({locale:undefined})} as unknown as Intl.DateTimeFormat);
+      mockReducedMotion=undefined;
+      await renderApp(snapshot());expect(screen.getByText('Folivela')).toBeOnTheScreen();
+    } finally {
+      if(clock) Object.defineProperty(globalThis,'performance',clock);
+      Object.defineProperty(AppState,'currentState',state);
+    }
+  });
+  it.each(['resolve','reject'] as const)('ignores a stale refresh %s after a newer user operation',async outcome=>{
+    let tick!:()=>void;const originalInterval=globalThis.setInterval;
+    jest.spyOn(globalThis,'setInterval').mockImplementation(((fn:()=>void,ms?:number)=>{if(ms===1000){tick=fn;return 42 as unknown as ReturnType<typeof setInterval>;}return originalInterval(fn,ms);}) as typeof setInterval);
+    await renderApp(snapshot({models:[{...snapshot().models[0],status:'downloading'}]}));
+    act(()=>(AppState.addEventListener as jest.Mock).mock.calls.filter(([event])=>event==='change').forEach(([,fn])=>fn('active')));
+    let resolve!:(v:unknown)=>void, reject!:(e:Error)=>void;
+    native.bootstrap.mockImplementationOnce(()=>new Promise((a,b)=>{resolve=a;reject=b;}));
+    act(()=>tick());
+    native.pickPdf.mockResolvedValueOnce(null);fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));
+    await waitFor(()=>expect(native.pickPdf).toHaveBeenCalled());
+    await act(async()=>{if(outcome==='resolve')resolve(snapshot({documents:[]}));else reject(new Error('Stale failure'));});
+    expect(screen.getByText('manual.pdf')).toBeOnTheScreen();expect(screen.queryByText('Stale failure')).toBeNull();
+  });
+  it('allows a user to cancel single-model removal without deleting files',async()=>{
+    await renderApp(snapshot());fireEvent.press(screen.getByRole('button',{name:'Model settings'}));
+    fireEvent.press(screen.getByRole('button',{name:'Remove model'}));
+    fireEvent.press(screen.getByRole('button',{name:'Cancel'}));expect(native.deleteModel).not.toHaveBeenCalled();
+  });
+  it('routes dictionary language changes, and handles model-only completed job fields on Android',async()=>{
+    native.setSettings.mockResolvedValue({theme:'system',language:'system',sourceLanguage:'fr',targetLanguage:'ru'});
+    await renderApp(snapshot());fireEvent.press(screen.getByRole('tab',{name:'Settings'}));fireEvent.press(screen.getByRole('button',{name:'Dictionary'}));
+    fireEvent.press(screen.getByRole('button',{name:'Source language: English'}));fireEvent.press(screen.getByRole('button',{name:/Français/}));
+    await waitFor(()=>expect(native.setSettings).toHaveBeenCalledWith({sourceLanguage:'fr',targetLanguage:'ru'}));
+  });
+  it('shows known completed block counts without a discovered total and cancels saving a new result',async()=>{
+    jest.replaceProperty(Platform,'OS','android');
+    const doc=snapshot().documents[0];const job={id:'done-new',documentId:doc.id,documentName:doc.name,modelId:'model-q4',sourceLanguage:'en',targetLanguage:'ru',status:'completed',stage:'complete',completedPages:1,totalPages:1,completedBlocks:2,currentPage:0};
+    native.pickPdf.mockResolvedValue(doc);native.startJob.mockResolvedValue(job);native.exportJob.mockResolvedValue(null);
+    native.bootstrap.mockResolvedValue(snapshot());await renderStartedApp();
+    native.bootstrap.mockResolvedValue(snapshot({jobs:[job]}));
+    fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));await screen.findByRole('button',{name:'Preview original'});
+    fireEvent.press(screen.getByRole('button',{name:'Translate PDF'}));await screen.findByText('Blocks translated: 2');
+    fireEvent.press(screen.getByRole('button',{name:'Save a copy'}));await waitFor(()=>expect(native.exportJob).toHaveBeenCalledWith('done-new'));
+    expect(screen.queryByRole('button',{name:'Share'})).toBeNull();
+  });
+
+  it('renders dark theme consistently in library, onboarding and startup error states',async()=>{
+    jest.spyOn(require('react-native'),'useColorScheme').mockReturnValue('dark');
+    const view=await renderApp(snapshot({preferences:{theme:'dark',language:'system'}}));
+    expect(screen.getByText('Folivela')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('tab',{name:'Settings'}));fireEvent.press(screen.getByRole('button',{name:'Back'}));
+    expect(screen.getByRole('button',{name:'Translate PDF'})).toBeOnTheScreen();view.unmount();
+    const intro=await renderApp(snapshot({preferences:{theme:'dark',language:'system'},onboarding:{version:1,page:0,done:false}}));
+    expect(screen.getByRole('button',{name:'Skip'})).toBeOnTheScreen();intro.unmount();
+    native.bootstrap.mockRejectedValueOnce(new Error(''));
+    await renderStartedApp();expect(await screen.findByText(createTranslator('en')('unknownError'))).toBeOnTheScreen();
+  });
+  it('ignores an error from preview data after navigating away',async()=>{
+    const job={id:'late-error',documentId:'doc-1',documentName:'Late.pdf',modelId:'model-q4',sourceLanguage:'en',targetLanguage:'ru',status:'completed',stage:'complete',completedPages:1,totalPages:1,currentPage:0};
+    let fail!:(error:Error)=>void;native.getJob.mockReturnValue(new Promise((_,reject)=>{fail=reject;}));
+    await renderApp(snapshot({jobs:[job]}));
+    act(()=>(AppState.addEventListener as jest.Mock).mock.calls.filter(([event])=>event==='change').forEach(([,fn])=>fn('active')));
+    fireEvent.press(screen.getByRole('button',{name:'Late.pdf'}));fireEvent.press(screen.getByRole('button',{name:'Back'}));
+    await act(async()=>fail(new Error('Late failure')));expect(screen.queryByText('Late failure')).toBeNull();
   });
 
 });

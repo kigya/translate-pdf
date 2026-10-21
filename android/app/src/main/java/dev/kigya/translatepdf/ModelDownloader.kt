@@ -158,7 +158,7 @@ internal class ModelDownloader(
           connectTimeout = 20_000
           readTimeout = 45_000
           instanceFollowRedirects = true
-          setRequestProperty("User-Agent", "TranslatePDF/0.1")
+          setRequestProperty("User-Agent", "Folivela/0.0.1")
           if (offset > 0) setRequestProperty("Range", "bytes=$offset-")
         }
         if (transfer.stopRequested) throw ModelDownloadCanceled()

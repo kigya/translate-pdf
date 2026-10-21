@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect } from 'react';
+import Animated, { useSharedValue, useAnimatedStyle, useReducedMotion, withTiming } from 'react-native-reanimated';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -22,6 +23,9 @@ export type IconName =
   | 'trash'
   | 'globe'
   | 'moon'
+  | 'sun'
+  | 'monitor'
+  | 'notification'
   | 'book'
   | 'storage'
   | 'shield'
@@ -41,6 +45,9 @@ const paths: Record<IconName, string> = {
   trash: 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7',
   globe:
     'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0M2 12h20M12 2c-6 5-6 15 0 20 6-5 6-15 0-20',
+  sun: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5',
+  monitor: 'M3 4h18v13H3zM8 21h8M12 17v4',
+  notification: 'M18 8a6 6 0 0 0-12 0v7l-2 3h16l-2-3zm-8 13h4',
   moon: 'M21 13A9 9 0 0 1 11 3a9 9 0 1 0 10 10',
   book: 'M12 5C8 2 3 3 3 3v16s5-1 9 2c4-3 9-2 9-2V3s-5-1-9 2zm0 0v16',
   storage: 'M4 4h16v6H4zM4 14h16v6H4zM16 7h1M16 17h1',
@@ -179,11 +186,15 @@ export function Sheet({
   closeLabel?: string;
 }) {
   const insets = useSafeAreaInsets();
+  const reduced = useReducedMotion() ?? false;
+  const reveal = useSharedValue(0);
+  useEffect(() => { reveal.value = visible ? (reduced ? 1 : withTiming(1, { duration: 260 })) : 0; }, [reduced, reveal, visible]);
+  const sheetStyle = useAnimatedStyle(() => ({ opacity: reveal.value, transform: [{ translateY: (1 - reveal.value) * 34 }] }));
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="fade"
+      animationType="none"
       onRequestClose={onClose}
     >
       <KeyboardAvoidingView
@@ -200,16 +211,16 @@ export function Sheet({
           onPress={onClose}
           style={{ flex: 1 }}
         />
-        <View
+        <Animated.View
           accessibilityViewIsModal
-          style={{
+          style={[sheetStyle, {
             maxHeight: '80%',
             backgroundColor: colors.surface,
             borderTopLeftRadius: 28,
             borderTopRightRadius: 28,
             paddingHorizontal: 24,
             paddingBottom: Math.max(20, insets.bottom),
-          }}
+          }]}
         >
           <View
             style={{
@@ -243,7 +254,7 @@ export function Sheet({
           >
             {children}
           </ScrollView>
-        </View>
+        </Animated.View>
       </KeyboardAvoidingView>
     </Modal>
   );

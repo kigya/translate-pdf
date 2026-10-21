@@ -6,7 +6,6 @@ import React, {
   useState,
 } from 'react';
 import {
-  Alert,
   AppState,
   AppStateStatus,
   BackHandler,
@@ -62,6 +61,7 @@ import {
 import { AnimatedTabBar } from './src/ui/Motion';
 import { SplashScreen } from './src/ui/SplashScreen';
 import { Sheet, SettingsRow } from './src/ui/Controls';
+import { DialogContext, useDialogController } from './src/ui/Dialog';
 import {
   LibraryScreen,
   ModelScreen,
@@ -146,6 +146,9 @@ function AppContent() {
   const reducedMotion = useReducedMotion() ?? false;
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
+  // Once bootstrap succeeds this state is never cleared. Mutation controls are
+  // only exposed below the !snapshot return, so their functional updaters retain
+  // a non-null snapshot, including across refresh failures.
   const [snapshot, setSnapshot] = useState<BootstrapSnapshot | null>(null);
   const [bootstrapError, setBootstrapError] = useState('');
   const [route, setRoute] = useState<Route>('home');
@@ -194,6 +197,7 @@ function AppContent() {
   const currentTranslator = useRef(t);
   currentTranslator.current = t;
   const direction = localeDirection(locale);
+  const { showDialog, dialog, dialogOpen } = useDialogController(colors, direction);
   const onboarding =
     onboardingOverride ?? snapshot?.onboarding ?? BASE_ONBOARDING;
   const showIntro = replayIntro || !onboarding.done;
@@ -422,27 +426,11 @@ function AppContent() {
     await PdfTranslator.setSettings({
       notificationExplanationShown: true,
     }).catch(() => undefined);
-    const allow = await new Promise<boolean>(resolve =>
-      Alert.alert(
-        ux(
-          locale,
-          download ? 'notificationTitle' : 'notificationTranslationTitle',
-        ),
-        ux(locale, 'notificationBody'),
-        [
-          {
-            text: ux(locale, 'notNow'),
-            style: 'cancel',
-            onPress: () => resolve(false),
-          },
-          {
-            text: ux(locale, 'allowNotifications'),
-            onPress: () => resolve(true),
-          },
-        ],
-        { cancelable: true, onDismiss: () => resolve(false) },
-      ),
-    );
+    const allow = await showDialog({
+      title: ux(locale, download ? 'notificationTitle' : 'notificationTranslationTitle'),
+      message: ux(locale, 'notificationBody'), icon: 'notification',
+      actions: [{ id: 'later', label: ux(locale, 'notNow'), quiet: true }, { id: 'allow', label: ux(locale, 'allowNotifications') }],
+    }) === 'allow';
     if (allow)
       await PdfTranslator.requestNotificationPermission().catch(
         () => undefined,
@@ -454,30 +442,16 @@ function AppContent() {
         model.licenseUrl?.includes('gemma') &&
         !['paused', 'ready'].includes(model.status)
       ) {
-        const accepted = await new Promise<boolean>(resolve =>
-          Alert.alert(
-            ux(locale, 'modelDetails'),
-            `${t('gemmaTermsNotice')}\n${model.licenseUrl}`,
-            [
-              {
-                text: ux(locale, 'cancel'),
-                style: 'cancel',
-                onPress: () => resolve(false),
-              },
-              {
-                text: t('licenses'),
-                onPress: () => {
-                  void Linking.openURL(model.licenseUrl!).catch(
-                    () => undefined,
-                  );
-                  resolve(false);
-                },
-              },
-              { text: t('acceptAndDownload'), onPress: () => resolve(true) },
-            ],
-            { cancelable: true, onDismiss: () => resolve(false) },
-          ),
-        );
+        const choice = await showDialog({
+          title: ux(locale, 'modelDetails'), message: t('gemmaTermsNotice'), icon: 'license',
+          actions: [
+            { id: 'cancel', label: ux(locale, 'cancel'), quiet: true },
+            { id: 'license', label: t('licenses'), quiet: true },
+            { id: 'accept', label: t('acceptAndDownload') },
+          ],
+        });
+        if (choice === 'license') await Linking.openURL(model.licenseUrl).catch(() => undefined);
+        const accepted = choice === 'accept';
         if (!accepted) return;
       }
       await explainNotifications(true);
@@ -485,31 +459,20 @@ function AppContent() {
     });
   const pauseDownload = (model: ModelSnapshot) =>
     safely(() => PdfTranslator.pauseModelDownload(model.id));
-  const deleteModel = (model: ModelSnapshot) =>
-    Alert.alert(ux(locale, 'removeModel'), ux(locale, 'deleteModelInfo'), [
-      { text: ux(locale, 'cancel'), style: 'cancel' },
-      {
-        text: ux(locale, 'confirm'),
-        style: 'destructive',
-        onPress: () => {
-          void safely(() => PdfTranslator.deleteModel(model.id));
-        },
-      },
-    ]);
-  const clearModels = () =>
-    Alert.alert(ux(locale, 'clearModels'), ux(locale, 'deleteModelInfo'), [
-      { text: ux(locale, 'cancel'), style: 'cancel' },
-      {
-        text: ux(locale, 'confirm'),
-        style: 'destructive',
-        onPress: () => {
-          void safely(async () => {
-            for (const model of snapshot?.models ?? [])
-              await PdfTranslator.deleteModel(model.id);
-          });
-        },
-      },
-    ]);
+  const deleteModel = async (model: ModelSnapshot) => {
+    const result = await showDialog({ title: ux(locale, 'removeModel'), message: ux(locale, 'deleteModelInfo'), icon: 'trash', actions: [
+      { id: 'cancel', label: ux(locale, 'cancel'), quiet: true }, { id: 'delete', label: ux(locale, 'confirm'), destructive: true },
+    ] });
+    if (result === 'delete') await safely(() => PdfTranslator.deleteModel(model.id));
+  };
+  const clearModels = async () => {
+    const result = await showDialog({ title: ux(locale, 'clearModels'), message: ux(locale, 'deleteModelInfo'), icon: 'trash', actions: [
+      { id: 'cancel', label: ux(locale, 'cancel'), quiet: true }, { id: 'delete', label: ux(locale, 'confirm'), destructive: true },
+    ] });
+    if (result === 'delete') await safely(async () => {
+      for (const model of snapshot!.models) await PdfTranslator.deleteModel(model.id);
+    });
+  };
   const openPrivacy = () => {
     void safely(async () => {
       try {
@@ -555,14 +518,13 @@ function AppContent() {
           targetLanguage: target,
         }),
       preferences => {
-        setSnapshot(current =>
-          current
-            ? {
-                ...current,
-                preferences: { ...current.preferences, ...preferences },
-              }
-            : current,
-        );
+        setSnapshot(current => {
+                  const existing = current!;
+                  return {
+                ...existing,
+                preferences: { ...existing.preferences, ...preferences },
+              };
+                });
       },
     );
   const persistOnboarding = async (value: OnboardingState) => {
@@ -614,20 +576,11 @@ function AppContent() {
             setRoute('settings');
           }}
           initialState={replayIntro ? BASE_ONBOARDING : onboarding}
-          persist={replayIntro ? async () => {} : persistOnboarding}
+          persist={persistOnboarding}
           onComplete={() => {
-            if (replayIntro) {
-              setReplayIntro(false);
-              setRoute('settings');
-            } else {
-              setOnboardingOverride({
-                version: ONBOARDING_VERSION,
-                page: 3,
-                done: true,
-              });
-              setRoute('home');
-              routeStack.current = [];
-            }
+            setOnboardingOverride({ version: ONBOARDING_VERSION, page: 3, done: true });
+            setRoute('home');
+            routeStack.current = [];
           }}
           ios={Platform.OS === 'ios'}
         />
@@ -640,7 +593,7 @@ function AppContent() {
       title={title}
       subtitle={subtitle}
       colors={colors}
-      onBack={route === 'home' ? undefined : back}
+      onBack={back}
       backLabel={t('back')}
     />
   );
@@ -1180,14 +1133,13 @@ function AppContent() {
             void safely(
               () => PdfTranslator.setSettings({ language: value }),
               preferences => {
-                setSnapshot(current =>
-                  current
-                    ? {
-                        ...current,
-                        preferences: { ...current.preferences, ...preferences },
-                      }
-                    : current,
-                );
+                setSnapshot(current => {
+                  const existing = current!;
+                  return {
+                        ...existing,
+                        preferences: { ...existing.preferences, ...preferences },
+                      };
+                });
                 back();
               },
             )
@@ -1224,19 +1176,18 @@ function AppContent() {
                   targetLanguage,
                 }),
               entry => {
-                setSnapshot(current =>
-                  current
-                    ? {
-                        ...current,
+                setSnapshot(current => {
+                  const existing = current!;
+                  return {
+                        ...existing,
                         glossary: [
-                          ...current.glossary.filter(
+                          ...existing.glossary.filter(
                             item => item.id !== entry.id,
                           ),
                           entry,
                         ],
-                      }
-                    : current,
-                );
+                      };
+                });
               },
             )
           }
@@ -1258,6 +1209,8 @@ function AppContent() {
     );
 
   return (
+    <DialogContext.Provider value={showDialog}>
+    <View style={{ flex: 1 }} accessibilityElementsHidden={dialogOpen} importantForAccessibility={dialogOpen ? 'no-hide-descendants' : 'auto'}>
     <Screen colors={colors} direction={direction}>
       <StatusBar
         barStyle={activeTheme === 'dark' ? 'light-content' : 'dark-content'}
@@ -1336,7 +1289,7 @@ function AppContent() {
         {(['system', 'light', 'dark'] as const).map(value => (
           <SettingsRow
             key={value}
-            icon="moon"
+            icon={value === 'system' ? 'monitor' : value === 'light' ? 'sun' : 'moon'}
             label={`${t(value)}${value === preferenceTheme ? ' ✓' : ''}`}
             onPress={() =>
               void safely(
@@ -1349,6 +1302,9 @@ function AppContent() {
         ))}
       </Sheet>
     </Screen>
+    </View>
+    {dialog}
+    </DialogContext.Provider>
   );
 }
 

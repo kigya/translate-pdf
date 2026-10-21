@@ -18,7 +18,7 @@ export function SplashScreen({ onFirstFrame }: { onFirstFrame: () => void }) {
       animationFrames.current.push(requestAnimationFrame(onFirstFrame));
     }));
   }, [onFirstFrame]);
-  useEffect(() => () => animationFrames.current.forEach(cancelAnimationFrame), []);
+  useEffect(() => () => animationFrames.current.forEach(frame => cancelAnimationFrame(frame)), []);
   return <View testID="custom-splash-screen" onLayout={onLayout} style={{ flex: 1, backgroundColor: BRAND_RED, alignItems: 'center', justifyContent: 'center' }}>
     <AppIcon size={92} color="#FFFFFF" background={BRAND_RED} active={!reduced} reduced={reduced} draw />
   </View>;

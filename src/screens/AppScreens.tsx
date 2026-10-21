@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Alert,
   Image,
   Linking,
   Pressable,
@@ -46,6 +45,7 @@ import {
 } from '../domain/translationLanguages';
 import { Button, Field, Notice, ProgressBar, Row } from '../ui/components';
 import { Icon, IconButton, SettingsRow, Sheet } from '../ui/Controls';
+import { useDialog } from '../ui/Dialog';
 import { AnimatedNumber, Balloons, DownloadSculpture } from '../ui/Motion';
 
 type Base = { colors: Palette; t: Translator; locale: Locale; busy?: boolean };
@@ -68,8 +68,9 @@ function Title({
     </Text>
   );
 }
-function info(title: string, message: string) {
-  Alert.alert(title, message);
+function useInfo(closeLabel: string) {
+  const show = useDialog();
+  return (title: string, message: string) => { void show({ title, message, actions: [{ id: 'close', label: closeLabel }] }); };
 }
 export function LibraryScreen({
   colors,
@@ -259,7 +260,9 @@ export function ModelScreen({
   onPause: (m: ModelSnapshot) => void;
   onDelete: (m: ModelSnapshot) => void;
 } & Base) {
+  const info = useInfo(t('back'));
   const [details, setDetails] = useState<ModelSnapshot | null>(null);
+  const [licenseError, setLicenseError] = useState('');
   const [celebrate, setCelebrate] = useState(false);
   const previous = useRef(new Map(snapshot.models.map(m => [m.id, m.status])));
   const reduced = useReducedMotion() ?? false;
@@ -332,7 +335,7 @@ export function ModelScreen({
                   <IconButton
                     name="info"
                     label={`${ux(locale, 'details')}: ${ux(locale, p.title)}`}
-                    onPress={() => setDetails(model)}
+                    onPress={() => { setLicenseError(''); setDetails(model); }}
                     colors={colors}
                   />
                 </Row>
@@ -496,41 +499,16 @@ export function ModelScreen({
         {details ? (
           <View style={{ gap: 16 }}>
             <Title colors={colors}>{details.label}</Title>
-            <Text selectable style={{ color: colors.muted, lineHeight: 22 }}>
-              {details.revision}
-            </Text>
-            <Text style={{ color: colors.muted, lineHeight: 21 }}>
-              {ux(locale, 'capabilityInfo')}
-            </Text>
-            {details.evaluation ? (
-              <Text style={{ color: colors.muted, lineHeight: 21 }}>
-                {t('modelEvidenceLine', {
-                  acceptable: details.evaluation.acceptableCases,
-                  total: details.evaluation.totalCases,
-                })}
-                {'\n'}
-                {t('modelEvidenceCaveat')}
-              </Text>
-            ) : null}
-            <Text style={{ color: colors.muted, lineHeight: 21 }}>
-              {t('modelVerifyOriginal')}
-            </Text>
+            {licenseError ? <Notice colors={colors} text={licenseError}/> : null}
             {details.licenseUrl ? (
               <SettingsRow
                 icon="license"
                 label={t('licenses')}
                 onPress={() =>
-                  void Linking.openURL(details.licenseUrl!).catch(() =>
-                    info(t('errorTitle'), t('unknownError')),
-                  )
+                  void Linking.openURL(details.licenseUrl!).catch(() => setLicenseError(t('unknownError')))
                 }
                 colors={colors}
               />
-            ) : null}
-            {details.licenseUrl?.includes('gemma') ? (
-              <Text style={{ color: colors.muted }}>
-                {t('gemmaTermsNotice')}
-              </Text>
             ) : null}
           </View>
         ) : null}
@@ -980,6 +958,7 @@ export function StorageScreen({
   onDelete: (m: ModelSnapshot) => void;
   onClear: () => void;
 } & Base) {
+  const info = useInfo(t('back'));
   const storage = snapshot.device.storage;
   const installed =
       storage?.installedModelBytes ??

@@ -148,6 +148,7 @@ export function ux(
   return text;
 }
 export function productCopy(locale: string, key: string): string | undefined {
+  if (key === 'appName') return 'Folivela';
   const mapped =
     key === 'importPdf'
       ? 'translatePdf'

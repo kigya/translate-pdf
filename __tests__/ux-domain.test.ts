@@ -4,7 +4,7 @@ import {
   modelPresentation,
   PRIVACY_URL,
 } from '../src/domain/presentation';
-import { localeOptions } from '../src/i18n/messages';
+import { createTranslator, localeOptions } from '../src/i18n/messages';
 import { ux, uxDictionaries, uxEn } from '../src/i18n/ux';
 import type { ModelSnapshot } from '../src/native/PdfTranslator';
 
@@ -64,4 +64,9 @@ describe('concise product presentation', () => {
     ]);
     expect(PRIVACY_URL).toBe('https://kigya.github.io/translate-pdf/privacy/');
   });
+});
+
+it('keeps the renamed product brand stable in all locales and localizes the existing preparation label',()=>{
+ for(const [locale] of localeOptions) expect(createTranslator(locale)('appName')).toBe('Folivela');
+ expect(createTranslator('en')('prepareTitle')).toBe('Translation Options');
 });

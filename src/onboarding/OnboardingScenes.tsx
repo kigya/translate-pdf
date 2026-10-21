@@ -8,7 +8,9 @@ function useLoop(duration: number, active: boolean, reduced: boolean) {
   const progress = useSharedValue(0);
   useEffect(() => {
     if (!active || reduced) { cancelAnimation(progress); progress.value = 0; return; }
-    progress.value = withRepeat(withTiming(1, { duration }), -1, false);
+    // Oscillate between matching endpoints so a repeated scene never snaps
+    // from its last frame back to its first frame.
+    progress.value = withRepeat(withTiming(1, { duration }), -1, true);
     return () => { cancelAnimation(progress); progress.value = 0; };
   }, [active, duration, progress, reduced]);
   return progress;
@@ -51,7 +53,7 @@ export function ModelScene({ colors, active, reduced }: { colors: Palette; activ
   const orbit = useAnimatedStyle(() => ({ transform: [{ rotate: `${interpolate(progress.value, [0, 1], [0, 360])}deg` }] }));
   const pulse = useAnimatedStyle(() => ({ transform: [{ scale: interpolate(progress.value, [0, 0.5, 1], [0.94, 1.06, 0.94]) }] }));
   return <View testID="model-scene" style={{ width: 260, height: 300, alignItems: 'center', justifyContent: 'center' }}>
-    <Animated.View style={[{ position: 'absolute', width: 190, height: 190, borderWidth: 1, borderColor: colors.border, borderRadius: 100 }, orbit]}><View style={{ position: 'absolute', top: -6, left: '48%', width: 13, height: 13, borderRadius: 8, backgroundColor: colors.accent }} /></Animated.View>
+    <Animated.View testID="model-orbit" style={[{ position: 'absolute', width: 190, height: 190, borderWidth: 1, borderColor: colors.border, borderRadius: 100 }, orbit]}><View testID="model-orbit-bead" style={{ position: 'absolute', top: -6, left: '46.6%', width: 13, height: 13, borderRadius: 8, backgroundColor: colors.accent }} /></Animated.View>
     <Animated.View style={[{ width: 130, height: 150, borderRadius: 24, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', gap: 14, elevation: 4 }, pulse]}>
       <View style={{ width: 52, height: 62, borderRadius: 12, borderWidth: 2, borderColor: colors.accent, justifyContent: 'center', alignItems: 'center' }}><Svg width={32} height={32} viewBox="0 0 32 32"><Path d="M5 5h14l8 8v14H5zM19 5v8h8M10 18h12M10 23h8" fill="none" stroke={colors.accent} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" /></Svg></View>
       <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 5, height: 23 }}>{[10, 16, 22, 14, 20].map((height, index) => <View key={index} style={{ height, width: 7, borderRadius: 4, backgroundColor: index === 4 ? colors.accent : colors.border }} />)}</View>
@@ -65,9 +67,9 @@ export function ProgressScene({ colors, active, reduced }: { colors: Palette; ac
   const fill = useAnimatedStyle(() => ({ width: `${interpolate(progress.value, [0, 1], [8, 92])}%` }));
   const pageStyle = useAnimatedStyle(() => ({ transform: [{ translateY: interpolate(progress.value, [0, 1], [-5, 5]) }, { rotate: `${interpolate(progress.value, [0, 1], [-1, 1])}deg` }] }));
   return <View testID="progress-scene" style={{ width: 260, height: 300, alignItems: 'center', justifyContent: 'center' }}>
-    <View style={{ position: 'absolute', top: 42, left: 19, width: 86, height: 111, borderRadius: 11, borderColor: colors.border, borderWidth: 1, backgroundColor: colors.raised, alignItems: 'center', justifyContent: 'center', transform: [{ rotate: '-9deg' }] }}><Svg width={48} height={48} viewBox="0 0 48 48"><Path d="M7 6h24l10 10v26H7zM31 6v10h10M14 24h20M14 31h16M14 38h12" fill="none" stroke={colors.muted} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" /></Svg></View>
+    <View testID="progress-source-page" style={{ position: 'absolute', top: 42, left: 28, width: 86, height: 111, borderRadius: 11, borderColor: colors.border, borderWidth: 1, backgroundColor: colors.raised, alignItems: 'center', justifyContent: 'center', transform: [{ rotate: '-9deg' }] }}><Svg width={48} height={48} viewBox="0 0 48 48"><Path d="M7 6h24l10 10v26H7zM31 6v10h10M14 24h20M14 31h16M14 38h12" fill="none" stroke={colors.muted} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" /></Svg></View>
     <Animated.View style={[{ width: 111, height: 143, borderRadius: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', elevation: 5 }, pageStyle]}><Svg width={65} height={65} viewBox="0 0 65 65"><Path d="M10 7h32l13 13v37H10zM42 7v13h13M18 32h28M18 41h23M18 50h18" fill="none" stroke={colors.accent} strokeWidth="2.6" strokeLinejoin="round" strokeLinecap="round"/><Path d="M22 15h13" stroke={colors.muted} strokeWidth="2.6" strokeLinecap="round" /></Svg></Animated.View>
-    <View style={{ position: 'absolute', bottom: 44, left: 28, right: 28, height: 7, borderRadius: 7, backgroundColor: colors.raised, overflow: 'hidden' }}><Animated.View style={[{ height: '100%', backgroundColor: colors.accent, borderRadius: 7 }, fill]} /></View>
+    <View testID="progress-track" style={{ position: 'absolute', bottom: 44, left: 28, right: 28, height: 7, borderRadius: 7, backgroundColor: colors.raised, overflow: 'hidden' }}><Animated.View style={[{ height: '100%', backgroundColor: colors.accent, borderRadius: 7 }, fill]} /></View>
     <View style={{ position: 'absolute', bottom: 25, flexDirection: 'row', gap: 5, alignItems: 'center' }}>{[0, 1, 2, 3, 4].map(index => <View key={index} style={{ width: 6, height: 6, borderRadius: 4, backgroundColor: index < 3 ? colors.accent : colors.border }} />)}</View>
   </View>;
 }

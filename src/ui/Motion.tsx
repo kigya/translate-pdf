@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus, Pressable, Text, View } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
-import Animated, { cancelAnimation, interpolate, useAnimatedProps, useAnimatedStyle, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
+import Animated, { cancelAnimation, Easing, interpolate, useAnimatedProps, useAnimatedStyle, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { Palette, palettes } from './theme';
 
 const AnimatedView = Animated.View;
@@ -101,6 +101,7 @@ export function AnimatedNumber({ value, suffix = '', color = '#C62828', active =
       const eased = 1 - (1 - progress) ** 3;
       setDisplay(Number((startValue + (value - startValue) * eased).toFixed(decimalPlaces)));
       if (progress < 1) frame.current = requestAnimationFrame(tick);
+      else frame.current = null;
     };
     frame.current = requestAnimationFrame(tick);
     return () => { if (frame.current !== null) cancelAnimationFrame(frame.current); };
@@ -117,10 +118,21 @@ export function DownloadSculpture({ progress = 0, active = true, reduced, color 
   const phase = useSharedValue(0);
   useEffect(() => {
     if (!active || !foreground || shouldReduce) { cancelAnimation(phase); phase.value = 0; return; }
-    phase.value = withRepeat(withTiming(1, { duration: 2600 }), -1, false);
+    // The value wraps at 2π, but every visible transform is periodic. Its
+    // first and last frames therefore match instead of snapping at the seam.
+    phase.value = withRepeat(withTiming(Math.PI * 2, { duration: 5200, easing: Easing.linear }), -1, false);
     return () => { cancelAnimation(phase); phase.value = 0; };
   }, [active, foreground, phase, shouldReduce]);
-  const sculpture = useAnimatedStyle(() => ({ transform: [{ rotate: `${interpolate(phase.value, [0, 1], [-5, 5])}deg` }, { scale: interpolate(phase.value, [0, 0.5, 1], [0.96, 1.04, 0.96]) }] }));
+  const sculpture = useAnimatedStyle(() => {
+    const swell = Math.sin(phase.value);
+    const settle = Math.cos(phase.value);
+    return { transform: [
+      { rotate: `${swell * 2.8}deg` },
+      { scaleX: 1 + swell * 0.035 },
+      { scaleY: 1 + settle * 0.04 },
+      { translateX: Math.sin(phase.value + 0.8) * 2 },
+    ] };
+  });
   const clamped = Math.round(Math.max(0, Math.min(1, progress)) * 100);
   return <View testID="download-sculpture" accessible accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: clamped }} style={{ width: 184, height: 164, alignItems: 'center', justifyContent: 'center' }}>
     <Svg width={184} height={148} viewBox="0 0 184 148" fill="none"><Circle cx="92" cy="75" r="66" fill={color} opacity={0.09}/></Svg>
@@ -134,27 +146,41 @@ export function Balloons({ active = false, reduced, color = '#C62828', onComplet
   const shouldReduce = reduced ?? systemReduced;
   const foreground = useIsForeground();
   const started = useRef(false);
+  const completed = useRef(false);
   const completion = useRef(onComplete);
   const lift = useSharedValue(0);
   useEffect(() => { completion.current = onComplete; }, [onComplete]);
   useEffect(() => {
     if (!active) {
       started.current = false;
+      completed.current = false;
       cancelAnimation(lift);
       lift.value = 0;
       return;
     }
     if (!foreground) {
       started.current = false;
+      completed.current = false;
       cancelAnimation(lift);
       lift.value = 0;
       return;
     }
-    if (started.current) return;
+    if (started.current) {
+      if (shouldReduce && !completed.current) {
+        completed.current = true;
+        completion.current?.();
+      }
+      return;
+    }
     started.current = true;
-    if (shouldReduce) { completion.current?.(); return; }
+    completed.current = false;
+    if (shouldReduce) { completed.current = true; completion.current?.(); return; }
     lift.value = withTiming(1, { duration: 1050 });
-    const timeout = setTimeout(() => completion.current?.(), 1050);
+    const timeout = setTimeout(() => {
+      if (completed.current) return;
+      completed.current = true;
+      completion.current?.();
+    }, 1050);
     return () => { clearTimeout(timeout); cancelAnimation(lift); };
   }, [active, foreground, lift, shouldReduce]);
   const balloon = useAnimatedStyle(() => ({ opacity: interpolate(lift.value, [0, 0.16, 1], [0, 1, 0]), transform: [{ translateY: interpolate(lift.value, [0, 1], [34, -64]) }] }));

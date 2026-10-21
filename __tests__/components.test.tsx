@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react-native';
 import { fireEvent } from '@testing-library/react-native';
+jest.mock('react-native-reanimated', () => ({ __esModule: true, default: { View: require('react-native').View }, useSharedValue: (value: number) => ({ value }), useAnimatedStyle: (fn: () => object) => fn(), useReducedMotion: () => true, withTiming: (v: number) => v }));
 import { buttonOpacity, Card, Field, Header, Label, Notice, ProgressBar, Row, Screen, SectionTitle, Button } from '../src/ui/components';
 import { palettes } from '../src/ui/theme';
 import { Text, View } from 'react-native';

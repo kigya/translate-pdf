@@ -1,8 +1,8 @@
-# TranslatePDF
+# Folivela
 
 <img src="assets/brand/icon.svg" width="88" alt="Red document icon with translation arrows" />
 
-TranslatePDF is an offline-first PDF translation prototype for Android and iOS. Translate documents between Russian, Simplified Chinese, French, English, German, and Spanish with a model downloaded to your device. Scanned pages can use on-device text recognition where supported. The interface has 30 languages and follows the system language by default.
+Folivela is an offline-first PDF translation prototype for Android and iOS. Translate documents between Russian, Simplified Chinese, French, English, German, and Spanish with a model downloaded to your device. Scanned pages can use on-device text recognition where supported. The interface has 30 languages and follows the system language by default.
 
 The project is still in verification. Translation quality, long-document reliability, memory use, background behavior, accessibility, and store readiness have not been fully established. There is no public store release.
 
@@ -36,7 +36,7 @@ npm start
 
 The native setup script downloads pinned build dependencies into ignored local storage; it does not download translation model weights. Android builds use the `android` Gradle project. For iOS, run `bash ios/scripts/build-native-frameworks.sh`, install the CocoaPods dependencies in `ios`, then open `ios/TranslatePDF.xcworkspace`.
 
-The project is not release-ready: strict owned-code coverage currently fails, and several device, lifecycle, translation-quality, privacy, accessibility, and release checks remain open. See [verification status](public-docs/verification.md) and [architecture and data flow](public-docs/architecture.md). Third-party notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The project is not release-ready: JavaScript coverage reaches all four 100% thresholds, but native coverage is incomplete, and several device, lifecycle, translation-quality, privacy, accessibility, and release checks remain open. See [verification status](public-docs/verification.md) and [architecture and data flow](public-docs/architecture.md). Third-party notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License and model terms
 

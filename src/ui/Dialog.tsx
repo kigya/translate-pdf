@@ -1,6 +1,7 @@
+import { useMotionReduced } from './useMotionReduced';
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
-import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { Button, LayoutDirection } from './components';
 import { Icon, IconName } from './Controls';
 import { Palette } from './theme';
@@ -18,7 +19,7 @@ export function useDialogController(colors: Palette, direction: LayoutDirection 
   const pending = useRef<Request | null>(null);
   const closing = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reduced = useReducedMotion() ?? false;
+  const reduced = useMotionReduced();
   const progress = useSharedValue(0);
   const show = useCallback((options: DialogOptions) => new Promise<string | null>(resolve => {
     const request = { ...options, resolve };

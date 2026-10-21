@@ -1,3 +1,4 @@
+import { useMotionReduced } from './src/ui/useMotionReduced';
 import React, {
   useCallback,
   useEffect,
@@ -20,7 +21,7 @@ import {
   useColorScheme,
   useWindowDimensions,
 } from 'react-native';
-import Animated, { FadeIn, useReducedMotion } from 'react-native-reanimated';
+import Animated, { FadeIn } from 'react-native-reanimated';
 import {
   SafeAreaProvider,
   useSafeAreaInsets,
@@ -143,7 +144,7 @@ const localeSystem = (nativeLocale?: string) =>
 
 function AppContent() {
   const scheme = useColorScheme();
-  const reducedMotion = useReducedMotion() ?? false;
+  const reducedMotion = useMotionReduced();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   // Once bootstrap succeeds this state is never cleared. Mutation controls are

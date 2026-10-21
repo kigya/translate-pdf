@@ -1,6 +1,6 @@
+import { useMotionReduced } from './useMotionReduced';
 import React, { useCallback, useEffect, useRef } from 'react';
 import { LayoutChangeEvent, View } from 'react-native';
-import { useReducedMotion } from 'react-native-reanimated';
 import { AppIcon } from './Motion';
 
 const BRAND_RED = '#C62828';
@@ -8,7 +8,7 @@ const BRAND_RED = '#C62828';
 export function SplashScreen({ onFirstFrame }: { onFirstFrame: () => void }) {
   const fired = useRef(false);
   const animationFrames = useRef<number[]>([]);
-  const reduced = useReducedMotion() ?? false;
+  const reduced = useMotionReduced();
   const onLayout = useCallback((_event: LayoutChangeEvent) => {
     if (fired.current) return;
     fired.current = true;

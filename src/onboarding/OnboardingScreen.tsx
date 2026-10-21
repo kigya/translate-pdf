@@ -1,6 +1,7 @@
+import { useMotionReduced } from '../ui/useMotionReduced';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AccessibilityInfo, AppState, AppStateStatus, BackHandler, PanResponder, Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native';
-import Animated, { FadeIn, useReducedMotion } from 'react-native-reanimated';
+import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { OnboardingState } from '../native/PdfTranslator';
 import { Button, LayoutDirection, Notice } from '../ui/components';
@@ -28,7 +29,7 @@ export function OnboardingScreen({ colors, t, initialState, persist, onComplete,
 }) {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const reduced = useReducedMotion() ?? false;
+  const reduced = useMotionReduced();
   const [page, setPage] = useState(replay ? 0 : Math.max(0, Math.min(PAGE_COUNT - 1, initialState.page)));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');

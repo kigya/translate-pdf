@@ -1,3 +1,4 @@
+jest.mock('../src/ui/useMotionReduced', () => ({ useMotionReduced: () => require('react-native-reanimated').useReducedMotion() ?? false }));
 import React from 'react';
 import { AppState, BackHandler, PanResponder } from 'react-native';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react-native';

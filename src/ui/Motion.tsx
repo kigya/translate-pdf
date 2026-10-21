@@ -1,7 +1,8 @@
+import { useMotionReduced } from './useMotionReduced';
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus, Pressable, Text, View } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
-import Animated, { cancelAnimation, Easing, interpolate, useAnimatedProps, useAnimatedStyle, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
+import Animated, { cancelAnimation, Easing, interpolate, useAnimatedProps, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { Palette, palettes } from './theme';
 
 const AnimatedView = Animated.View;
@@ -19,7 +20,7 @@ function useIsForeground() {
 export function AppIcon({ size = 56, color = '#FFFFFF', background = 'transparent', active = true, reduced, draw = false }: {
   size?: number; color?: string; background?: string; active?: boolean; reduced?: boolean; draw?: boolean;
 }) {
-  const systemReduced = useReducedMotion() ?? false;
+  const systemReduced = useMotionReduced();
   const shouldReduce = reduced ?? systemReduced;
   const foreground = useIsForeground();
   const motion = useSharedValue(0);
@@ -56,7 +57,7 @@ export function AppIcon({ size = 56, color = '#FFFFFF', background = 'transparen
 
 function TabGlyph({ kind, color, active }: { kind: 'library' | 'settings'; color: string; active: boolean }) {
   const animated = useSharedValue(active ? 1 : 0);
-  const reduced = useReducedMotion() ?? false;
+  const reduced = useMotionReduced();
   useEffect(() => { animated.value = reduced ? (active ? 1 : 0) : withTiming(active ? 1 : 0, { duration: 220 }); }, [active, animated, reduced]);
   const style = useAnimatedStyle(() => ({ transform: [{ translateY: interpolate(animated.value, [0, 1], [0, -2]) }, { scale: interpolate(animated.value, [0, 1], [1, 1.1]) }] }));
   return <AnimatedView style={style} pointerEvents="none"><Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
@@ -67,7 +68,7 @@ function TabGlyph({ kind, color, active }: { kind: 'library' | 'settings'; color
 export function AnimatedTabBar({ active, onChange, colors = palettes.light, labels = { library: 'Library', settings: 'Settings' }, bottomInset = 0, direction = 'ltr' }: {
   active: 'library' | 'settings'; onChange: (tab: 'library' | 'settings') => void; colors?: Palette; labels?: { library: string; settings: string }; bottomInset?: number; direction?: 'ltr' | 'rtl';
 }) {
-  const reduced = useReducedMotion() ?? false;
+  const reduced = useMotionReduced();
   const selectedPosition = active === 'library' ? (direction === 'rtl' ? 1 : 0) : (direction === 'rtl' ? 0 : 1);
   const indicator = useSharedValue(selectedPosition);
   useEffect(() => { indicator.value = reduced ? selectedPosition : withTiming(selectedPosition, { duration: 260 }); }, [active, direction, indicator, reduced, selectedPosition]);
@@ -86,7 +87,7 @@ export function AnimatedTabBar({ active, onChange, colors = palettes.light, labe
 }
 
 export function AnimatedNumber({ value, suffix = '', color = '#C62828', active = true, reduced, decimals, fontSize = 32 }: { value: number; suffix?: string; color?: string; active?: boolean; reduced?: boolean; decimals?: number; fontSize?: number }) {
-  const systemReduced = useReducedMotion() ?? false;
+  const systemReduced = useMotionReduced();
   const shouldReduce = reduced ?? systemReduced;
   const foreground = useIsForeground();
   const isActive = active && foreground;
@@ -113,7 +114,7 @@ export function AnimatedNumber({ value, suffix = '', color = '#C62828', active =
 }
 
 export function DownloadSculpture({ progress = 0, active = true, reduced, color = '#C62828' }: { progress?: number; active?: boolean; reduced?: boolean; color?: string }) {
-  const systemReduced = useReducedMotion() ?? false;
+  const systemReduced = useMotionReduced();
   const shouldReduce = reduced ?? systemReduced;
   const foreground = useIsForeground();
   const phase = useSharedValue(0);
@@ -143,7 +144,7 @@ export function DownloadSculpture({ progress = 0, active = true, reduced, color 
 }
 
 export function Balloons({ active = false, reduced, color = '#C62828', onComplete }: { active?: boolean; reduced?: boolean; color?: string; onComplete?: () => void }) {
-  const systemReduced = useReducedMotion() ?? false;
+  const systemReduced = useMotionReduced();
   const shouldReduce = reduced ?? systemReduced;
   const foreground = useIsForeground();
   const started = useRef(false);

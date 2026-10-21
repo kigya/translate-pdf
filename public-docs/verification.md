@@ -8,7 +8,7 @@ Android Debug/Release and unsigned iOS device/ARM64 Simulator Release builds hav
 
 ## Open blockers
 
-- JavaScript statements, branches, functions and lines all reach 100% in the current 183-case suite. Native coverage and aggregate instrumentation remain incomplete.
+- JavaScript statements, branches, functions and lines all reach 100% in the current 187-case suite. Native coverage and aggregate instrumentation remain incomplete.
 - Translation quality, complete end-to-end and large-document coverage, measured memory/runtime limits, and the full network/background/restart matrix remain open.
 - A language-search ANR was observed once on an Android emulator. Its cause has not been established and remains a runtime concern pending trace/reproduction evidence.
 - Accessibility, all 30 translations, tablet/rotation/RTL and Release animation performance are not fully accepted.

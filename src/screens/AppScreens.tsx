@@ -1,3 +1,4 @@
+import { useMotionReduced } from '../ui/useMotionReduced';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Image,
@@ -11,7 +12,6 @@ import {
 } from 'react-native';
 import Animated, {
   FadeIn,
-  useReducedMotion,
   useSharedValue,
   useAnimatedStyle,
   withTiming,
@@ -265,7 +265,7 @@ export function ModelScreen({
   const [licenseError, setLicenseError] = useState('');
   const [celebrate, setCelebrate] = useState(false);
   const previous = useRef(new Map(snapshot.models.map(m => [m.id, m.status])));
-  const reduced = useReducedMotion() ?? false;
+  const reduced = useMotionReduced();
   useEffect(() => {
     for (const model of snapshot.models) {
       if (
@@ -605,7 +605,7 @@ export function PairPicker({
 } & Base) {
   const [picker, setPicker] = useState<'source' | 'target' | null>(null);
   const turn = useSharedValue(0);
-  const reduced = useReducedMotion() ?? false;
+  const reduced = useMotionReduced();
   const swapStyle = useAnimatedStyle(() => ({
     transform: [{ rotate: `${turn.value}deg` }],
   }));

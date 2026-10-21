@@ -1,5 +1,6 @@
+import { useMotionReduced } from './useMotionReduced';
 import React, { useEffect } from 'react';
-import Animated, { useSharedValue, useAnimatedStyle, useReducedMotion, withTiming } from 'react-native-reanimated';
+import Animated, { useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -186,7 +187,7 @@ export function Sheet({
   closeLabel?: string;
 }) {
   const insets = useSafeAreaInsets();
-  const reduced = useReducedMotion() ?? false;
+  const reduced = useMotionReduced();
   const reveal = useSharedValue(0);
   useEffect(() => { reveal.value = visible ? (reduced ? 1 : withTiming(1, { duration: 260 })) : 0; }, [reduced, reveal, visible]);
   const sheetStyle = useAnimatedStyle(() => ({ opacity: reveal.value, transform: [{ translateY: (1 - reveal.value) * 34 }] }));

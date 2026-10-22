@@ -10,7 +10,7 @@ private final class FolivelaPrintPageRenderer: UIPrintPageRenderer {
 /// Renders a DOCX only through the three bundled preview assets and one private local file.
 /// All other schemes and paths are denied by the handler; the WebView has no network access.
 final class DocxPreviewRenderer: NSObject, WKURLSchemeHandler, WKScriptMessageHandler, WKNavigationDelegate {
-  enum Failure: LocalizedError { case assets, source, web(String), pdf
+  enum Failure: LocalizedError, Equatable { case assets, source, web(String), pdf
     var errorDescription: String? { switch self { case .assets: return "The offline Word preview components are unavailable."; case .source: return "The Word document could not be opened for preview."; case .web(let message): return message; case .pdf: return "The Word preview could not be printed as a PDF." } }
   }
   private let source: URL
@@ -34,8 +34,8 @@ final class DocxPreviewRenderer: NSObject, WKURLSchemeHandler, WKScriptMessageHa
   }
 
   private func start() {
-    guard FileManager.default.fileExists(atPath: source.path),
-          let bundleURL = Bundle.main.url(forResource: "FolivelaDocxPreview", withExtension: "bundle"),
+    guard FileManager.default.fileExists(atPath: source.path) else { finish(.failure(Failure.source)); return }
+    guard let bundleURL = Bundle.main.url(forResource: "FolivelaDocxPreview", withExtension: "bundle"),
           Bundle(url: bundleURL)?.url(forResource: "index", withExtension: "html") != nil else { finish(.failure(Failure.assets)); return }
     let config = WKWebViewConfiguration()
     config.setURLSchemeHandler(self, forURLScheme: "folivela-docx")

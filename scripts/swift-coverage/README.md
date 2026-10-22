@@ -32,7 +32,8 @@ The last command fails when results are missing, drifted, incomplete, unsupporte
 or not independently certified. Missing files are errors, not empty coverage.
 Preparation success means only that test copies and an AST inventory were created.
 
-`prepare` audits the exact current six-file Swift inventory. Its output contains:
+`prepare` audits the exact current eight-file Swift inventory across the
+`TranslatePDF` and `TranslateCore` modules. Its output contains:
 
 - untouched-original, transformed-copy and AST-manifest SHA-256 values;
 - source UTF-8 ranges, branch kinds, all expected outcomes and zero-ready registry;

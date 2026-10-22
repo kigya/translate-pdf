@@ -11,7 +11,7 @@ const subscribe = (listener: () => void) => {
 };
 const snapshot = () => params;
 
-export const router = {
+const boundRouter = {
   setParams: jest.fn((next: RouteParams) => {
     params = { ...params, ...next };
     publish();
@@ -20,6 +20,16 @@ export const router = {
   replace: jest.fn(),
   back: jest.fn(),
 };
+
+// SDK58 component actions use their provider queue even while the shared
+// imperative bridge is unbound during a root-container transition.
+export const router = {
+  ...boundRouter,
+  setParams: jest.fn((next: RouteParams) => boundRouter.setParams(next)),
+};
+export function useRouter() {
+  return boundRouter;
+}
 
 export function useLocalSearchParams<T extends RouteParams = RouteParams>() {
   return useSyncExternalStore(subscribe, snapshot, snapshot) as T;
@@ -32,6 +42,7 @@ export function __setLocalSearchParams(next: RouteParams) {
 
 export function __resetRouter() {
   params = {};
+  boundRouter.setParams.mockClear();
   router.setParams.mockClear();
   router.push.mockClear();
   router.replace.mockClear();

@@ -201,6 +201,7 @@ describe('translation activity', () => {
     expect(failedAtEnd[4]?.state).toBe('upcoming');
     const completed = translationActivityTimeline(baseJob({ status: 'completed', stage: 'complete' }), t);
     expect(completed.every((event) => event.state === 'done')).toBe(true);
+    expect(translationActivityTimeline(baseJob({ status: 'partial', stage: 'complete' }), t).every(event => event.state === 'done')).toBe(true);
   });
 
   test.each([
@@ -214,7 +215,7 @@ describe('translation activity', () => {
     ['running', 'future-stage', 'In progress'],
   ] as const)('shows truthful status text for %s at %s', async (status, stage, expected) => {
     renderActivity(baseJob({ status, stage: stage as JobSnapshot['stage'], error: status === 'failed' ? 'Native failure' : undefined }));
-    if (status === 'completed') {
+    if (status === 'completed' || status === 'partial') {
       expect(screen.queryByTestId('translation-scan')).toBeNull();
       expect(await screen.findByRole('image')).toBeTruthy();
       expect(screen.getByText(expected)).toBeTruthy();

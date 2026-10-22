@@ -112,7 +112,8 @@ export function ConfettiBurst({
   // Keyed on the colours' text so a new array with the same colours is free.
   const tints = useMemo(() => {
     const list = paletteKey.split('|');
-    return Array.from({ length: n }, (_, i) => Skia.Color(list[i % list.length] ?? 'white'));
+    // split always yields at least one entry, so the modulo index is in bounds.
+    return Array.from({ length: n }, (_, i) => Skia.Color(list[i % list.length]));
   }, [n, paletteKey]);
   const sprites = useMemo(
     () => Array.from({ length: n }, (_, i) => (i % 3 === 0 ? DOT : RIBBON)),
@@ -128,7 +129,6 @@ export function ConfettiBurst({
   );
 
   const physicsRef = useRef<ReturnType<typeof useFrameCallback> | null>(null);
-  const clearBurstRef = useRef<() => void>(() => {});
   const stopIfIdle = useCallback((epoch: number) => {
     if (burstEpoch.get() === epoch && alive.get() === 0) physicsRef.current?.setActive(false);
   }, [alive, burstEpoch]);
@@ -162,33 +162,33 @@ export function ConfettiBurst({
   }, false);
 
   physicsRef.current = physics;
-  clearBurstRef.current = () => {
+  const clearBurst = useCallback(() => {
     motionAllowed.set(false);
     physicsRef.current?.setActive(false);
     burstEpoch.set(burstEpoch.get() + 1);
     particles.set([]);
     alive.set(0);
     tick.set(tick.get() + 1);
-  };
+  }, [motionAllowed, burstEpoch, particles, alive, tick]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
       const active = state === 'active';
       foreground.current = active;
       motionAllowed.set(active && !reducedRef.current);
-      if (!active) clearBurstRef.current();
+      if (!active) clearBurst();
     });
     return () => {
       foreground.current = false;
-      clearBurstRef.current();
+      clearBurst();
       subscription.remove();
     };
-  }, [motionAllowed]);
+  }, [motionAllowed, clearBurst]);
 
   useEffect(() => {
     motionAllowed.set(foreground.current && !reduced);
-    if (reduced) clearBurstRef.current();
-  }, [motionAllowed, reduced]);
+    if (reduced) clearBurst();
+  }, [motionAllowed, reduced, clearBurst]);
 
   const fire = (at?: { x: number; y: number }) => {
     if (reduced || !foreground.current) return;

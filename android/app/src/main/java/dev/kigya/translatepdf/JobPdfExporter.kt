@@ -54,7 +54,7 @@ internal class JobPdfExporter(
   private val createWorkDirectory: (File) -> Boolean = { it.mkdirs() },
   private val openPdfInputStream: (File) -> InputStream = { FileInputStream(it) },
 ) {
-  fun getOrBuild(jobId: String, shouldCancel: () -> Boolean = { false }): FinalizedJobPdf {
+  fun getOrBuild(jobId: String, persistExport: Boolean = true, shouldCancel: () -> Boolean = { false }): FinalizedJobPdf {
     val lock = locks.computeIfAbsent(jobId) { Any() }
     synchronized(lock) {
       val job = database.jobJson(jobId) ?: throw IllegalArgumentException("Translation job was not found.")
@@ -68,8 +68,9 @@ internal class JobPdfExporter(
       LanguagePair.requireValid(sourceLanguage, targetLanguage)
       val name = displayName(job.optString("documentName", "translated.pdf"), sourceLanguage, targetLanguage)
       val saved = database.export(exportId)
+      val wasPublished = saved?.first == output.absolutePath
       if (saved?.first == output.absolutePath && isVerifiedPdf(output, pageCount)) {
-        if (saved.second != name) database.saveExport(exportId, output.absolutePath, name)
+        if (persistExport && saved.second != name) database.saveExport(exportId, output.absolutePath, name)
         val partial = hasPartialPages(jobId, pageCount)
         return FinalizedJobPdf(output, exportId, name, pageCount, partial)
       }
@@ -83,6 +84,7 @@ internal class JobPdfExporter(
       var partial = false
       val font = fontProvider(context)
       val cjkFontPath = if (targetLanguage == "zh-Hans") cjkFontProvider(context).absolutePath else ""
+      var produced = false
 
       try {
         for (pageIndex in 0 until pageCount) {
@@ -135,12 +137,14 @@ internal class JobPdfExporter(
         checkCanceled(shouldCancel)
         atomicReplace(temporary, output)
         require(isVerifiedPdf(output, pageCount)) { "The saved translated PDF failed its final integrity check." }
-        database.saveExport(exportId, output.absolutePath, name)
+        if (persistExport) database.saveExport(exportId, output.absolutePath, name)
         partial = partial || hasPartialPages(jobId, pageCount)
+        produced = true
         return FinalizedJobPdf(output, exportId, name, pageCount, partial)
       } finally {
         work.deleteRecursively()
         temporary.delete()
+        if (!produced && !wasPublished) output.delete()
       }
     }
   }

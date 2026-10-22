@@ -94,6 +94,189 @@ class TranslatorDatabaseTest {
     assertEquals(ModelCatalog.models.first().id, database.selectedEngine(ModelCatalog.RECOMMENDED_ID).getString("id"))
     assertEquals(ModelCatalog.models.first().id, database.setting("selectedModelId", ""))
     assertTrue(runCatching { database.setSelectedEngine("online", "unknown") }.isFailure)
+    assertTrue(runCatching { database.setSelectedEngine("future", "provider") }.isFailure)
+    assertTrue(runCatching { database.setSelectedEngine("local", "hy-mt2-iq2-m") }.isFailure)
+  }
+
+  @Test
+  fun selectedEngineFallsBackFromUnknownStoredKindAndOnlineProvider() {
+    val fallback = ModelCatalog.models.first().id
+    database.setSetting("selectedModelId", fallback)
+
+    database.setSetting("selectedEngineKind", "future-engine")
+    database.setSetting("selectedEngineId", "future-provider")
+    val unknown = database.selectedEngine(ModelCatalog.RECOMMENDED_ID)
+    assertEquals("local", unknown.getString("kind"))
+    assertEquals(fallback, unknown.getString("id"))
+
+    database.setSetting("selectedEngineKind", "online")
+    database.setSetting("selectedEngineId", "unsupported-provider")
+    val unsupported = database.selectedEngine(ModelCatalog.RECOMMENDED_ID)
+    assertEquals("local", unsupported.getString("kind"))
+    assertEquals(fallback, unsupported.getString("id"))
+    assertEquals("local", database.setting("selectedEngineKind", ""))
+    assertEquals(fallback, database.setting("selectedEngineId", ""))
+  }
+
+  @Test
+  fun invalidEnginePayloadsAndProviderIdsAreRejectedBeforeCreatingJobs() {
+    database.upsertDocument("engine-validation-doc", "sample.pdf", "/private/sample.pdf", 1, "a".repeat(64))
+    val base = JSONObject().put("documentId", "engine-validation-doc")
+      .put("sourceLanguage", "en").put("targetLanguage", "ru").put("modelId", ModelCatalog.RECOMMENDED_ID)
+
+    assertTrue(runCatching { database.addJob("null-engine", JSONObject(base.toString()).put("engine", JSONObject.NULL), 1) }.isFailure)
+    assertTrue(runCatching { database.addJob("string-engine", JSONObject(base.toString()).put("engine", "mymemory"), 1) }.isFailure)
+    assertTrue(runCatching {
+      database.addJob("unknown-engine", JSONObject(base.toString()).put("engine", JSONObject().put("kind", "future")), 1)
+    }.isFailure)
+    assertTrue(runCatching {
+      database.addJob("unknown-provider", JSONObject(base.toString())
+        .put("engine", JSONObject().put("kind", "online").put("id", "other"))
+        .put("onlineConsent", true), 1)
+    }.isFailure)
+    assertTrue(runCatching {
+      database.addJob("missing-consent", JSONObject(base.toString())
+        .put("engine", JSONObject().put("kind", "online").put("id", "mymemory")), 1)
+    }.isFailure)
+    assertNull(database.jobJson("null-engine"))
+    assertNull(database.jobJson("string-engine"))
+    assertNull(database.jobJson("unknown-engine"))
+    assertNull(database.jobJson("unknown-provider"))
+    assertNull(database.jobJson("missing-consent"))
+
+    val blankId = database.addJob("blank-provider-id", JSONObject(base.toString())
+      .put("modelId", "mymemory")
+      .put("engine", JSONObject().put("kind", "online").put("id", ""))
+      .put("onlineConsent", true), 1)
+    assertEquals("mymemory", blankId.getJSONObject("engine").getString("id"))
+    assertTrue(blankId.getBoolean("onlineConsent"))
+  }
+
+  @Test
+  fun documentFormatRejectsMissingIdsAndImportRejectsUnsupportedFormats() {
+    assertTrue(runCatching { database.documentFormat("missing-format-document") }.exceptionOrNull()
+      ?.message?.contains("source document was not found") == true)
+    assertTrue(runCatching {
+      database.upsertDocument("invalid-format", "sample.docm", "/private/sample.docm", 1, "a".repeat(64), format = "docm")
+    }.isFailure)
+    assertNull(database.documentPath("invalid-format"))
+  }
+
+  @Test
+  fun absentPageCheckpointReturnsAnEmptyBlockArray() {
+    assertEquals(0, database.pageBlockArray("missing-job", 7).length())
+    createJob("checkpoint-lookup")
+    assertEquals(0, database.pageBlockArray("checkpoint-lookup", 0).length())
+  }
+
+  @Test
+  fun legacyPipelineVersionFiveIsAcceptedOnlyForDocxOrOnlineJobs() {
+    database.upsertDocument("pipeline-docx", "sample.docx", "/private/sample.docx", 1,
+      "a".repeat(64), format = "docx", segmentCount = 1)
+    database.addJob("pipeline-docx-job", JSONObject().put("documentId", "pipeline-docx")
+      .put("sourceLanguage", "en").put("targetLanguage", "ru")
+      .put("modelId", ModelCatalog.RECOMMENDED_ID), 1)
+    database.requireCurrentPipeline("pipeline-docx-job")
+
+    database.upsertDocument("pipeline-online-pdf", "sample.pdf", "/private/sample.pdf", 1, "b".repeat(64))
+    database.addJob("pipeline-online-pdf-job", JSONObject().put("documentId", "pipeline-online-pdf")
+      .put("sourceLanguage", "en").put("targetLanguage", "ru").put("modelId", "mymemory")
+      .put("engine", JSONObject().put("kind", "online").put("id", "mymemory"))
+      .put("onlineConsent", true), 1)
+    database.requireCurrentPipeline("pipeline-online-pdf-job")
+
+    createJob("pipeline-local-pdf")
+    database.writableDatabase.execSQL("UPDATE jobs SET pipeline_version=5 WHERE id='pipeline-local-pdf'")
+    val failure = runCatching { database.requireCurrentPipeline("pipeline-local-pdf") }.exceptionOrNull()
+    assertTrue("legacy local PDF checkpoints must remain reviewable but cannot be resumed", failure is IllegalStateException)
+
+    val raw = database.writableDatabase
+    raw.execSQL("PRAGMA foreign_keys=OFF")
+    try {
+      raw.execSQL("""
+        INSERT INTO jobs(id,document_id,model_id,model_revision,model_profile,source_sha256,glossary_snapshot,
+          pipeline_version,source_lang,target_lang,status,stage,total_pages,created_at,updated_at)
+        VALUES('pipeline-orphan-v5','deleted-document','model','rev','profile','hash','',5,
+          'en','ru','paused','queued',1,1,1)
+      """.trimIndent())
+      assertTrue("a version-five checkpoint with no source row must fail closed",
+        runCatching { database.requireCurrentPipeline("pipeline-orphan-v5") }.isFailure)
+    } finally {
+      raw.execSQL("DELETE FROM jobs WHERE id='pipeline-orphan-v5'")
+      raw.execSQL("PRAGMA foreign_keys=ON")
+    }
+  }
+
+  @Test
+  fun jobWarningsIgnoreMalformedDocumentJsonAndBlankOrDuplicatePageErrors() {
+    database.upsertDocument("warnings-corrupt-doc", "sample.pdf", "/private/sample.pdf", 2, "c".repeat(64))
+    database.addJob("warnings-corrupt-job", JSONObject().put("documentId", "warnings-corrupt-doc")
+      .put("sourceLanguage", "en").put("targetLanguage", "ru")
+      .put("modelId", ModelCatalog.RECOMMENDED_ID), 2)
+    database.writableDatabase.execSQL("UPDATE documents SET warnings_json='not-json' WHERE id='warnings-corrupt-doc'")
+    database.savePage("warnings-corrupt-job", 0, "partial", "[]", error = "first warning")
+    database.savePage("warnings-corrupt-job", 1, "partial", "[]", error = "first warning")
+    database.writableDatabase.execSQL("UPDATE pages SET error='' WHERE job_id='warnings-corrupt-job' AND page_index=1")
+
+    val warnings = database.jobJson("warnings-corrupt-job")!!.getJSONArray("warnings")
+    assertEquals(1, warnings.length())
+    assertEquals("first warning", warnings.getString(0))
+  }
+
+  @Test
+  fun jobWarningsFilterNullAndBlankValuesAndDeduplicateDocumentAndPageWarnings() {
+    val importedWarnings = JSONArray().put(JSONObject.NULL).put("").put("null").put("document warning").put("document warning")
+    database.upsertDocument("warnings-filter-doc", "sample.pdf", "/private/sample.pdf", 2,
+      "d".repeat(64), warnings = importedWarnings)
+    database.addJob("warnings-filter-job", JSONObject().put("documentId", "warnings-filter-doc")
+      .put("sourceLanguage", "en").put("targetLanguage", "ru")
+      .put("modelId", ModelCatalog.RECOMMENDED_ID), 2)
+    database.savePage("warnings-filter-job", 0, "partial", "[]", error = "null")
+    database.savePage("warnings-filter-job", 1, "partial", "[]", error = "page warning")
+
+    val warnings = database.jobJson("warnings-filter-job")!!.getJSONArray("warnings")
+    assertEquals(listOf("document warning", "page warning"),
+      (0 until warnings.length()).map(warnings::getString))
+  }
+
+  @Test
+  fun oneArgumentSnapshotValidationChecksLocalOnlineConsentAndSourceBytes() {
+    val localSource = File(context.filesDir, "snapshot-one-arg-local.pdf").apply { writeText("local source") }
+    val onlineSource = File(context.filesDir, "snapshot-one-arg-online.pdf").apply { writeText("online source") }
+    fun sha(file: File) = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+      .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    try {
+      database.upsertDocument("snapshot-local-doc", localSource.name, localSource.absolutePath, 1, sha(localSource))
+      database.addJob("snapshot-local-job", JSONObject().put("documentId", "snapshot-local-doc")
+        .put("sourceLanguage", "en").put("targetLanguage", "ru")
+        .put("modelId", ModelCatalog.RECOMMENDED_ID), 1)
+      database.validateJobSnapshot("snapshot-local-job")
+
+      database.upsertDocument("snapshot-online-doc", onlineSource.name, onlineSource.absolutePath, 1, sha(onlineSource))
+      database.addJob("snapshot-online-job", JSONObject().put("documentId", "snapshot-online-doc")
+        .put("sourceLanguage", "en").put("targetLanguage", "ru").put("modelId", "mymemory")
+        .put("engine", JSONObject().put("kind", "online").put("id", "mymemory"))
+        .put("onlineConsent", true), 1)
+      database.validateJobSnapshot("snapshot-online-job")
+
+      database.writableDatabase.execSQL("UPDATE jobs SET online_consent=0 WHERE id='snapshot-online-job'")
+      assertTrue("an invalidated online consent snapshot must be rejected",
+        runCatching { database.validateJobSnapshot("snapshot-online-job") }.isFailure)
+      database.writableDatabase.execSQL("UPDATE jobs SET online_consent=1,engine_id='unexpected-provider' WHERE id='snapshot-online-job'")
+      assertTrue("a changed online provider snapshot must be rejected",
+        runCatching { database.validateJobSnapshot("snapshot-online-job") }.isFailure)
+    } finally {
+      localSource.delete()
+      onlineSource.delete()
+    }
+  }
+
+  @Test
+  fun oneArgumentSnapshotValidationRejectsMissingJobBeforeReadingItsEngine() {
+    val error = runCatching { database.validateJobSnapshot("missing-snapshot-job") }.exceptionOrNull()
+
+    assertEquals("Translation job was not found.", error?.message)
   }
 
   @Test
@@ -105,6 +288,12 @@ class TranslatorDatabaseTest {
     database.setSetting("librarySort", "unknown")
     assertEquals(0, database.appRating())
     assertEquals("recent", database.librarySort())
+    database.setSetting("appRating", "not-a-number")
+    assertEquals(0, database.appRating())
+    database.setSetting("appRating", "-1")
+    assertEquals(0, database.appRating())
+    database.setSetting("appRating", "0")
+    assertEquals(0, database.appRating())
     database.setSetting("appRating", "5")
     database.setSetting("librarySort", "color")
     assertEquals(5, database.appRating())
@@ -136,6 +325,132 @@ class TranslatorDatabaseTest {
     createJob("label-running")
     database.updateJob("label-running", status = "running")
     assertTrue(runCatching { database.setJobColor("label-running", "blue") }.isFailure)
+  }
+
+  @Test
+  fun jobLabelUpdateFailsClosedWhenSQLiteIgnoresTheWrite() {
+    createJob("label-raced")
+    database.updateJob("label-raced", status = "completed")
+    // SQLite serializes this transaction in normal operation. This trigger is
+    // a focused fault injection for a write suppressed by database behavior,
+    // proving the affected-row guard does not report success or alter state.
+    database.writableDatabase.execSQL("""
+      CREATE TRIGGER ignore_job_label_update
+      BEFORE UPDATE OF label_color ON jobs
+      WHEN OLD.id='label-raced'
+      BEGIN SELECT RAISE(IGNORE); END
+    """.trimIndent())
+
+    try {
+      val failure = runCatching { database.setJobColor("label-raced", "green") }.exceptionOrNull()
+      assertTrue("a suppressed database write must fail instead of reporting a saved label", failure is IllegalStateException)
+      assertTrue(database.jobJson("label-raced")!!.isNull("labelColor"))
+      assertEquals("completed", database.jobJson("label-raced")!!.getString("status"))
+    } finally {
+      database.writableDatabase.execSQL("DROP TRIGGER IF EXISTS ignore_job_label_update")
+    }
+  }
+
+  @Test
+  fun activeJobTransitionIsConditionalAndAppliesNullableFields() {
+    for ((index, initialStatus) in listOf("queued", "running").withIndex()) {
+      val id = "active-transition-$initialStatus"
+      createJob(id)
+      database.updateJob(id, status = initialStatus, stage = "translating", currentPage = 1, error = "old error")
+      database.writableDatabase.execSQL("UPDATE jobs SET updated_at=1 WHERE id=?", arrayOf(id))
+
+      val nextStage = if (index == 0) "paused-stage" else null
+      val nextError = if (index == 0) null else "User paused the job."
+      assertTrue(database.transitionActiveJob(id, "paused", stage = nextStage, error = nextError))
+
+      val updated = database.jobJson(id)!!
+      assertEquals("paused", updated.getString("status"))
+      assertEquals(nextStage ?: "translating", updated.getString("stage"))
+      if (nextError == null) assertTrue(updated.isNull("error")) else assertEquals(nextError, updated.getString("error"))
+      assertTrue("the active transition must refresh updated_at", updated.getLong("updatedAt") > 1)
+    }
+
+    for (inactiveStatus in listOf("paused", "completed", "partial", "failed", "canceled")) {
+      val id = "inactive-transition-$inactiveStatus"
+      createJob(id)
+      database.updateJob(id, status = inactiveStatus, stage = "before", error = "preserve")
+      val before = database.jobJson(id)!!.toString()
+
+      assertFalse("$inactiveStatus is terminal or paused and cannot be worker-transitioned",
+        database.transitionActiveJob(id, "canceled", stage = "after", error = null))
+      assertEquals(before, database.jobJson(id)!!.toString())
+    }
+    assertFalse(database.transitionActiveJob("missing-transition-job", "canceled"))
+  }
+
+  @Test
+  fun finalJobAndExportCommitTogetherForCompleteAndPartialResults() {
+    for ((index, finalState) in listOf(false, true).withIndex()) {
+      val id = "atomic-export-${if (finalState) "partial" else "complete"}"
+      createJob(id)
+      database.updateJob(id, status = if (index == 0) "queued" else "running", stage = "exporting",
+        currentPage = 1, error = "stale error")
+      database.writableDatabase.execSQL("UPDATE jobs SET updated_at=1 WHERE id=?", arrayOf(id))
+      val exportId = "artifact-$id"
+      val path = "/private/$id.docx"
+      val name = "$id-translated.docx"
+      val mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+      assertTrue(database.completeActiveJobWithExport(id, exportId, path, name, mime, partial = finalState))
+
+      val result = database.jobJson(id)!!
+      assertEquals(if (finalState) "partial" else "completed", result.getString("status"))
+      assertEquals("complete", result.getString("stage"))
+      assertTrue(result.isNull("currentPage"))
+      assertTrue(result.isNull("error"))
+      assertTrue("finalization must refresh updated_at", result.getLong("updatedAt") > 1)
+      assertEquals(TranslatorDatabase.ExportInfo(path, name, mime), database.exportInfo(exportId))
+    }
+  }
+
+  @Test
+  fun finalExportCommitDoesNothingForInactiveOrMissingJobs() {
+    for (inactiveStatus in listOf("paused", "completed", "partial", "failed", "canceled")) {
+      val id = "inactive-export-$inactiveStatus"
+      createJob(id)
+      database.updateJob(id, status = inactiveStatus, stage = "review", currentPage = 1, error = "keep")
+      val before = database.jobJson(id)!!.toString()
+      val exportId = "artifact-$id"
+
+      assertFalse(database.completeActiveJobWithExport(id, exportId, "/private/new.pdf", "new.pdf", "application/pdf", partial = false))
+      assertEquals(before, database.jobJson(id)!!.toString())
+      assertNull(database.exportInfo(exportId))
+    }
+    assertFalse(database.completeActiveJobWithExport("missing-final-job", "missing-export", "/private/missing.pdf",
+      "missing.pdf", "application/pdf", partial = false))
+    assertNull(database.exportInfo("missing-export"))
+  }
+
+  @Test
+  fun exportMetadataWriteFailureRollsBackActiveJobFinalization() {
+    val id = "atomic-export-rollback"
+    val exportId = "atomic-export-artifact"
+    createJob(id)
+    database.updateJob(id, status = "running", stage = "exporting", currentPage = 1, error = "previous failure")
+    database.saveExport(exportId, "/private/previous.docx", "previous.docx", "application/old")
+    val before = database.jobJson(id)!!.toString()
+    database.writableDatabase.execSQL("""
+      CREATE TRIGGER ignore_atomic_export_insert
+      BEFORE INSERT ON exports
+      WHEN NEW.id='$exportId'
+      BEGIN SELECT RAISE(IGNORE); END
+    """.trimIndent())
+
+    try {
+      val failure = runCatching {
+        database.completeActiveJobWithExport(id, exportId, "/private/new.docx", "new.docx", "application/new", partial = false)
+      }.exceptionOrNull()
+      assertTrue("an ignored metadata insert must not report a committed export", failure is IllegalStateException)
+      assertEquals(before, database.jobJson(id)!!.toString())
+      assertEquals(TranslatorDatabase.ExportInfo("/private/previous.docx", "previous.docx", "application/old"), database.exportInfo(exportId))
+    } finally {
+      database.writableDatabase.execSQL("DROP TRIGGER IF EXISTS ignore_atomic_export_insert")
+    }
   }
 
   @Test

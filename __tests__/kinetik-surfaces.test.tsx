@@ -570,3 +570,10 @@ it('renders custom magnet content without inventing an accessible name', () => {
   const button = screen.UNSAFE_getByProps({ accessibilityRole: 'button' });
   expect(button.props.accessibilityLabel).toBeUndefined();
 });
+
+it('uses a stable accessible name while loading without a separate loading caption', () => {
+  const view = render(wrapper(<StatusButton status="loading" loadingLabel="">Translate</StatusButton>));
+  expect(screen.getByRole('button', { name: 'Translate' }).props.accessibilityState.busy).toBe(true);
+  view.rerender(wrapper(<StatusButton status="loading" loadingLabel="" accessibilityLabel="Translate document">Translate</StatusButton>));
+  expect(screen.getByRole('button', { name: 'Translate document' })).toBeOnTheScreen();
+});

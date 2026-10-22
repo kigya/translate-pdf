@@ -15,6 +15,7 @@ This is a prototype in verification. Translation quality, long-document reliabil
 - Choose MyMemory for online translation without downloading a model. You must agree before text from each new document is sent. The anonymous service allows up to 5,000 characters per day; shared networks and provider availability can affect that limit.
 - Keep translation checkpoints locally. Network or quota interruptions pause online work for a later retry. Android uses a foreground service; iOS can pause when the operating system ends its background allowance.
 - Save translated PDFs. Word jobs also produce editable DOCX files. The original stays unchanged; Word preview and PDF pagination may differ from Microsoft Word. Unsupported elements and text that needs review are reported.
+- Review completed or partial results as document pages. If Word preview preparation fails, retry it while keeping the completed translation and editable export.
 - Use a dictionary with compatible local models. Saved jobs keep their original language, model and dictionary choices. MyMemory does not use the dictionary.
 
 Engine percentages are approximate product ratings; results vary by language and text. Check important passages against the original.
@@ -46,4 +47,4 @@ npm run android
 
 The native setup script downloads pinned build dependencies into ignored storage, without downloading translation model weights. For iOS, run `bash ios/scripts/build-native-frameworks.sh`, install pods in `ios`, then build `ios/TranslatePDF.xcworkspace`. Preserve the hand-maintained native projects; do not replace them with `expo prebuild --clean`.
 
-Read the [feature and verification map](public-docs/features.md), [verification status](public-docs/verification.md) for acceptance limits and [architecture and data flow](public-docs/architecture.md) for the native processing boundary. Third-party notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Application source and model weights have separate terms; review the applicable notices before redistribution or use.
+Read the [feature map](public-docs/features.md), [current verification results](public-docs/online-word-verification.md) and [acceptance limits](public-docs/verification.md). The [architecture and data flow](public-docs/architecture.md) explain the native processing boundary. Third-party notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Application source and model weights have separate terms; review the applicable notices before redistribution or use.

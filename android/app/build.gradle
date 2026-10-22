@@ -90,6 +90,7 @@ android {
 
     namespace "dev.kigya.translatepdf"
     defaultConfig {
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         applicationId "dev.kigya.translatepdf"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
@@ -145,6 +146,14 @@ tasks.named("preBuild").configure { dependsOn(tasks.named("copyThirdPartyLicense
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    constraints {
+        implementation("commons-io:commons-io:2.14.0") {
+            because("Fixes GHSA-gwrp-pvrq-jmwv in the shipped document dependency graph")
+        }
+        implementation("com.google.code.gson:gson:2.8.9") {
+            because("Fixes GHSA-4jrv-ppp4-jm57 in the shipped runtime graph")
+        }
+    }
     // Fresco's Android HTTP integration pulls vulnerable Okio 2.x transitively.
     // Keep the override narrow and use the compatible fixed JVM artifact pair.
     implementation("com.squareup.okio:okio:3.18.2") {
@@ -157,6 +166,9 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.17")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test:core:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
@@ -185,15 +197,30 @@ def coverageClassDirs = files(
         // Source-name globs silently omitted top-level classes declared beside
         // their primary class (for example NativeTesseractApi in OcrEngine.kt).
         // Keep exclusions explicit and limited to generated resources and the
-        // debug-only device QA activity; nested and file-facade classes remain
+        // debug-only device test hosts; nested and file-facade classes remain
         // part of the JaCoCo denominator.
         include "dev/kigya/translatepdf/**/*.class"
         include "com/translatepdf/**/*.class"
         exclude "**/BuildConfig.*", "**/R.class", '**/R$*.class', "**/Manifest*.*"
         exclude "dev/kigya/translatepdf/NativeSliceQaActivity*.class"
+        exclude "dev/kigya/translatepdf/PreviewTestActivity*.class"
     }
 )
 def coverageExecutionData = files(layout.buildDirectory.file("jacoco/testDebugUnitTest.exec"))
+def deviceCoveragePath = providers.environmentVariable("TRANSLATEPDF_ANDROID_DEVICE_COVERAGE").orNull
+if (deviceCoveragePath != null) {
+    def deviceCoverageFile = file(deviceCoveragePath)
+    if (!deviceCoverageFile.isFile()) {
+        throw new GradleException("The requested Android device coverage file is missing.")
+    }
+    coverageExecutionData += files(deviceCoverageFile)
+}
+
+// Scope the optional device probes to project classes. AGP's built-in transform
+// also instruments vendors and overflows RadixColor's generated static initializer.
+if (providers.gradleProperty("collectDeviceCoverage").orElse("false").get().toBoolean()) {
+    apply from: file("../device-coverage.gradle")
+}
 
 tasks.register("jacocoTestReport", JacocoReport) {
     dependsOn tasks.named("testDebugUnitTest")

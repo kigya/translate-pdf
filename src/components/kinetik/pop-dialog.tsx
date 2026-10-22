@@ -111,7 +111,7 @@ export function PopDialog({
       visible={mounted}
       transparent
       animationType="none"
-      onRequestClose={onClose}
+      onRequestClose={dismissable ? onClose : undefined}
       statusBarTranslucent
       navigationBarTranslucent
     >

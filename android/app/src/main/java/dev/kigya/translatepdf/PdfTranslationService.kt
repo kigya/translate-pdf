@@ -70,6 +70,7 @@ internal class PdfTranslationService : Service() {
         val requestedId = intent.getStringExtra(EXTRA_JOB_ID)
         if (requestedId != null && requestedId != jobId) {
           database.updateJob(requestedId, status = "paused")
+          stopServiceIfIdle(startId)
         } else {
           stopped.set(true)
           NativeCore.cancel()
@@ -84,6 +85,7 @@ internal class PdfTranslationService : Service() {
         val requestedId = intent.getStringExtra(EXTRA_JOB_ID)
         if (requestedId != null && requestedId != jobId) {
           database.updateJob(requestedId, status = "canceled", error = "Canceled by the user.")
+          stopServiceIfIdle(startId)
         } else {
           stopped.set(true)
           NativeCore.cancel()
@@ -173,6 +175,7 @@ internal class PdfTranslationService : Service() {
     var ocrSetupFailure: String? = null
     try {
       val job = database.jobJson(id) ?: error("Translation job was not found.")
+      if (job.optString("status") == "canceled") return
       val source = database.jobDocumentPath(id) ?: error("Source document is unavailable.")
       if (job.optString("format") == "docx" || job.optJSONObject("engine")?.optString("kind") == "online") {
         if (job.optString("format") == "pdf" && job.optJSONObject("engine")?.optString("kind") == "online") {
@@ -209,7 +212,7 @@ internal class PdfTranslationService : Service() {
         try { ocrEngine = ocrEngineFactory(sourceLanguage) }
         catch (error: Exception) { ocrSetupFailure = error.message ?: "The bundled OCR data for $sourceLanguage is unavailable." }
         activeOcrEngine = ocrEngine
-        database.updateJob(id, status = "running", stage = "extracting", clearError = true)
+        if (stopped.get() || !database.transitionActiveJob(id, "running", stage = "extracting")) throw InterruptedException()
         val loadJson = try { NativeCore.loadModel(downloader.fileFor(modelId).absolutePath, 2048, 4, definition.profile) }
         catch (error: Exception) {
           if (isAllocationFailure(error.message.orEmpty())) {
@@ -224,7 +227,7 @@ internal class PdfTranslationService : Service() {
           if (isAllocationFailure(message)) { pauseForResources(id, "The selected model could not allocate its working memory. The job is paused at its latest saved checkpoint."); return }
           error(message)
         }
-      } else database.updateJob(id, status = "running", stage = "exporting", clearError = true)
+      } else if (stopped.get() || !database.transitionActiveJob(id, "running", stage = "exporting")) throw InterruptedException()
       for (pageIndex in 0 until pageCount) {
         if (stopped.get() || Thread.currentThread().isInterrupted) throw InterruptedException()
         val currentMemory = memoryInfoProvider()
@@ -238,7 +241,7 @@ internal class PdfTranslationService : Service() {
           row.getInt("index") == pageIndex && row.optString("status") in setOf("completed", "partial")
         }
         if (alreadyDone) continue
-        database.updateJob(id, status = "running", stage = "extracting", currentPage = pageIndex)
+        database.updateJob(id, stage = "extracting", currentPage = pageIndex)
         updateNotification("Reading page ${pageIndex + 1} of $pageCount")
         val nativePage = JSONObject(NativeCore.readPage(source, pageIndex))
         if (nativePage.has("error")) throw IllegalStateException(nativePage.optString("error", "The page could not be read."))
@@ -355,18 +358,21 @@ internal class PdfTranslationService : Service() {
       activeOcrEngine = null
       NativeCore.releaseModel()
       updateNotification("Assembling and verifying the translated PDF…")
-      val finalPdf = JobPdfExporter(this, database).getOrBuild(id) { stopped.get() || Thread.currentThread().isInterrupted }
-      if (stopped.get() || Thread.currentThread().isInterrupted) throw InterruptedException()
-      database.updateJob(id, status = if (finalPdf.partial) "partial" else "completed", stage = "complete", clearCurrentPage = true)
+      val finalPdf = JobPdfExporter(this, database).getOrBuild(id, persistExport = false) { stopped.get() || Thread.currentThread().isInterrupted }
+      withUnpublishedExportCleanup(finalPdf.exportId, finalPdf.file) {
+        if (stopped.get() || Thread.currentThread().isInterrupted) throw InterruptedException()
+        if (!database.completeActiveJobWithExport(id, finalPdf.exportId, finalPdf.file.absolutePath,
+            finalPdf.displayName, "application/pdf", finalPdf.partial)) throw InterruptedException()
+      }
       updateNotification(if (finalPdf.partial) "Translation finished with pages that need review." else "Translation completed.")
     } catch (_: InterruptedException) {
-      val status = database.jobJson(id)?.optString("status")
-      if (status == "running") database.updateJob(id, status = "paused", error = "Paused after the latest saved page checkpoint.")
+      database.transitionActiveJob(id, "paused", error = "Paused after the latest saved page checkpoint.")
     } catch (error: OutOfMemoryError) {
       pauseForResources(id, "Android could not allocate working memory. The job is paused at its latest saved checkpoint.")
     } catch (error: Exception) {
-      database.updateJob(id, status = "failed", error = error.message ?: "Local translation failed.")
-      updateNotification("Translation stopped. Open the app to review the error.")
+      if (database.transitionActiveJob(id, "failed", error = error.message ?: "Local translation failed.")) {
+        updateNotification("Translation stopped. Open the app to review the error.")
+      }
     } finally {
       cleanupJobWorker(id, ocrEngine, owner)
     }
@@ -379,7 +385,14 @@ internal class PdfTranslationService : Service() {
     val format = job.optString("format", "pdf")
     val sourceLanguage = job.getString("sourceLanguage")
     val targetLanguage = job.getString("targetLanguage")
+    val pageCount = job.getInt("totalPages")
+    var completed = database.completedPageCount(id)
+    val needsTranslation = completed < pageCount
     LanguagePair.requireValid(sourceLanguage, targetLanguage)
+    if (availableDiskBytes() < File(source).length() * 2 + 256L * 1024L * 1024L) {
+      pauseForResources(id, "Free storage is below the source-sized checkpoint/export reserve.")
+      return
+    }
     if (online) {
       check(job.optJSONObject("engine")?.optString("id") == "mymemory" && job.optBoolean("onlineConsent")) {
         "This online job has no current privacy-consent snapshot. Start again after reviewing the notice."
@@ -388,19 +401,36 @@ internal class PdfTranslationService : Service() {
     } else {
       val model = ModelCatalog.get(modelId)
       database.validateJobSnapshot(id, model)
-      check(downloader.isReady(modelId)) { "The selected model is missing or incomplete." }
-      val loaded = JSONObject(NativeCore.loadModel(downloader.fileFor(modelId).absolutePath, 2048, 4, model.profile))
-      if (loaded.has("error")) error(loaded.optString("error", "Model failed to load."))
+      if (needsTranslation) {
+        check(downloader.isReady(modelId)) { "The selected model is missing or incomplete." }
+        // Word follows the same actual-resource gates as the PDF pipeline. The
+        // model's estimated RAM requirement remains advisory, not a hard gate.
+        if (memoryInfoProvider().lowMemory) {
+          pauseForResources(id, "Android reports low memory. The job is paused at its latest saved checkpoint.")
+          return
+        }
+        try {
+          val loaded = JSONObject(NativeCore.loadModel(downloader.fileFor(modelId).absolutePath, 2048, 4, model.profile))
+          if (loaded.has("error")) error(loaded.optString("error", "Model failed to load."))
+        } catch (failure: Exception) {
+          if (!isAllocationFailure(failure.message.orEmpty())) throw failure
+          pauseForResources(id, "The selected model could not allocate its working memory. The job is paused at its latest saved checkpoint.")
+          return
+        }
+      }
     }
-    val pageCount = job.getInt("totalPages")
     val translator = if (online) myMemoryTranslatorFactory().also { activeMyMemoryTranslator = it } else null
-    var completed = database.completedPageCount(id)
-    database.updateJob(id, status = "running", stage = "extracting", clearError = true)
+    if (stopped.get() || Thread.currentThread().isInterrupted ||
+        !database.transitionActiveJob(id, "running", stage = "extracting")) throw InterruptedException()
     for (index in 0 until pageCount) {
       if (stopped.get() || Thread.currentThread().isInterrupted) throw InterruptedException()
       val priorPage = database.page(id, index)
       if (priorPage?.optString("status") in setOf("completed", "partial")) continue
-      database.updateJob(id, status = "running", stage = "extracting", currentPage = index)
+      if (!online && memoryInfoProvider().lowMemory) {
+        pauseForResources(id, "Android reports low memory. The job is paused at its latest saved checkpoint.")
+        return
+      }
+      database.updateJob(id, stage = "extracting", currentPage = index)
       updateNotification("Reading ${if (format == "docx") "Word segment" else "PDF page"} ${index + 1} of $pageCount")
       val raw = JSONObject(if (format == "docx") NativeCore.readDocxSegment(source, index) else NativeCore.readPage(source, index))
       if (raw.has("error")) error(raw.optString("error", "The document segment could not be read."))
@@ -445,6 +475,10 @@ internal class PdfTranslationService : Service() {
       var partial = extractionWarning != null
       for (bi in 0 until blocks.length()) {
         if (stopped.get() || Thread.currentThread().isInterrupted) throw InterruptedException()
+        if (!online && memoryInfoProvider().lowMemory) {
+          pauseForResources(id, "Android reports low memory. The job is paused at its latest saved checkpoint.")
+          return
+        }
         val block = blocks.getJSONObject(bi)
         if (block.optString("status") in setOf("translated", "partial", "skipped")) {
           if (block.optString("status") == "partial") partial = true
@@ -471,12 +505,18 @@ internal class PdfTranslationService : Service() {
         } catch (failure: MyMemoryException) {
           if (stopped.get() || Thread.currentThread().isInterrupted) throw InterruptedException()
           database.savePage(id, index, "running", blocks.toString(), width, height, expectedBlocks = blocks.length())
-          database.updateJob(id, status = "paused", stage = "translating", error = failure.message)
-          updateNotification("Online translation paused. Open the app to review and resume.")
+          if (database.transitionActiveJob(id, "paused", stage = "translating", error = failure.message)) {
+            updateNotification("Online translation paused. Open the app to review and resume.")
+          }
           return
         } catch (interrupted: InterruptedException) {
           throw interrupted
         } catch (failure: Exception) {
+          if (!online && isAllocationFailure(failure.message.orEmpty())) {
+            database.savePage(id, index, "running", blocks.toString(), width, height, expectedBlocks = blocks.length())
+            pauseForResources(id, "The model could not allocate working memory. The job is paused at its latest saved checkpoint.")
+            return
+          }
           block.put("translatedText", JSONObject.NULL).put("status", "failed").put("error", failure.message ?: "Translation failed.")
           partial = true
         }
@@ -494,7 +534,7 @@ internal class PdfTranslationService : Service() {
       database.updateJob(id, completedPages = completed)
     }
     if (stopped.get() || Thread.currentThread().isInterrupted) throw InterruptedException()
-    database.updateJob(id, status = "running", stage = "exporting", clearCurrentPage = true)
+    database.updateJob(id, stage = "exporting", clearCurrentPage = true)
     if (format == "docx") {
       val allBlocks = JSONArray()
       for (index in 0 until pageCount) {
@@ -502,28 +542,46 @@ internal class PdfTranslationService : Service() {
         for (bi in 0 until saved.length()) allBlocks.put(saved.getJSONObject(bi))
       }
       val output = File(filesDir, "translated-docx/$id.docx").apply { parentFile?.mkdirs() }
-      val result = JSONObject(NativeCore.exportDocx(source, allBlocks.toString(), output.absolutePath))
-      if (result.has("error") || !output.isFile || output.length() == 0L) error(result.optString("error", "The translated Word file could not be written."))
-      val exportWarnings = result.optJSONArray("warnings")
-      if (exportWarnings != null && exportWarnings.length() > 0) {
-        val first = database.page(id, 0)
-        if (first != null) {
-          val existing = first.optString("error", "").takeIf { it.isNotBlank() }
-          val combined = linkedSetOf<String>().apply {
-            existing?.split("; ")?.filter(String::isNotBlank)?.forEach(::add)
-            for (wi in 0 until exportWarnings.length()) exportWarnings.optString(wi).takeIf { it.isNotBlank() && it != "null" }?.let(::add)
-          }.joinToString("; ")
-          database.savePage(id, 0, first.getString("status"), first.getJSONArray("blocks").toString(),
-            first.optDouble("width"), first.optDouble("height"), combined.ifBlank { null }, first.optInt("expectedBlocks", 1))
+      withUnpublishedExportCleanup(id, output) {
+        val result = JSONObject(NativeCore.exportDocx(source, allBlocks.toString(), output.absolutePath))
+        if (stopped.get() || Thread.currentThread().isInterrupted) throw InterruptedException()
+        if (result.has("error") || !output.isFile || output.length() == 0L) error(result.optString("error", "The translated Word file could not be written."))
+        val exportWarnings = result.optJSONArray("warnings")
+        if (exportWarnings != null && exportWarnings.length() > 0) {
+          val first = database.page(id, 0)
+          if (first != null) {
+            val existing = if (first.isNull("error")) null else first.optString("error").takeIf(String::isNotBlank)
+            val combined = linkedSetOf<String>().apply {
+              existing?.split("; ")?.filter(String::isNotBlank)?.forEach(::add)
+              for (wi in 0 until exportWarnings.length()) exportWarnings.optString(wi).takeIf { it.isNotBlank() && it != "null" }?.let(::add)
+            }.joinToString("; ")
+            database.savePage(id, 0, first.getString("status"), first.getJSONArray("blocks").toString(),
+              first.optDouble("width"), first.optDouble("height"), combined.ifBlank { null }, first.optInt("expectedBlocks", 1))
+          }
         }
+        val partial = result.optBoolean("partial")
+        if (!database.completeActiveJobWithExport(id, id, output.absolutePath,
+            job.optString("documentName", "translated.docx").removeSuffix(".docx") + "-translated.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document", partial)) throw InterruptedException()
       }
-      val partial = result.optBoolean("partial")
-      database.saveExport(id, output.absolutePath, job.optString("documentName", "translated.docx").removeSuffix(".docx") + "-translated.docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-      database.updateJob(id, status = if (partial) "partial" else "completed", stage = "complete", clearCurrentPage = true)
     } else {
-      val result = JobPdfExporter(this, database).getOrBuild(id) { stopped.get() || Thread.currentThread().isInterrupted }
-      database.updateJob(id, status = if (result.partial) "partial" else "completed", stage = "complete", clearCurrentPage = true)
+      val result = JobPdfExporter(this, database).getOrBuild(id, persistExport = false) { stopped.get() || Thread.currentThread().isInterrupted }
+      withUnpublishedExportCleanup(result.exportId, result.file) {
+        if (stopped.get() || Thread.currentThread().isInterrupted ||
+            !database.completeActiveJobWithExport(id, result.exportId, result.file.absolutePath,
+              result.displayName, "application/pdf", result.partial)) throw InterruptedException()
+      }
+    }
+  }
+
+  /** A canceled/failed final commit must not leave a newly created private result. */
+  private fun withUnpublishedExportCleanup(exportId: String, output: File, action: () -> Unit) {
+    val wasPublished = database.exportInfo(exportId)?.path == output.absolutePath
+    try {
+      action()
+    } catch (failure: Throwable) {
+      if (!wasPublished) output.delete()
+      throw failure
     }
   }
 
@@ -560,8 +618,9 @@ internal class PdfTranslationService : Service() {
   }
 
   private fun pauseForResources(id: String, message: String) {
-    database.updateJob(id, status = "paused", error = message)
-    updateNotification("Translation paused to protect device resources. Open the app to resume.")
+    if (database.transitionActiveJob(id, "paused", error = message)) {
+      updateNotification("Translation paused to protect device resources. Open the app to resume.")
+    }
   }
 
   private fun isAllocationFailure(message: String): Boolean =

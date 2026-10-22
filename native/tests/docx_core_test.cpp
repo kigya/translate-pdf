@@ -47,7 +47,7 @@ static void writeParts(const fs::path& path,const Parts& parts){
  require(mz_zip_writer_finalize_archive(&z)!=0,"fixture ZIP finalization failed");mz_zip_writer_end(&z);
 }
 static void errorContains(const std::string& response,const std::string& expected){
- const auto value=json::parse(response);require(value.contains("error"),"unsafe fixture was accepted");
+ const auto value=json::parse(response);if(!value.contains("error"))throw std::runtime_error("unsafe fixture was accepted; expected "+expected+"; got "+response);
  if(value["error"].get<std::string>().find(expected)==std::string::npos)throw std::runtime_error("Wrong rejection: "+value.dump()+" expected "+expected);
 }
 // Mutate actual untrusted ZIP central-directory metadata, rather than mocking the parser.
@@ -78,7 +78,7 @@ static void runAdditionalCases(const fs::path& root){
  auto nonZIP=root/"not-zip.docx";{std::ofstream out(nonZIP);out<<std::string(100,'x');}errorContains(translatepdf::inspectDocx(nonZIP.string()),"ZIP");
  auto huge=root/"huge.docx";{std::ofstream out(huge,std::ios::binary);out.seekp(128ull*1024*1024);out.put('x');}errorContains(translatepdf::inspectDocx(huge.string()),"too large");fs::remove(huge);
  for(size_t missing=0;missing<3;++missing){auto copy=parts;copy.erase(copy.begin()+missing);auto path=root/("missing-part-"+std::to_string(missing)+".docx");writeParts(path,copy);errorContains(translatepdf::inspectDocx(path.string()),"valid Word DOCX");}
- auto rejectPart=[&](const std::string& name,size_t index,const std::string& text,const std::string& reason){auto copy=parts;copy[index].second=text;auto path=root/(name+".docx");writeParts(path,copy);errorContains(translatepdf::inspectDocx(path.string()),reason);};
+ auto rejectPart=[&](const std::string& name,size_t index,const std::string& text,const std::string& reason){auto copy=parts;copy[index].second=text;auto path=root/(name+".docx");writeParts(path,copy);try{errorContains(translatepdf::inspectDocx(path.string()),reason);}catch(const std::exception& error){throw std::runtime_error(name+": "+error.what());}};
  rejectPart("wrong-main-type",0,"<Types><Override PartName=\"/other.xml\" ContentType=\"text/plain\"/></Types>","valid Word DOCX document part");
  rejectPart("macro-type",0,"<Types><Override ContentType=\"application/vnd.ms-word.document.macroEnabled.main+xml\"/></Types>","Macro-enabled");
  rejectPart("macro-default",0,"<Types><Default Extension=\"docm\"/></Types>","Macro-enabled");
@@ -165,7 +165,7 @@ static void runAdditionalCases(const fs::path& root){
  for(size_t i=0;i<invalidUtf8.size();++i)rejectPart("invalid-utf8-"+std::to_string(i),2,documentXML("<w:p><w:r><w:t>"+invalidUtf8[i]+"</w:t></w:r></w:p>"),"DOCX contains");
  for(const auto& truncated:std::vector<std::string>{std::string("\xc2",1),std::string("\xe2\x82",2),std::string("\xf0\x9f\x91",3)})rejectPart("truncated-"+std::to_string(truncated.size()),2,documentXML(paragraph)+truncated,"malformed UTF-8");
  // Numeric entities cannot bypass validation to inject NUL, controls, surrogates or overflowing scalars.
- for(const auto& entity:std::vector<std::string>{"&#0;","&#1;","&#11;","&#xD800;","&#xDFFF;","&#xFFFE;","&#xFFFF;","&#x110000;","&#4294967296;","&#99999999999999999999999999999;"})rejectPart("invalid-reference-"+std::to_string(entity.size()),2,documentXML("<w:p><w:r><w:t>before"+entity+"after</w:t></w:r></w:p>"),"DOCX contains");
+ for(const auto& entity:std::vector<std::string>{"&#0;","&#1;","&#11;","&#xD800;","&#xDFFF;","&#xFFFE;","&#xFFFF;","&#x110000;","&#4294967296;","&#99999999999999999999999999999;","&#xg;","&#xG;","&#-1;","&#x@;","&#X41;"})rejectPart("invalid-reference-"+std::to_string(entity.size()),2,documentXML("<w:p><w:r><w:t>before"+entity+"after</w:t></w:r></w:p>"),"DOCX contains");
  auto validReferences=minimalParts("<w:p><w:r><w:t>&#9;&#10;&#13;&#x7F;&#x80;&#x7FF;&#x800;&#xD7FF;&#xE000;&#xFFFD;&#x10000;&#x10FFFF;&#128512;&#x1F600;&amp;#0;</w:t></w:r></w:p>");auto referencesFile=root/"valid-references.docx";writeParts(referencesFile,validReferences);require(parse(translatepdf::inspectDocx(referencesFile.string()))["segmentCount"]==1,"valid XML references were rejected");require(parse(translatepdf::readDocxSegment(referencesFile.string(),0))["blocks"][0]["text"].get<std::string>().find(u8"😀😀&#0;")!=std::string::npos,"valid decimal/hex references or escaped literal reference changed");
  auto literalReferences=minimalParts("<!-- literal &#0; and &#999999999999999999999; --><w:p><w:r><w:t><![CDATA[&#0; &#xD800; &unknown;]]></w:t></w:r></w:p>");auto literalFile=root/"literal-reference-syntax.docx";writeParts(literalFile,literalReferences);require(parse(translatepdf::readDocxSegment(literalFile.string(),0))["blocks"][0]["text"]=="&#0; &#xD800; &unknown;","CDATA/comment literal entity syntax was interpreted as an XML reference");
  rejectPart("invalid-attribute-reference",2,documentXML("<w:p><w:pPr w:tag=\"&#0;\"/></w:p>"),"DOCX contains");
@@ -175,9 +175,9 @@ static void runAdditionalCases(const fs::path& root){
  rejectPart("one-past-maximum-reference",2,documentXML("<w:p><w:r><w:t>&#1114112;</w:t></w:r></w:p>"),"invalid XML character reference");
  auto lowercaseHex=minimalParts("<w:p><w:r><w:t>&#xfffd;</w:t></w:r></w:p>");auto lowercaseFile=root/"lowercase-hex-reference.docx";writeParts(lowercaseFile,lowercaseHex);require(parse(translatepdf::readDocxSegment(lowercaseFile.string(),0))["blocks"][0]["text"]==u8"�","valid lowercase hexadecimal reference changed");
  // Every paragraph boundary strategy must preserve source bytes and grapheme clusters.
- const std::vector<std::string> tails={u8"a\U000e0100",u8"a\ufe10",u8"é",u8"漢",u8"😀",u8"a\u1ab0",u8"a\u1dc0",u8"a\u20d0",u8"a\ufe20",u8"❤️",u8"👍🏽",u8"👩‍💻",u8"🇺🇸🇨🇦", " word ","\tword\t","\nword\n"};
+ const std::vector<std::string> tails={u8"a\U000e0100",u8"a\ufe10",u8"a\ufe0f",u8"a\U0001f3fd",u8"é",u8"漢",u8"😀",u8"a\u1ab0",u8"a\u1dc0",u8"a\u20d0",u8"a\ufe20",u8"a\ufe30",u8"a\U0001f400",u8"a\U000e0200",u8"❤️",u8"👍🏽",u8"👩‍💻",u8"🇺🇸🇨🇦", " word ","\tword\t","\nword\n"};
  for(size_t i=0;i<tails.size();++i){std::string value(1799,'x');value+=tails[i];value+=std::string(100,'z');auto file=root/("unicode-"+std::to_string(i)+".docx");auto fixture=minimalParts("<w:p><w:r><w:t xml:space=\"preserve\">"+value+"</w:t></w:r></w:p>");writeParts(file,fixture);auto count=parse(translatepdf::inspectDocx(file.string()))["segmentCount"].get<int>();std::string recovered;for(int n=0;n<count;++n){auto piece=parse(translatepdf::readDocxSegment(file.string(),n))["blocks"][0]["text"].get<std::string>();require(piece.size()<=1800,"Unicode segment exceeded byte bound");recovered+=piece;}require(recovered==value,"paragraph segmentation dropped Unicode/whitespace");}
- const std::vector<std::string> boundaries={std::string(1796,'x')+u8"👩‍💻",std::string(1793,'x')+u8"👩‍💻",std::string(1792,'x')+u8"🇺🇸🇨🇦",std::string(700,'x')+" "+std::string(1100,'y'),std::string(1200,'x')+" \t\n"+std::string(800,'y'),std::string(1200,'x')+"\t "+std::string(800,'y')};
+ const std::vector<std::string> boundaries={std::string(1796,'x')+u8"👩‍💻",std::string(1793,'x')+u8"👩‍💻",std::string(1792,'x')+u8"🇺🇸🇨🇦",std::string(700,'x')+" "+std::string(1100,'y'),std::string(1200,'x')+" \t\n"+std::string(800,'y'),std::string(1200,'x')+"\t "+std::string(800,'y'),std::string(1200,'x')+"\n "+std::string(800,'y')};
  for(size_t i=0;i<boundaries.size();++i){auto value=boundaries[i]+std::string(100,'z');auto file=root/("boundary-"+std::to_string(i)+".docx");writeParts(file,minimalParts("<w:p><w:r><w:t xml:space=\"preserve\">"+value+"</w:t></w:r></w:p>"));auto count=parse(translatepdf::inspectDocx(file.string()))["segmentCount"].get<int>();std::string recovered;for(int n=0;n<count;++n)recovered+=parse(translatepdf::readDocxSegment(file.string(),n))["blocks"][0]["text"].get<std::string>();require(recovered==value,"boundary preference lost grapheme or whitespace");}
  std::string unbreakable="a";for(int i=0;i<1000;++i)unbreakable+=u8"́";rejectPart("oversized-grapheme",2,documentXML("<w:p><w:r><w:t>"+unbreakable+"</w:t></w:r></w:p>"),"safely split");
 }
@@ -253,6 +253,42 @@ int main(){
   for(int i=0;i<1000;++i)deepBody+="</a>";
   deepBody+="</w:body></w:document>";writeDocx(deep,deepBody);
   expectError(translatepdf::inspectDocx(deep.string()));
+  // Validate the full ZIP member name, not miniz's fixed-size display filename.
+  auto nulParts=minimalParts("<w:p><w:r><w:t>safe</w:t></w:r></w:p>");
+  const std::string nulName="custom/safeXhidden.bin";
+  nulParts.emplace_back(nulName,"opaque");
+  auto nulFile=root/"nul-member.docx";writeParts(nulFile,nulParts);
+  { std::ifstream in(nulFile,std::ios::binary);std::string bytes((std::istreambuf_iterator<char>(in)),{});in.close();
+    size_t at=0;while((at=bytes.find(nulName,at))!=std::string::npos){bytes[at+11]='\0';at+=nulName.size();}
+    std::ofstream out(nulFile,std::ios::binary|std::ios::trunc);out.write(bytes.data(),bytes.size()); }
+  errorContains(translatepdf::inspectDocx(nulFile.string()),"unsafe or duplicate ZIP path");
+  auto longParts=minimalParts("<w:p><w:r><w:t>safe</w:t></w:r></w:p>");
+  longParts.emplace_back("custom/"+std::string(520,'a')+"/../../escape.bin","opaque");
+  auto longFile=root/"long-traversal.docx";writeParts(longFile,longParts);
+  errorContains(translatepdf::inspectDocx(longFile.string()),"unsafe or duplicate ZIP path");
+  auto extraParts=minimalParts("<w:p><w:r><w:t>safe</w:t><w:br w:unrelated=\"x\" w:type=\"textWrapping\"/><w:t>line</w:t><w:br w:type=\"textWrapping\"/></w:r></w:p>");
+  extraParts.emplace_back("a","opaque");extraParts.emplace_back("word/header","opaque");extraParts.emplace_back("word/footer","opaque");extraParts.emplace_back("word/footerExtra.bin","opaque");extraParts.emplace_back("word/altChunkFolder/", "");
+  extraParts.emplace_back("word/header1.xml","<x:header xmlns:x=\"urn:foreign\"/>");
+  auto extraFile=root/"opaque-short-parts.docx";writeParts(extraFile,extraParts);
+  auto extraBlock=parse(translatepdf::readDocxSegment(extraFile.string(),0))["blocks"][0];
+  require(extraBlock["text"]=="safe\nline\n","textWrapping breaks were not extracted");
+  extraBlock["translatedText"]="one\rtwo\r";extraBlock["status"]="translated";
+  auto extraOut=root/"opaque-short-parts-out.docx";parse(translatepdf::exportDocx(extraFile.string(),json::array({extraBlock}).dump(),extraOut.string()));
+  require(parse(translatepdf::readDocxSegment(extraOut.string(),0))["blocks"][0]["text"]=="one\ntwo\n","textWrapping replacement retained duplicate breaks");
+  auto tooLongParts=minimalParts("<w:p><w:r><w:t>safe</w:t></w:r></w:p>");tooLongParts.emplace_back(std::string(4097,'x'),"opaque");auto tooLongFile=root/"oversized-name.docx";writeParts(tooLongFile,tooLongParts);errorContains(translatepdf::inspectDocx(tooLongFile.string()),"ZIP path exceeds");
+  auto boundaryParts=minimalParts("<w:p><w:r><w:t>"+std::string(1796,'a')+u8"🇦"+"end</w:t></w:r></w:p><w:p><w:r><w:t>"+std::string(1200,'x')+"\n"+std::string(800,'y')+"</w:t></w:r></w:p>");
+  auto boundaryFile=root/"line-and-regional-boundary.docx";writeParts(boundaryFile,boundaryParts);require(parse(translatepdf::inspectDocx(boundaryFile.string()))["segmentCount"]==4,"newline/individual regional boundary failed");
+  std::string flags;for(int i=0;i<500;++i)flags+=u8"🇦";
+  boundaryParts[2].second=documentXML("<w:p><w:r><w:t>"+flags+"</w:t></w:r></w:p>");
+  auto flagsFile=root/"all-regional.docx";writeParts(flagsFile,boundaryParts);require(parse(translatepdf::inspectDocx(flagsFile.string()))["segmentCount"]==2,"long regional indicators failed to split");
+  auto crParts=minimalParts("<w:p><w:r><w:t>line\rnext</w:t></w:r></w:p>");auto crFile=root/"raw-carriage-return.docx";writeParts(crFile,crParts);require(parse(translatepdf::readDocxSegment(crFile.string(),0))["blocks"][0]["text"]=="line\nnext","XML carriage return normalization failed");
+  auto incomplete=minimalParts("<w:p><w:r><w:t>safe</w:t></w:r></w:p>");incomplete[2].second+="&#";auto incompleteFile=root/"incomplete-reference.docx";writeParts(incompleteFile,incomplete);errorContains(translatepdf::inspectDocx(incompleteFile.string()),"invalid XML character reference");
+  auto foreign=minimalParts("<w:p><w:r><w:t>source</w:t></w:r></w:p>");
+  foreign[2].second="<x:document xmlns:x=\"urn:foreign\" fake=\""+wordNamespace+"\"><x:body><x:p><x:r><x:t>foreign</x:t></x:r></x:p></x:body></x:document>";
+  auto foreignFile=root/"forged-namespace.docx";writeParts(foreignFile,foreign);errorContains(translatepdf::inspectDocx(foreignFile.string()),"unsupported XML namespace");
+  auto wrongRoot=minimalParts("<w:p><w:r><w:t>source</w:t></w:r></w:p>");wrongRoot[2].second="<w:header xmlns:w=\""+wordNamespace+"\"><w:p><w:r><w:t>wrong root</w:t></w:r></w:p></w:header>";
+  auto wrongRootFile=root/"wrong-document-root.docx";writeParts(wrongRootFile,wrongRoot);errorContains(translatepdf::inspectDocx(wrongRootFile.string()),"unsupported XML namespace");
+  auto emptyNameParts=minimalParts("<w:p><w:r><w:t>safe</w:t></w:r></w:p>");emptyNameParts.emplace_back("empty","opaque");auto emptyNameFile=root/"empty-member-name.docx";writeParts(emptyNameFile,emptyNameParts);patchCentral(emptyNameFile,"empty",32,5,2);patchCentral(emptyNameFile,"empty",28,0,2);errorContains(translatepdf::inspectDocx(emptyNameFile.string()),"unsafe or duplicate ZIP path");
   runAdditionalCases(root);
   fs::remove_all(root);
   std::cout<<"DOCX core round-trip and adversarial checks passed\n";return 0;

@@ -27,6 +27,9 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
   private let translationWork = DispatchQueue(label:"dev.kigya.translatepdf.translation-queue",qos:.userInitiated)
   private let stateLock=NSRecursiveLock()
   private let notificationPermissionLock=NSLock()
+  @available(iOS 26.0,*) private static let continuedTaskRegistrationLock=NSLock()
+  @available(iOS 26.0,*) private static var registeredContinuedTaskIds=Set<String>()
+  @available(iOS 26.0,*) private static var continuedTaskOwners=[String:ContinuedTaskOwner]()
   private var store:TranslatorStore!
   private var downloader:ModelDownloadCoordinator!
   private var pendingImport:RCTPromiseResolveBlock?
@@ -38,11 +41,12 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
   private var activeJobID:String?
   private var pauseRequested=false
   private var cancelRequested=false
+  // A narrow synchronization seam for hosted cancellation/finalization race tests.
+  var beforeFinalizationCommitForTesting: ((String) -> Void)?
   private let onlineTranslator=MyMemoryTranslator()
   private var systemLowMemory=false
   private var backgroundTask:UIBackgroundTaskIdentifier = .invalid
   private var continuedTask:BGTask?
-  private var registeredTaskIds=Set<String>()
   private let onboardingVersion=1
 
   override init(){
@@ -176,7 +180,13 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
         let resource=file.replacingOccurrences(of:"/",with:"__")
         let url=bundle.bundleURL.appendingPathComponent(resource,isDirectory:false)
         guard FileManager.default.fileExists(atPath:url.path) else { throw self.error("A required license notice is unavailable.") }
-        return try String(contentsOf:url,encoding:.utf8)
+        let data=try Data(contentsOf:url)
+        // Some upstream license texts (for example PDFium's FreeType notice) use Windows-1252.
+        // Decode that legacy encoding explicitly instead of failing the whole notice screen.
+        guard let text=String(data:data,encoding:.utf8) ?? String(data:data,encoding:.windowsCP1252) else {
+          throw self.error("A required license notice could not be decoded.")
+        }
+        return text
       }.joined(separator:"\n\n")
     }
   }
@@ -249,7 +259,17 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
     }
   }
   @objc func cancelJob(_ jobId:String,resolver resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
-    run(resolve,reject,"JOB_CANCEL_FAILED") { guard let job=try self.store.job(jobId) else { throw self.error("Translation job was not found.") };self.stateLock.lock();if self.activeJobID==jobId{self.cancelRequested=true;TranslateCoreBridge.cancel();self.onlineTranslator.cancel()};self.stateLock.unlock();if self.activeJobID != jobId { try self.store.updateJob(jobId,status:"canceled",error:"Canceled by the user.") };return try jsonString(try self.store.job(jobId) ?? job) }
+    run(resolve,reject,"JOB_CANCEL_FAILED") {
+      self.stateLock.lock()
+      guard let job=try self.store.job(jobId) else { self.stateLock.unlock();throw self.error("Translation job was not found.") }
+      let status=job["status"] as? String ?? ""
+      let active=self.activeJobID==jobId
+      if active && ["running","queued"].contains(status) { self.cancelRequested=true }
+      self.stateLock.unlock()
+      if active && ["running","queued"].contains(status) { TranslateCoreBridge.cancel();self.onlineTranslator.cancel() }
+      else if !active && ["queued","paused","failed"].contains(status) { try self.store.updateJob(jobId,status:"canceled",error:"Canceled by the user.") }
+      return try jsonString(try self.store.job(jobId) ?? job)
+    }
   }
   @objc func setJobColor(_ jobId:String,color:String,resolver resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
     run(resolve,reject,"JOB_COLOR_SAVE_FAILED"){try jsonString(self.store.setJobColor(jobId,color:color))}
@@ -616,15 +636,16 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
         if let message=checked["error"] as? String{throw error("Page \(index+1) failed PDF verification: \(message)")}
         guard ((checked["width"] as? NSNumber)?.doubleValue ?? 0)>0,((checked["height"] as? NSNumber)?.doubleValue ?? 0)>0 else{throw error("Page \(index+1) has invalid geometry in the saved PDF.")}
       }
-      try checkFinalizationControl(jobId)
       let digest=try sha256(at:pending)
-      try? FileManager.default.removeItem(at:dest)
-      try FileManager.default.moveItem(at:pending,to:dest)
       let sourceLanguage=try TranslationLanguage.pair(source:job["sourceLanguage"] as? String ?? "",target:job["targetLanguage"] as? String ?? "").0
       let targetLanguage=try TranslationLanguage.pair(source:job["sourceLanguage"] as? String ?? "",target:job["targetLanguage"] as? String ?? "").1
       let name=(job["documentName"] as? String ?? "translated.pdf").replacingOccurrences(of:"\\.pdf$",with:"",options:.regularExpression)+"-\(sourceLanguage.rawValue)-to-\(targetLanguage.rawValue).pdf"
-      try store.saveExport(jobId,path:dest.path,name:name,sha256:digest)
-      var protected=URLResourceValues();protected.isExcludedFromBackup=true;var copy=dest;try? copy.setResourceValues(protected)
+      try commitFinalizedExport(jobId) {
+        try? FileManager.default.removeItem(at:dest)
+        try FileManager.default.moveItem(at:pending,to:dest)
+        try store.saveExport(jobId,path:dest.path,name:name,sha256:digest)
+        var protected=URLResourceValues();protected.isExcludedFromBackup=true;var copy=dest;try? copy.setResourceValues(protected)
+      }
       return(jobId,dest,name)
     } catch {
       try? FileManager.default.removeItem(at:pending)
@@ -656,6 +677,7 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
     }
     let pending=AppPaths.exports.appendingPathComponent("\(jobId).pending.docx")
     let destination=AppPaths.exports.appendingPathComponent("\(jobId).docx")
+    defer { try? FileManager.default.removeItem(at:pending) }
     try? FileManager.default.removeItem(at:pending)
     let result=try jsonObject(TranslateCoreBridge.exportDocx(source,segmentsJSON:try jsonString(segments),destination:pending.path))
     if let message=result["error"] as? String { throw error(message) }
@@ -666,12 +688,51 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
     if let message=check["error"] as? String { throw error(message) }
     guard ((check["segmentCount"] as? NSNumber)?.intValue ?? 0)>0 else { throw error("The saved Word document contains no readable text segments.") }
     let digest=try sha256(at:pending)
-    try? FileManager.default.removeItem(at:destination);try FileManager.default.moveItem(at:pending,to:destination)
     let languages=try TranslationLanguage.pair(source:job["sourceLanguage"] as? String ?? "",target:job["targetLanguage"] as? String ?? "")
     let base=(job["documentName"] as? String ?? "translated.docx").replacingOccurrences(of:"\\.docx$",with:"",options:.regularExpression)
     let name="\(base)-\(languages.0.rawValue)-to-\(languages.1.rawValue).docx"
-    try store.saveExport(exportId,path:destination.path,name:name,sha256:digest)
+    try commitFinalizedExport(jobId) {
+      try? FileManager.default.removeItem(at:destination)
+      try FileManager.default.moveItem(at:pending,to:destination)
+      try store.saveExport(exportId,path:destination.path,name:name,sha256:digest)
+    }
     return(jobId,destination,name)
+  }
+
+  private func commitFinalizedExport(_ jobId:String,_ commit:() throws->Void)throws {
+    beforeFinalizationCommitForTesting?("export")
+    stateLock.lock();defer{stateLock.unlock()}
+    guard activeJobID==jobId else{throw PauseSignal()}
+    if cancelRequested { throw CancelSignal() }
+    if pauseRequested { throw PauseSignal() }
+    try commit()
+  }
+
+  private func finishFinalization(_ jobId:String,total:Int,completed:Int,partial:Bool)throws->Bool {
+    beforeFinalizationCommitForTesting?("terminal")
+    stateLock.lock();defer{stateLock.unlock()}
+    guard activeJobID==jobId else{throw PauseSignal()}
+    let succeeded = !cancelRequested && !pauseRequested
+    if cancelRequested {
+      try discardFinalizedExports(jobId)
+      try store.updateJob(jobId,status:"canceled",stage:"complete",clearCurrentPage:true,error:"Canceled by the user.")
+    } else if pauseRequested {
+      try store.updateJob(jobId,status:"paused",stage:"queued",completed:min(completed,max(0,total-1)),clearCurrentPage:true,error:"Paused after the latest saved page checkpoint.")
+    } else {
+      try store.updateJob(jobId,status:partial ? "partial":"completed",stage:"complete",completed:total,clearCurrentPage:true,clearError:true)
+    }
+    activeJobID=nil;pauseRequested=false;cancelRequested=false
+    return succeeded
+  }
+
+  private func discardFinalizedExports(_ jobId:String)throws {
+    for exportId in [jobId,"\(jobId):docx"] {
+      if let row=try store.export(exportId),let path=row["path"] as? String {
+        let url=URL(fileURLWithPath:path).standardizedFileURL
+        if url.deletingLastPathComponent()==AppPaths.exports.standardizedFileURL { try? FileManager.default.removeItem(at:url) }
+      }
+      try store.deleteExport(exportId)
+    }
   }
 
   private func normalizedWarnings(_ value:Any?)->[[String:Any]] {
@@ -753,7 +814,15 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
   private func beginBackgroundExecution(jobID:String){DispatchQueue.main.async{self.backgroundTask=UIApplication.shared.beginBackgroundTask(withName:"PDF translation \(jobID)"){[weak self] in guard let self else{return};self.requestPause(jobID:jobID,reason:"iOS ended the available background execution window; saved pages are ready to resume.")}}}
   private func endBackgroundExecution(){DispatchQueue.main.async{if self.backgroundTask != .invalid{UIApplication.shared.endBackgroundTask(self.backgroundTask);self.backgroundTask = .invalid}}}
   @objc private func applicationDidBecomeActive(){stateLock.lock();let id=activeJobID;let shouldResume=pauseRequested && !cancelRequested;systemLowMemory=false;stateLock.unlock();if shouldResume,let id { work.async{self.resumeAfterForeground(id)} }}
-  private func requestPause(jobID:String,reason:String){stateLock.lock();pauseRequested=true;TranslateCoreBridge.cancel();onlineTranslator.cancel();stateLock.unlock();try? store.updateJob(jobID,status:"paused",error:reason);continuedTask?.setTaskCompleted(success:false);continuedTask=nil}
+  private func requestPause(jobID:String,reason:String){
+    stateLock.lock()
+    guard activeJobID==jobID,!cancelRequested else{stateLock.unlock();return}
+    pauseRequested=true
+    TranslateCoreBridge.cancel();onlineTranslator.cancel()
+    stateLock.unlock()
+    try? store.updateJob(jobID,status:"paused",error:reason)
+    continuedTask?.setTaskCompleted(success:false);continuedTask=nil
+  }
   private func resumeAfterForeground(_ id:String){
     stateLock.lock()
     guard pauseRequested,!cancelRequested else{stateLock.unlock();return}
@@ -876,6 +945,7 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
       }
       stateLock.lock();let wasCanceled=cancelRequested,wasPaused=pauseRequested;stateLock.unlock()
       if modelLoaded {TranslateCoreBridge.releaseModel()}
+      var succeeded=false
       if wasCanceled{try store.updateJob(id,status:"canceled",stage:"complete",clearCurrentPage:true,error:"Canceled by the user.")}
       else if wasPaused{try store.updateJob(id,status:"paused",stage:"queued",clearCurrentPage:true,error:"Paused after the latest saved page checkpoint.")}
       else {
@@ -888,10 +958,10 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
           throw error("The translated document does not have a saved checkpoint for every source page or text segment.")
         }
         let hasPartial=rows.contains{($0["status"] as? String)=="partial"}
-        try store.updateJob(id,status:hasPartial ? "partial":"completed",stage:"complete",completed:count,clearCurrentPage:true,clearError:true)
+        succeeded=try finishFinalization(id,total:count,completed:count,partial:hasPartial)
         if #available(iOS 26.0,*),let continued=continuedTask as? BGContinuedProcessingTask {continued.progress.completedUnitCount=Int64(count)}
       }
-      continuedTask?.setTaskCompleted(success:!wasCanceled && !wasPaused);continuedTask=nil
+      continuedTask?.setTaskCompleted(success:succeeded);continuedTask=nil
     }catch let signal as PauseSignal {
       let total=(try? store.job(id)?["totalPages"] as? NSNumber)?.intValue ?? 0
       let done=(try? store.job(id)?["completedPages"] as? NSNumber)?.intValue ?? 0
@@ -927,24 +997,48 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
   }
   private func overlaps(_ blocks:[[String:Any]],left:Double,top:Double,right:Double,bottom:Double)->Bool{for b in blocks{let l=(b["left"] as? NSNumber)?.doubleValue ?? 0,t=(b["top"] as? NSNumber)?.doubleValue ?? 0,r=(b["right"] as? NSNumber)?.doubleValue ?? 0,bt=(b["bottom"] as? NSNumber)?.doubleValue ?? 0;let area=max((r-l)*(bt-t),(right-left)*(bottom-top),1);let intersection=max(0,min(r,right)-max(l,left))*max(0,min(bt,bottom)-max(t,top));if intersection/area>0.45{return true}};return false}
 
-  @available(iOS 26.0,*) private func scheduleContinuedProcessing(jobID:String,documentName:String){
+  @available(iOS 26.0,*) func scheduleContinuedProcessing(jobID:String,documentName:String){
     let bundle=Bundle.main.bundleIdentifier ?? "dev.kigya.translatepdf",identifier="\(bundle).continuedProcessing.\(jobID)"
-    if !registeredTaskIds.contains(identifier){
-      registeredTaskIds.insert(identifier)
-      _=BGTaskScheduler.shared.register(forTaskWithIdentifier:identifier,using:nil){[weak self] task in
-        guard let self,let continued=task as? BGContinuedProcessingTask else{task.setTaskCompleted(success:false);return}
-        continued.expirationHandler={[weak self] in self?.requestPause(jobID:jobID,reason:"iOS ended continued processing; completed pages are saved.")}
-        self.continuedTask=continued
-        self.translationWork.async{if self.activeJobID != jobID{self.processJob(jobID)}}
+    Self.continuedTaskRegistrationLock.lock()
+    Self.continuedTaskOwners[identifier]=ContinuedTaskOwner(self)
+    let shouldRegister = !Self.registeredContinuedTaskIds.contains(identifier)
+    let canSubmit: Bool
+    if shouldRegister {
+      let registered=BGTaskScheduler.shared.register(forTaskWithIdentifier:identifier,using:nil){ task in
+        Self.continuedTaskRegistrationLock.lock()
+        let owner=Self.continuedTaskOwners[identifier]?.module
+        Self.continuedTaskRegistrationLock.unlock()
+        guard let self=owner,let continued=task as? BGContinuedProcessingTask else{task.setTaskCompleted(success:false);return}
+        self.handleContinuedProcessing(continued,jobID:jobID)
       }
+      if registered { Self.registeredContinuedTaskIds.insert(identifier) }
+      canSubmit=registered
+    } else {
+      canSubmit=true
     }
+    Self.continuedTaskRegistrationLock.unlock()
+    guard canSubmit else { NSLog("Could not register continued processing for the active job.");return }
     let title="Translating PDF",subtitle=String(documentName.prefix(60))
     let request=BGContinuedProcessingTaskRequest(identifier:identifier,title:title,subtitle:subtitle)
     request.strategy = .queue
     do{try BGTaskScheduler.shared.submit(request)}catch{NSLog("Could not schedule continued processing: %@",error.localizedDescription)}
   }
+  @available(iOS 26.0,*) static func continuedTaskOwner(for identifier:String)->PdfTranslatorModule?{
+    continuedTaskRegistrationLock.lock();defer{continuedTaskRegistrationLock.unlock()}
+    return continuedTaskOwners[identifier]?.module
+  }
+  @available(iOS 26.0,*) private func handleContinuedProcessing(_ continued:BGContinuedProcessingTask,jobID:String){
+    continued.expirationHandler={[weak self] in self?.requestPause(jobID:jobID,reason:"iOS ended continued processing; completed pages are saved.")}
+    self.continuedTask=continued
+    self.translationWork.async{if self.activeJobID != jobID{self.processJob(jobID)}}
+  }
   @available(iOS 26.0,*) private func finishContinuedTask(success:Bool){continuedTask?.setTaskCompleted(success:success);continuedTask=nil}
 
+}
+
+@available(iOS 26.0,*) private final class ContinuedTaskOwner {
+  weak var module:PdfTranslatorModule?
+  init(_ module:PdfTranslatorModule){self.module=module}
 }
 
 extension PdfTranslatorModule: UIDocumentPickerDelegate {

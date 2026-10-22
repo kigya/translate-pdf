@@ -79,14 +79,17 @@ check_android() {
     printf 'JDK 21 is required; found %s.\n' "${java_major:-unknown}" >&2
     return 1
   fi
+  local java_home
+  java_home="$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.home = //p')"
+  [[ -d "$java_home" ]] || { printf 'Cannot resolve the checked JDK home.\n' >&2; return 1; }
   install_js_dependencies || return 1
   python3 scripts/setup-native.py --platforms android-arm64 || return 1
   export NODE_BINARY="$(command -v node)"
 
   local result=0
-  android/gradlew -p android --no-daemon --stacktrace :app:check || result=1
-  android/gradlew -p android --no-daemon --stacktrace :app:lintRelease || result=1
-  android/gradlew -p android --no-daemon --stacktrace :app:assembleRelease || result=1
+  android/gradlew -p android --no-daemon "-Dorg.gradle.java.home=$java_home" --stacktrace :app:check || result=1
+  android/gradlew -p android --no-daemon "-Dorg.gradle.java.home=$java_home" --stacktrace :app:lintRelease || result=1
+  android/gradlew -p android --no-daemon "-Dorg.gradle.java.home=$java_home" --stacktrace :app:assembleRelease || result=1
   return "$result"
 }
 
@@ -235,6 +238,7 @@ check_native() {
   xcrun llvm-cov report "$build_dir/native-smoke" \
     --object "$build_dir/translation-guard-test" \
     --object "$build_dir/jni-bridge-test" \
+    --object "$build_dir/docx-fault-test" \
     -instr-profile="$build_dir/coverage/coverage.profdata" \
     -ignore-filename-regex='(llama\.cpp|pdfium|\.local-private)' \
     > "$build_dir/coverage/llvm-cov-report.txt" || result=1
@@ -242,6 +246,7 @@ check_native() {
   xcrun llvm-cov export "$build_dir/native-smoke" \
     --object "$build_dir/translation-guard-test" \
     --object "$build_dir/jni-bridge-test" \
+    --object "$build_dir/docx-fault-test" \
     -instr-profile="$build_dir/coverage/coverage.profdata" \
     -ignore-filename-regex='(llama\.cpp|pdfium|\.local-private)' \
     > "$build_dir/coverage/llvm-cov-export.json" || result=1

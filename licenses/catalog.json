@@ -120,7 +120,22 @@
       ],
       "files": [
         "react-native-skia/LICENSE.md",
-        "react-native-skia-upstream-LICENSE"
+        "react-native-skia-upstream-LICENSE",
+        "react-native-skia/third-party/expat/COPYING",
+        "react-native-skia/third-party/harfbuzz/COPYING",
+        "react-native-skia/third-party/libjpeg-turbo/LICENSE.md",
+        "react-native-skia/third-party/libjpeg-turbo/README.ijg",
+        "react-native-skia/third-party/libpng/LICENSE",
+        "react-native-skia/third-party/libwebp/COPYING",
+        "react-native-skia/third-party/libwebp/PATENTS",
+        "react-native-skia/third-party/zlib/LICENSE",
+        "react-native-skia/third-party/piex/LICENSE",
+        "react-native-skia/third-party/dng_sdk/NOTICE",
+        "react-native-skia/third-party/dng_sdk/PATENTS",
+        "react-native-skia/third-party/wuffs/LICENSE",
+        "react-native-skia/third-party/wuffs/SKIA-LICENSE",
+        "react-native-skia/third-party/CSSColorParser/NOTICE",
+        "react-native-skia/third-party/wrapper/NOTICE"
       ]
     },
     {
@@ -347,6 +362,79 @@
         "js-runtime-current/ungap-structured-clone-LICENSE",
         "js-runtime-current/warn-once-LICENSE",
         "js-runtime-current/whatwg-url-minimum-LICENSE.md"
+      ]
+    },
+    {
+      "id": "skia-android",
+      "title": "Skia \u00b7 Android libraries",
+      "platforms": [
+        "android"
+      ],
+      "files": [
+        "react-native-skia/third-party/freetype/LICENSE.TXT",
+        "react-native-skia/third-party/freetype/docs/FTL.TXT",
+        "react-native-skia/third-party/cpu-features/NOTICE"
+      ]
+    },
+    {
+      "id": "skia-ios",
+      "title": "Skia \u00b7 iOS libraries",
+      "platforms": [
+        "ios"
+      ],
+      "files": [
+        "react-native-skia/third-party/icu/LICENSE",
+        "react-native-skia/third-party/libgrapheme/LICENSE"
+      ]
+    },
+    {
+      "id": "native-runtime-common",
+      "title": "React Native native runtime dependencies",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "native-runtime/common/Apache-2.0.txt",
+        "native-runtime/common/boost-LICENSE.txt",
+        "native-runtime/common/double-conversion-LICENSE.txt",
+        "native-runtime/common/glog-COPYING.txt",
+        "native-runtime/common/fmt-LICENSE.txt",
+        "native-runtime/common/glog-NOTICE.txt"
+      ]
+    },
+    {
+      "id": "native-runtime-android",
+      "title": "Android runtime dependencies",
+      "platforms": [
+        "android"
+      ],
+      "files": [
+        "native-runtime/android/commons-io-NOTICE.txt",
+        "native-runtime/android/commons-codec-NOTICE.txt",
+        "native-runtime/android/okhttp-psl-NOTICE.txt",
+        "native-runtime/android/MPL-2.0.txt",
+        "native-runtime/android/okhttp-psl-SOURCE.txt",
+        "native-runtime/android/bolts-LICENSE.txt",
+        "native-runtime/android/zstd-LICENSE.txt",
+        "native-runtime/android/expo-v2-LICENSE.txt",
+        "native-runtime/android/pika-LICENSE.txt",
+        "native-runtime/android/brotli-LICENSE.txt",
+        "native-runtime/android/brotli-NOTICE.txt",
+        "native-runtime/android/libcxx-LICENSE.txt",
+        "native-runtime/android/jpeg-turbo-LICENSE.md",
+        "native-runtime/android/jpeg-turbo-README.ijg"
+      ]
+    },
+    {
+      "id": "native-runtime-ios",
+      "title": "iOS native runtime dependencies",
+      "platforms": [
+        "ios"
+      ],
+      "files": [
+        "native-runtime/ios/socketrocket-LICENSE.txt",
+        "native-runtime/ios/socketrocket-NOTICE.txt"
       ]
     }
   ]

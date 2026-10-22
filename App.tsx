@@ -2,7 +2,7 @@ import { ReviewLayout, ReviewColumn } from './src/ui/ReviewLayout';
 import { TranslationActivity } from './src/ui/TranslationActivity';
 import { UiLocaleContext } from './src/i18n/UiLocaleContext';
 import { WordResultScreen } from './src/screens/WordResultScreen';
-import { useLocalSearchParams, router } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { KinetikProvider } from './src/lib/kinetik/tokens/theme';
 import { usePaletteTransition } from './src/ui/usePaletteTransition';
 import { LiquidTabs } from './src/components/kinetik/liquid-tabs';
@@ -159,9 +159,10 @@ function AppContent() {
   // a non-null snapshot, including across refresh failures.
   const [snapshot, setSnapshot] = useState<BootstrapSnapshot | null>(null);
   const [bootstrapError, setBootstrapError] = useState('');
+  const router = useRouter();
   const { screen } = useLocalSearchParams<{ screen?: Route }>();
   const route: Route = screen ?? 'home';
-  const setRoute = (next: Route) => router.setParams({ screen: next });
+  const setRoute = useCallback((next: Route) => router.setParams({ screen: next }), [router]);
   const routeStack = useRef<Route[]>([]);
   const [selectedDocument, setSelectedDocument] =
     useState<DocumentSnapshot | null>(null);
@@ -390,7 +391,7 @@ function AppContent() {
       },
     );
     return () => subscription.remove();
-  }, [showIntro, route]);
+  }, [showIntro, route, setRoute]);
   const safely = async <T,>(
     operation: () => Promise<T>,
     success?: (value: T) => void,

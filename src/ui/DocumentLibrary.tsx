@@ -83,7 +83,7 @@ export function DocumentLibrary({ colors, t, locale, busy, snapshot, model, onTr
     <Sheet visible={!!colorJob} title={l('documentColor')} onClose={() => { if (!saving) setColorJob(null); }} closeLabel={t('back')} colors={colors}>
       <Notice colors={colors} text={error} />
       <Text style={{ color: colors.text, fontWeight: '600' }}>{colorJob?.documentName}</Text>
-      <SwatchPicker value={documentColors.find(c => c.id === colorJob?.labelColor)?.hex ?? ''} accessibilityLabel={l('documentColor')} swatches={documentColors.map(c => ({ value: c.hex, label: l(c.id) }))} onValueChange={hex => { const color = documentColors.find(c => c.hex === hex); if (color) void saveColor(color.id); }} />
+      <SwatchPicker value={documentColors.find(c => c.id === colorJob?.labelColor)?.hex ?? ''} accessibilityLabel={l('documentColor')} swatches={documentColors.map(c => ({ value: c.hex, label: l(c.id) }))} onValueChange={hex => { void saveColor(documentColors.find(c => c.hex === hex)!.id); }} />
       <Button label={l('noColor')} disabled={saving} colors={colors} variant="secondary" onPress={() => void saveColor(null)} />
     </Sheet>
   </ScrollView>;

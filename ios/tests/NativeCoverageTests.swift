@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import BackgroundTasks
 import UserNotifications
 import React
 import ObjectiveC
@@ -38,6 +39,46 @@ final class NativeCoverageTests: XCTestCase {
   private func decoded(_ value: Any?) throws -> [String: Any] {
     let string = try XCTUnwrap(value as? String)
     return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(string.utf8)) as? [String: Any])
+  }
+
+  private func storedZip(_ entries: [(String, String)]) -> Data {
+    func u16(_ value: UInt16, into data: inout Data) {
+      data.append(UInt8(value & 0xff)); data.append(UInt8(value >> 8))
+    }
+    func u32(_ value: UInt32, into data: inout Data) {
+      u16(UInt16(value & 0xffff), into: &data); u16(UInt16(value >> 16), into: &data)
+    }
+    func crc32(_ data: Data) -> UInt32 {
+      var crc: UInt32 = 0xffff_ffff
+      for byte in data {
+        crc ^= UInt32(byte)
+        for _ in 0..<8 { crc = (crc & 1) == 1 ? (crc >> 1) ^ 0xedb8_8320 : crc >> 1 }
+      }
+      return ~crc
+    }
+    var result = Data()
+    var central = Data()
+    for (name, text) in entries {
+      let filename = Data(name.utf8), contents = Data(text.utf8)
+      let checksum = crc32(contents), offset = UInt32(result.count)
+      u32(0x0403_4b50, into: &result); u16(20, into: &result); u16(0, into: &result)
+      u16(0, into: &result); u16(0, into: &result); u16(0, into: &result)
+      u32(checksum, into: &result); u32(UInt32(contents.count), into: &result); u32(UInt32(contents.count), into: &result)
+      u16(UInt16(filename.count), into: &result); u16(0, into: &result); result.append(filename); result.append(contents)
+
+      u32(0x0201_4b50, into: &central); u16(20, into: &central); u16(20, into: &central)
+      u16(0, into: &central); u16(0, into: &central); u16(0, into: &central); u16(0, into: &central)
+      u32(checksum, into: &central); u32(UInt32(contents.count), into: &central); u32(UInt32(contents.count), into: &central)
+      u16(UInt16(filename.count), into: &central); u16(0, into: &central); u16(0, into: &central)
+      u16(0, into: &central); u16(0, into: &central); u32(0, into: &central); u32(offset, into: &central)
+      central.append(filename)
+    }
+    let centralOffset = UInt32(result.count)
+    result.append(central)
+    u32(0x0605_4b50, into: &result); u16(0, into: &result); u16(0, into: &result)
+    u16(UInt16(entries.count), into: &result); u16(UInt16(entries.count), into: &result)
+    u32(UInt32(central.count), into: &result); u32(centralOffset, into: &result); u16(0, into: &result)
+    return result
   }
 
   private func terminalJob(_ id: String, store: TranslatorStore, timeout: TimeInterval = 240) throws -> [String: Any] {
@@ -109,6 +150,8 @@ final class NativeCoverageTests: XCTestCase {
     let rebuilt = try terminalJob(runningID, store: store)
     XCTAssertTrue(["completed", "partial"].contains(rebuilt["status"] as? String ?? ""), "Saved page assembly failed: \(rebuilt)")
     XCTAssertEqual(try decoded(TranslateCoreBridge.inspect(exported.path))["pageCount"] as? Int, 1)
+    _ = try resolved { module.cancelJob(runningID, resolver: $0, rejecter: $1) }
+    XCTAssertTrue(["completed", "partial"].contains(try store.job(runningID)?["status"] as? String ?? ""), "A late cancel must not overwrite an already committed result")
     // Reopening a valid result must preserve it, while real corruption must be
     // recovered as a pause rather than a completed job with an invalid PDF.
     _ = PdfTranslatorModule()
@@ -276,6 +319,8 @@ final class NativeCoverageTests: XCTestCase {
     XCTAssertEqual(ids.count, Set(ids).count)
     XCTAssertTrue(Set(ids).isSuperset(of: ["react", "react-native", "pdfium", "docx-preview", "hy-mt2-7b", "translategemma-4b"]))
     XCTAssertFalse(ids.contains { $0.contains("/") || $0.contains("..") || $0.contains("cpp-httplib") || $0.contains("new-app-screen") || $0.contains("iq3") || $0.contains("iq2") })
+    let pdfiumNotice = try XCTUnwrap(try resolved { module.getLicenseNotice("pdfium", resolver: $0, rejecter: $1) } as? String)
+    XCTAssertTrue(pdfiumNotice.contains("copyright © <year> The FreeType"))
     for notice in notices {
       let id = try XCTUnwrap(notice["id"])
       let text = try XCTUnwrap(try resolved { module.getLicenseNotice(id, resolver: $0, rejecter: $1) } as? String)
@@ -284,6 +329,236 @@ final class NativeCoverageTests: XCTestCase {
     for invalid in ["", "../Info.plist", "a/b", "a\\b", "unknown.txt"] {
       rejected("LICENSE_READ_FAILED") { module.getLicenseNotice(invalid, resolver: $0, rejecter: $1) }
     }
+  }
+
+  func testMyMemoryTranslatorHandlesSuccessQuotaAndInvalidResponses() throws {
+    MyMemoryURLProtocol.configure(status: 200, body: #"{"responseStatus":200,"responseData":{"translatedText":"<g id=\"1\">bonjour</g> &amp; salut"}}"#)
+    let translated = try MyMemoryTranslator(protocolClasses: [MyMemoryURLProtocol.self]).translate("  hello  ", source: "en", target: "fr")
+    XCTAssertEqual(translated, "  bonjour & salut  ")
+
+    MyMemoryURLProtocol.configure(status: 429, body: #"{"responseStatus":429,"responseDetails":"quota limit"}"#)
+    XCTAssertThrowsError(try MyMemoryTranslator(protocolClasses: [MyMemoryURLProtocol.self]).translate("hello", source: "en", target: "fr")) {
+      XCTAssertEqual($0 as? MyMemoryTranslator.Failure, .quota)
+    }
+
+    MyMemoryURLProtocol.configure(status: 503, body: "not-json")
+    XCTAssertThrowsError(try MyMemoryTranslator(protocolClasses: [MyMemoryURLProtocol.self]).translate("hello", source: "en", target: "fr")) {
+      XCTAssertEqual($0 as? MyMemoryTranslator.Failure, .unavailable)
+    }
+
+    MyMemoryURLProtocol.configure(status: 200, body: #"{"responseStatus":200,"responseData":{}}"#)
+    XCTAssertThrowsError(try MyMemoryTranslator(protocolClasses: [MyMemoryURLProtocol.self]).translate("hello", source: "en", target: "fr")) {
+      XCTAssertEqual($0 as? MyMemoryTranslator.Failure, .invalidResponse)
+    }
+  }
+
+  func testMyMemoryTranslatorRejectsChunkedOversizedResponseBeforeUnboundedAccumulation() throws {
+    MyMemoryURLProtocol.configure(status: 200, body: String(repeating: "x", count: 256_001), contentLength: "1")
+    XCTAssertThrowsError(try MyMemoryTranslator(protocolClasses: [MyMemoryURLProtocol.self]).translate("hello", source: "en", target: "fr")) {
+      XCTAssertEqual($0 as? MyMemoryTranslator.Failure, .invalidResponse)
+    }
+  }
+
+  func testMyMemoryChunkBoundariesFailuresAndRedirectAllowlist() throws {
+    XCTAssertEqual(try MyMemoryTranslator.chunks("a.\r\n你好"), ["a.", "\r\n", "你好"])
+    XCTAssertEqual(try MyMemoryTranslator.chunks("a.b", byteLimit: 2), ["a.", "b"])
+    let bounded = try MyMemoryTranslator.chunks(String(repeating: "x", count: 501))
+    XCTAssertEqual(bounded.map(\.utf8.count), [500, 1])
+    XCTAssertEqual(try MyMemoryTranslator.chunks("ignored", byteLimit: 0), [])
+    XCTAssertThrowsError(try MyMemoryTranslator.chunks("🙂", byteLimit: 3)) {
+      XCTAssertEqual($0 as? MyMemoryTranslator.Failure, .oversizedCharacter)
+    }
+    for failure in [MyMemoryTranslator.Failure.unavailable, .quota, .invalidResponse, .canceled, .oversizedCharacter] {
+      XCTAssertFalse(failure.errorDescription?.isEmpty ?? true)
+    }
+
+    let translator = MyMemoryTranslator(protocolClasses: [MyMemoryURLProtocol.self])
+    translator.cancel() // Cancelling before any request is a safe no-op.
+    let session = URLSession(configuration: .ephemeral)
+    defer { session.invalidateAndCancel() }
+    let task = session.dataTask(with: URL(string: "https://example.invalid/not-started")!)
+    let allowedURL = URL(string: "https://api.mymemory.translated.net/redirect")!
+    let blockedURL = URL(string: "https://api.mymemory.translated.net.evil.invalid/redirect")!
+    let response = try XCTUnwrap(HTTPURLResponse(url: task.originalRequest!.url!, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: nil))
+    var allowed: URLRequest?
+    translator.urlSession(session, task: task, willPerformHTTPRedirection: response,
+                          newRequest: URLRequest(url: allowedURL)) { allowed = $0 }
+    XCTAssertEqual(allowed?.url, allowedURL)
+    var blocked: URLRequest?
+    translator.urlSession(session, task: task, willPerformHTTPRedirection: response,
+                          newRequest: URLRequest(url: blockedURL)) { blocked = $0 }
+    XCTAssertNil(blocked)
+  }
+
+  func testMyMemoryRejectsDeclaredOversizeAndStaleCallbacksAndCancelsActiveRequest() throws {
+    MyMemoryURLProtocol.configure(status: 200,
+                                  body: #"{"responseStatus":200,"responseData":{"translatedText":"ok"}}"#,
+                                  contentLength: "256001")
+    XCTAssertThrowsError(try MyMemoryTranslator(protocolClasses: [MyMemoryURLProtocol.self]).translate("hello", source: "en", target: "fr")) {
+      XCTAssertEqual($0 as? MyMemoryTranslator.Failure, .invalidResponse)
+    }
+
+    let translator = MyMemoryTranslator(protocolClasses: [MyMemoryURLProtocol.self])
+    let session = URLSession(configuration: .ephemeral)
+    defer { session.invalidateAndCancel() }
+    let stale = session.dataTask(with: URL(string: "https://api.mymemory.translated.net/not-started")!)
+    var disposition: URLSession.ResponseDisposition?
+    translator.urlSession(session, dataTask: stale,
+                          didReceive: URLResponse(url: stale.originalRequest!.url!, mimeType: nil,
+                                                  expectedContentLength: -1, textEncodingName: nil)) { disposition = $0 }
+    XCTAssertEqual(disposition, .cancel)
+    translator.urlSession(session, dataTask: stale, didReceive: Data("late".utf8))
+    translator.urlSession(session, task: stale, didCompleteWithError: nil)
+
+    MyMemoryURLProtocol.configureHeld()
+    let canceled = expectation(description: "active MyMemory request completes after cancel")
+    var outcome: Result<String, Error>?
+    DispatchQueue.global().async {
+      do { outcome = .success(try translator.translate("hello", source: "en", target: "fr")) }
+      catch { outcome = .failure(error) }
+      canceled.fulfill()
+    }
+    XCTAssertTrue(MyMemoryURLProtocol.waitForHeldRequest(timeout: 3), "the URLProtocol must observe the request before cancellation")
+    translator.cancel()
+    wait(for: [canceled], timeout: 3)
+    guard case .failure(let error) = outcome else {
+      XCTFail("A canceled online request must fail rather than return a translation")
+      return
+    }
+    XCTAssertEqual(error as? MyMemoryTranslator.Failure, .canceled)
+  }
+
+  func testMyMemoryParserCoversQuotaDetailsAndInvalidUnicodeEntities() throws {
+    guard case .failure(let invalid) = MyMemoryTranslator.parseResponse(Data("not json".utf8)) else {
+      XCTFail("Malformed provider JSON must fail")
+      return
+    }
+    XCTAssertEqual(invalid, .invalidResponse)
+    let quotaResponses = [
+      #"{"responseStatus":200,"quotaFinished":"true"}"#,
+      #"{"responseStatus":200,"quotaFinished":true}"#,
+      #"{"responseStatus":200,"responseDetails":"limit reached"}"#,
+      #"{"responseStatus":200,"responseDetails":"all available free translation requests"}"#,
+      #"{"responseStatus":200,"responseDetails":"daily request limit"}"#,
+    ]
+    for body in quotaResponses {
+      guard case .failure(let error) = MyMemoryTranslator.parseResponse(Data(body.utf8)) else {
+        XCTFail("Expected quota result from \(body)")
+        continue
+      }
+      XCTAssertEqual(error, .quota)
+    }
+    guard case .failure(let blank) = MyMemoryTranslator.parseResponse(
+      Data(#"{"responseStatus":200,"responseData":{"translatedText":"   "}}"#.utf8)) else {
+      XCTFail("Blank provider translations must fail")
+      return
+    }
+    XCTAssertEqual(blank, .invalidResponse)
+    guard case .success(let decoded) = MyMemoryTranslator.parseResponse(
+      Data(#"{"responseStatus":200,"responseData":{"translatedText":"&#169; &#xD800; &#99999999;"}}"#.utf8)) else {
+      XCTFail("Expected successful HTML entity decoding")
+      return
+    }
+    XCTAssertEqual(decoded, "© &#xD800; &#99999999;")
+  }
+
+  func testModelCatalogLanguagesRecommendationsAndResourceBoundaries() throws {
+    let expected = [
+      "ru": ("Russian", "ru-RU"), "zh-Hans": ("Chinese (Simplified)", "zh-Hans"),
+      "fr": ("French", "fr-FR"), "en": ("English", "en-US"),
+      "de": ("German", "de-DE"), "es": ("Spanish", "es-ES"),
+    ]
+    XCTAssertEqual(Set(TranslationLanguage.allCases.map(\.rawValue)), Set(expected.keys))
+    for language in TranslationLanguage.allCases {
+      XCTAssertEqual(language.displayName, expected[language.rawValue]?.0)
+      XCTAssertEqual(language.visionLocale, expected[language.rawValue]?.1)
+    }
+    for source in TranslationLanguage.allCases {
+      for target in TranslationLanguage.allCases where source != target {
+        let pair = try TranslationLanguage.pair(source: source.rawValue, target: target.rawValue)
+        XCTAssertEqual(pair.0, source); XCTAssertEqual(pair.1, target)
+      }
+      XCTAssertThrowsError(try TranslationLanguage.pair(source: source.rawValue, target: source.rawValue))
+    }
+    XCTAssertThrowsError(try TranslationLanguage.pair(source: "unknown", target: "en"))
+
+    for model in ModelCatalog.models {
+      XCTAssertTrue(model.url.absoluteString.contains(model.revision))
+      XCTAssertTrue(model.url.lastPathComponent.contains(model.fileName))
+      XCTAssertEqual(try ModelCatalog.get(model.id).id, model.id)
+      let snapshot = model.snapshot(status: "ready", downloadedBytes: model.bytes)
+      XCTAssertEqual(snapshot["id"] as? String, model.id)
+      XCTAssertEqual(snapshot["status"] as? String, "ready")
+      XCTAssertNotNil(snapshot["resourceEstimateEligible"] as? Bool)
+    }
+    XCTAssertThrowsError(try ModelCatalog.get("missing-model"))
+
+    func eligible(_ disk: Bool = true) -> ModelResourceAssessment {
+      ModelResourceAssessment(memoryEstimateEligible: true, diskEstimateEligible: disk,
+                              resourceEstimateEligible: disk, reason: disk ? "available" : "disk",
+                              requiredDiskBytes: 0)
+    }
+    XCTAssertEqual(ModelCatalog.recommended(from: [:]).id, ModelCatalog.compactId)
+    XCTAssertEqual(ModelCatalog.recommended(from: Dictionary(uniqueKeysWithValues: ModelCatalog.models.map { ($0.id, eligible()) })).id, ModelCatalog.qualityId)
+    let withoutQuality = Dictionary(uniqueKeysWithValues: ModelCatalog.models.filter { $0.id != ModelCatalog.qualityId }.map { ($0.id, eligible()) })
+    XCTAssertEqual(ModelCatalog.recommended(from: withoutQuality).id, ModelCatalog.balancedId)
+    let compactOnly = [ModelCatalog.compactId: eligible(), ModelCatalog.qualityId: eligible(false)]
+    XCTAssertEqual(ModelCatalog.recommended(from: compactOnly).id, ModelCatalog.compactId)
+
+    let model = try ModelCatalog.get(ModelCatalog.compactId)
+    let mib: UInt64 = 1024 * 1024
+    let total: UInt64 = 8 * 1024 * mib
+    let reserve = MemoryPolicy.reserve(total: total)
+    XCTAssertEqual(MemoryPolicy.reserve(total: 0), 512 * mib)
+    XCTAssertEqual(reserve, 15 * total / 100)
+    let requiredMemory = reserve + model.requiredMemoryBytes
+    let requiredDisk = UInt64(model.bytes) + 512 * mib
+    let atBoundary = MemoryPolicy.assess(model, status: "not-installed", downloadedBytes: 0,
+                                         total: total, available: requiredMemory,
+                                         availableDisk: requiredDisk, systemLowMemory: false)
+    XCTAssertTrue(atBoundary.resourceEstimateEligible)
+    XCTAssertEqual(atBoundary.reason, "available")
+    XCTAssertEqual(atBoundary.requiredDiskBytes, requiredDisk)
+    XCTAssertEqual(MemoryPolicy.assess(model, status: "downloading", downloadedBytes: model.bytes / 2,
+                                       total: total, available: requiredMemory, availableDisk: requiredDisk,
+                                       systemLowMemory: false).requiredDiskBytes,
+                   UInt64(model.bytes - model.bytes / 2) + 512 * mib)
+    XCTAssertEqual(MemoryPolicy.assess(model, status: "downloading", downloadedBytes: model.bytes + 1,
+                                       total: total, available: requiredMemory, availableDisk: 512 * mib,
+                                       systemLowMemory: false).requiredDiskBytes, 512 * mib)
+    XCTAssertEqual(MemoryPolicy.assess(model, status: "ready", downloadedBytes: model.bytes,
+                                       total: total, available: requiredMemory, availableDisk: 0,
+                                       systemLowMemory: false).requiredDiskBytes, 0)
+    XCTAssertEqual(MemoryPolicy.assess(model, status: "new", downloadedBytes: 0,
+                                       total: total, available: requiredMemory - 1, availableDisk: requiredDisk,
+                                       systemLowMemory: false).reason, "memory")
+    XCTAssertEqual(MemoryPolicy.assess(model, status: "new", downloadedBytes: 0,
+                                       total: total, available: requiredMemory, availableDisk: requiredDisk - 1,
+                                       systemLowMemory: false).reason, "disk")
+    XCTAssertEqual(MemoryPolicy.assess(model, status: "new", downloadedBytes: 0,
+                                       total: total, available: requiredMemory, availableDisk: requiredDisk,
+                                       systemLowMemory: true).reason, "lowMemory")
+    let unsupported = ModelDefinition(id: model.id, label: model.label, repo: model.repo, fileName: model.fileName,
+                                      revision: model.revision, bytes: model.bytes, sha256: model.sha256,
+                                      qualityBenchmarked: model.qualityBenchmarked, translationEnabled: false,
+                                      tier: model.tier, profile: model.profile, requiredMemoryBytes: model.requiredMemoryBytes,
+                                      licenseUrl: model.licenseUrl, supportsGlossary: model.supportsGlossary)
+    XCTAssertEqual(MemoryPolicy.assess(unsupported, status: "ready", downloadedBytes: 0,
+                                       total: total, available: requiredMemory, availableDisk: requiredDisk,
+                                       systemLowMemory: false).reason, "unsupported")
+  }
+
+  func testDocxPreviewRendererReportsMissingSourceWithoutLeakingResources() throws {
+    let missing = FileManager.default.temporaryDirectory.appendingPathComponent("missing-preview-\(UUID().uuidString).docx")
+    let cache = FileManager.default.temporaryDirectory.appendingPathComponent("preview-\(UUID().uuidString).pdf")
+    let completed = expectation(description: "missing DOCX preview is rejected")
+    DocxPreviewRenderer.render(source: missing, cacheURL: cache) { result in
+      guard case .failure(let error) = result else { XCTFail("Missing DOCX source must fail before creating a WebView"); completed.fulfill(); return }
+      XCTAssertEqual(error as? DocxPreviewRenderer.Failure, .source)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
+      completed.fulfill()
+    }
+    wait(for: [completed], timeout: 5)
   }
 
   func testMemoryWarningIsReflectedInBootstrapWithoutStartingWork() throws {
@@ -346,6 +621,58 @@ final class NativeCoverageTests: XCTestCase {
     XCTAssertNil(try store.job(id))
   }
 
+  func testCancelDuringVerifiedDocxFinalizationWinsAtomically() throws {
+    let store = try TranslatorStore(directory: AppPaths.support)
+    let id = "coverage-docx-cancel-\(UUID().uuidString)"
+    let source = AppPaths.documents.appendingPathComponent(id + ".docx")
+    let jobID = "\(id)-job"
+    let destination = AppPaths.exports.appendingPathComponent(jobID + ".docx")
+    defer {
+      try? store.deleteExport("\(jobID):docx")
+      try? store.deleteJob(jobID)
+      try? store.deleteDocument(id)
+      try? FileManager.default.removeItem(at: source)
+      try? FileManager.default.removeItem(at: destination)
+      try? FileManager.default.removeItem(at: AppPaths.exports.appendingPathComponent(jobID + ".pending.docx"))
+    }
+    let ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    let sourceXml = "<w:document xmlns:w=\"\(ns)\"><w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body></w:document>"
+    let package = storedZip([
+      ("[Content_Types].xml", "<Types><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>"),
+      ("_rels/.rels", "<Relationships><Relationship Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>"),
+      ("word/document.xml", sourceXml)
+    ])
+    XCTAssertTrue(FileManager.default.createFile(atPath: source.path, contents: package))
+    let inspected = try decoded(TranslateCoreBridge.inspectDocx(source.path))
+    XCTAssertEqual(inspected["segmentCount"] as? Int, 1)
+    _ = try store.saveDocument(id: id, name: "Cancel.docx", path: source.path, pages: 1, sourceSHA256: sha256(at: source), format: "docx")
+    let model = try ModelCatalog.get(ModelCatalog.compactId)
+    let input: [String: Any] = ["documentId": id, "modelId": model.id, "sourceLanguage": "en", "targetLanguage": "ru", "useGlossary": false]
+    _ = try store.addJob(id: jobID, input: input, pageCount: 1)
+    let segment = try decoded(TranslateCoreBridge.readDocxSegment(source.path, index: 0))
+    var blocks = try XCTUnwrap(segment["blocks"] as? [[String: Any]])
+    XCTAssertEqual(blocks.count, 1)
+    blocks[0]["translatedText"] = "Привет"
+    blocks[0]["status"] = "translated"
+    try store.savePage(jobId: jobID, index: 0, status: "completed", blocks: try jsonString(blocks))
+    try store.updateJob(jobID, status: "paused", completed: 0)
+
+    let module = PdfTranslatorModule()
+    let cancelAcknowledged = DispatchSemaphore(value: 0)
+    module.beforeFinalizationCommitForTesting = { phase in
+      guard phase == "terminal" else { return }
+      module.cancelJob(jobID, resolver: { _ in cancelAcknowledged.signal() }, rejecter: { _, _, _ in cancelAcknowledged.signal() })
+      XCTAssertEqual(cancelAcknowledged.wait(timeout: .now() + 10), .success, "Cancellation must be accepted while verified DOCX output awaits terminal status commit")
+    }
+    _ = try resolved { module.resumeJob(jobID, resolver: $0, rejecter: $1) }
+    let canceled = try terminalJob(jobID, store: store)
+    module.beforeFinalizationCommitForTesting = nil
+    XCTAssertEqual(canceled["status"] as? String, "canceled")
+    XCTAssertNil(try store.export("\(jobID):docx"), "A cancel accepted before terminal commit must remove the just-finalized export record")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path), "A cancel accepted before terminal commit must not leave a user-visible DOCX export")
+    XCTAssertEqual(try store.pageRows(jobID).count, 1, "Cancel must preserve the durable translated segment checkpoint")
+  }
+
   func testObjectiveCExportMetadataMatchesPublicBridgeContract() throws {
     // Invoke only RN's generated metadata getters. Calling the exported native
     // operations would start document pickers, permissions or background jobs.
@@ -358,6 +685,7 @@ final class NativeCoverageTests: XCTestCase {
     let expectedSignatures: Set<String> = [
       "bootstrap:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "pickPdf:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
+      "pickDocument:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "startModelDownload:(NSString *)modelId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "pauseModelDownload:(NSString *)modelId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "deleteModel:(NSString *)modelId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
@@ -369,11 +697,14 @@ final class NativeCoverageTests: XCTestCase {
       "resumeJob:(NSString *)jobId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "cancelJob:(NSString *)jobId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "deleteJob:(NSString *)jobId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
+      "setJobColor:(NSString *)jobId color:(NSString *)color resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "getJob:(NSString *)jobId pageIndex:(nonnull NSNumber *)pageIndex resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "renderPage:(NSString *)documentId pageIndex:(nonnull NSNumber *)pageIndex width:(nonnull NSNumber *)width resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
+      "renderDocxPreview:(NSString *)documentId jobId:(NSString * _Nullable)jobId translated:(BOOL)translated resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "renderTranslatedPage:(NSString *)jobId pageIndex:(nonnull NSNumber *)pageIndex width:(nonnull NSNumber *)width resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "previewJob:(NSString *)jobId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "exportJob:(NSString *)jobId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
+      "exportDocument:(NSString *)jobId format:(NSString *)format resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "shareExport:(NSString *)exportId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "openPdf:(NSString *)documentId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
       "setOnboarding:(NSString *)stateJson resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
@@ -400,7 +731,7 @@ final class NativeCoverageTests: XCTestCase {
       XCTAssertEqual(String(cString: try XCTUnwrap(info.jsName)), "", "Exports use the Objective-C base name without a JS rename")
       XCTAssertFalse(info.isSync.boolValue, "Promise exports must remain asynchronous: \(signature)")
     }
-    XCTAssertEqual(exportCount, 24)
+    XCTAssertEqual(exportCount, 28)
     XCTAssertEqual(observedSignatures, expectedSignatures)
 
     // Force Objective-C dispatch, rather than satisfying this only through the
@@ -412,6 +743,25 @@ final class NativeCoverageTests: XCTestCase {
     let moduleName = try XCTUnwrap(moduleNameGetter(nativeClass as AnyObject, moduleNameSelector)).takeUnretainedValue()
     XCTAssertEqual(moduleName as? String, "PdfTranslator")
     XCTAssertEqual(PdfTranslatorModule.moduleName(), "PdfTranslator")
+  }
+
+  @available(iOS 26.0,*)
+  func testContinuedProcessingOwnerMovesToRecreatedModuleWithoutRetainingOldOwner() {
+    let jobID="coverage-owner-\(UUID().uuidString)"
+    let identifier="\(Bundle.main.bundleIdentifier ?? "dev.kigya.translatepdf").continuedProcessing.\(jobID)"
+    weak var firstOwner:PdfTranslatorModule?
+    autoreleasepool {
+      let first=PdfTranslatorModule()
+      firstOwner=first
+      first.scheduleContinuedProcessing(jobID:jobID,documentName:"First owner")
+    }
+    XCTAssertNil(firstOwner,"continued-task routing must not retain a discarded React Native module")
+
+    let currentOwner=PdfTranslatorModule()
+    currentOwner.scheduleContinuedProcessing(jobID:jobID,documentName:"Current owner")
+    XCTAssertTrue(PdfTranslatorModule.continuedTaskOwner(for:identifier) === currentOwner,
+                  "a task registered by an old module must route to the latest module for the same job")
+    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier:identifier)
   }
 
   func testAppDelegateRestoresBackgroundSessionCompletion() {
@@ -432,6 +782,13 @@ final class NativeCoverageTests: XCTestCase {
       object: nil
     )
     wait(for: [completed], timeout: 2)
+  }
+
+  func testReactNativeDelegateAppliesBrandedRootViewColor() {
+    let view = UIView(frame: .zero)
+    let delegate = FolivelaReactNativeDelegate()
+    delegate.customize(view)
+    XCTAssertEqual(view.backgroundColor, UIColor(red: 198.0 / 255, green: 40.0 / 255, blue: 40.0 / 255, alpha: 1))
   }
 
   func testNativeModuleBootstrapReturnsDeviceAndPrivacySafeState() {
@@ -511,4 +868,54 @@ final class NativeCoverageTests: XCTestCase {
       with: XCTUnwrap(TranslateCoreBridge.mergePDF("[]", destination: invalid.path).data(using: .utf8))) as? [String: Any])
     XCTAssertEqual(merge["error"] as? String, "No completed pages to export")
   }
+}
+
+private final class MyMemoryURLProtocol: URLProtocol {
+  private static let configurationLock = NSLock()
+  private static var status = 200
+  private static var body = Data()
+  private static var contentLength: String?
+  private static var hold = false
+  private static var heldRequestSignal: DispatchSemaphore?
+
+  static func configure(status: Int, body: String, contentLength: String? = nil) {
+    configurationLock.lock(); defer { configurationLock.unlock() }
+    self.status = status; self.body = Data(body.utf8); self.contentLength = contentLength
+    hold = false; heldRequestSignal = nil
+  }
+
+  static func configureHeld() {
+    configurationLock.lock(); defer { configurationLock.unlock() }
+    status = 200; body = Data(); contentLength = nil; hold = true
+    heldRequestSignal = DispatchSemaphore(value: 0)
+  }
+
+  static func waitForHeldRequest(timeout: TimeInterval) -> Bool {
+    configurationLock.lock(); let signal = heldRequestSignal; configurationLock.unlock()
+    return signal?.wait(timeout: .now() + timeout) == .success
+  }
+
+  override class func canInit(with request: URLRequest) -> Bool {
+    request.url?.host == "api.mymemory.translated.net"
+  }
+
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+  override func startLoading() {
+    Self.configurationLock.lock()
+    let status = Self.status, body = Self.body, contentLength = Self.contentLength
+    let hold = Self.hold, heldRequestSignal = Self.heldRequestSignal
+    Self.configurationLock.unlock()
+    if hold { heldRequestSignal?.signal(); return }
+    var headers = ["Content-Type": "application/json"]
+    if let contentLength { headers["Content-Length"] = contentLength }
+    guard let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers) else {
+      client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse)); return
+    }
+    client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    client?.urlProtocol(self, didLoad: body)
+    client?.urlProtocolDidFinishLoading(self)
+  }
+
+  override func stopLoading() {}
 }

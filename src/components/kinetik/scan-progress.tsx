@@ -158,7 +158,7 @@ export function ScanProgress({
         style={[styles.pill, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
       >
         {pill > 0 && (progress !== undefined || done) ? (
-          <Ring width={pill} progress={progress} done={done} color={color} />
+          <Ring width={pill} progress={progress ?? 1} done={done} color={color} />
         ) : null}
         <View
           style={[
@@ -327,22 +327,21 @@ function Ring({
   color,
 }: {
   width: number;
-  progress?: number;
+  progress: number;
   done: boolean;
   color: string;
 }) {
   const reduced = useReduceMotion();
   const path = useMemo(() => ringPath(width, PILL), [width]);
   const end = useSharedValue(0);
-  const known = progress !== undefined;
 
   useEffect(() => {
     if (done) {
       end.set(withTiming(1, { ...timing('slow', reduced), duration: 600 }));
-    } else if (known) {
+    } else {
       end.set(withSpring(Math.max(0, Math.min(1, progress)), spring('smooth', reduced)));
     }
-  }, [done, known, progress, reduced, end]);
+  }, [done, progress, reduced, end]);
 
   const trace = useDerivedValue(() => end.get());
 

@@ -1,10 +1,13 @@
 #include "android/bitmap.h"
 #include "core.hpp"
+#include "../vendor/miniz.h"
+#include "../vendor/miniz_zip.h"
 #include <jni.h>
 
 #include <cstdarg>
 #include <codecvt>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -15,6 +18,9 @@
 
 extern "C" {
 jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_inspect(JNIEnv*, jobject, jstring);
+jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_inspectDocx(JNIEnv*, jobject, jstring);
+jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_readDocxSegment(JNIEnv*, jobject, jstring, jint);
+jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_exportDocx(JNIEnv*, jobject, jstring, jstring, jstring);
 jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_readPage(JNIEnv*, jobject, jstring, jint);
 jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_loadModel(JNIEnv*, jobject, jstring, jint, jint, jstring);
 jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_translate(JNIEnv*, jobject, jstring, jstring, jstring, jstring, jstring);
@@ -167,6 +173,26 @@ std::filesystem::path fixturePath() {
   output.close();
   return path;
 }
+std::filesystem::path docxFixturePath() {
+  const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+  const auto path = std::filesystem::temp_directory_path() /
+      std::filesystem::u8path("translatepdf-jni-" + std::to_string(unique) + ".docx");
+  mz_zip_archive archive{};
+  check(mz_zip_writer_init_file(&archive, path.string().c_str(), 0) != 0,
+        "DOCX JNI fixture ZIP should initialize");
+  const std::vector<std::pair<const char*, const char*>> entries{
+      {"[Content_Types].xml", "<Types><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>"},
+      {"_rels/.rels", "<Relationships><Relationship Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>"},
+      {"word/document.xml", "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>JNI DOCX source</w:t></w:r></w:p></w:body></w:document>"},
+  };
+  for (const auto& [name, value] : entries) {
+    check(mz_zip_writer_add_mem(&archive, name, value, std::strlen(value), MZ_DEFAULT_COMPRESSION) != 0,
+          "DOCX JNI fixture part should be written");
+  }
+  check(mz_zip_writer_finalize_archive(&archive) != 0, "DOCX JNI fixture should finalize");
+  mz_zip_writer_end(&archive);
+  return path;
+}
 }
 
 int AndroidBitmap_getInfo(JNIEnv* env, jobject bitmap, AndroidBitmapInfo* info) {
@@ -184,6 +210,19 @@ int main() {
     JniHarness harness;
     const auto pdfPath = fixturePath();
     const auto path = javaString(pdfPath.string());
+    const auto docxPath = docxFixturePath();
+    const auto docxJavaPath = javaString(docxPath.string());
+    check(nativeString(Java_dev_kigya_translatepdf_NativeCore_inspectDocx(&harness.env, nullptr, docxJavaPath)).find("\"format\":\"docx\"") != std::string::npos,
+          "inspectDocx should return DOCX metadata through JNI");
+    const auto docxSegment = nativeString(Java_dev_kigya_translatepdf_NativeCore_readDocxSegment(&harness.env, nullptr, docxJavaPath, 0));
+    check(docxSegment.find("JNI DOCX source") != std::string::npos,
+          "readDocxSegment should preserve segment text through JNI");
+    const auto docxOutput = docxPath.parent_path() / (docxPath.stem().string() + "-translated.docx");
+    const auto translatedSegments = javaString("[{\"id\":\"docx:word/document.xml#p:0#chunk:0\",\"translatedText\":\"JNI DOCX translation\",\"status\":\"translated\"}]");
+    const auto exportedDocx = nativeString(Java_dev_kigya_translatepdf_NativeCore_exportDocx(&harness.env, nullptr, docxJavaPath, translatedSegments, javaString(docxOutput.string())));
+    check(exportedDocx.find("\"path\"") != std::string::npos &&
+          nativeString(Java_dev_kigya_translatepdf_NativeCore_readDocxSegment(&harness.env, nullptr, javaString(docxOutput.string()), 0)).find("JNI DOCX translation") != std::string::npos,
+          "exportDocx should write and reopen translated DOCX text through JNI");
     check(nativeString(Java_dev_kigya_translatepdf_NativeCore_inspect(&harness.env, nullptr, path)).find("pageCount\":1") != std::string::npos,
           "inspect should parse a valid Unicode path and report one page");
     const auto extracted = nativeString(Java_dev_kigya_translatepdf_NativeCore_readPage(&harness.env, nullptr, path, 0));
@@ -256,6 +295,8 @@ int main() {
           harness.exception && !harness.thrownMessage.empty(),
           "render should translate native PDF errors into IllegalStateException");
     std::filesystem::remove(pdfPath);
+    std::filesystem::remove(docxPath);
+    std::filesystem::remove(docxOutput);
     std::cout << "JNI entrypoints, Unicode/null boundaries, PDFium rendering, pixel conversion, and bitmap failures passed\n";
     return 0;
   } catch (const std::exception& error) {

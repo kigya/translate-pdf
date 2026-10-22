@@ -24,7 +24,7 @@ spec = importlib.util.spec_from_file_location("hosted_swift_coverage",HERE / "co
 coverage = importlib.util.module_from_spec(spec);spec.loader.exec_module(coverage)
 MODULE_FILES = {
     "TranslatePDF":{"AppDelegate.swift","SceneDelegate.swift"},
-    "TranslateCore":{"ModelCatalog.swift","ModelDownloadCoordinator.swift","PdfTranslatorModule.swift","TranslatorStore.swift"},
+    "TranslateCore":{"ModelCatalog.swift","ModelDownloadCoordinator.swift","PdfTranslatorModule.swift","TranslatorStore.swift","DocxPreviewRenderer.swift","MyMemoryTranslator.swift"},
 }
 
 
@@ -195,7 +195,7 @@ def main() -> int:
     coverage.write(output / "loaded-module-attestation.json",module_images)
     report = coverage.validate(output / "measurement/manifest.json",results,binary_artifacts=binary_artifacts)
     coverage.write(output / "branch-gate.json",report)
-    coverage.write(output / "provenance.json",{"manifestSHA256":coverage.sha(output / "measurement/manifest.json"),"invocationSHA256":coverage.sha(output / "invocation.json"),"compileAttestationSHA256":coverage.sha(output / "compile-attestation.json"),"moduleAttestationSHA256":coverage.sha(output / "loaded-module-attestation.json"),"xcodebuildLogSHA256":coverage.sha(output / "xcodebuild.log"),"runtimeResultSHA256":{str(path):coverage.sha(path) for path in results},"allSixOriginalSourcesUnchanged":True,"testOnlyDriverOriginalUnchanged":True})
+    coverage.write(output / "provenance.json",{"manifestSHA256":coverage.sha(output / "measurement/manifest.json"),"invocationSHA256":coverage.sha(output / "invocation.json"),"compileAttestationSHA256":coverage.sha(output / "compile-attestation.json"),"moduleAttestationSHA256":coverage.sha(output / "loaded-module-attestation.json"),"xcodebuildLogSHA256":coverage.sha(output / "xcodebuild.log"),"runtimeResultSHA256":{str(path):coverage.sha(path) for path in results},"allOwnedOriginalSourcesUnchanged":True,"testOnlyDriverOriginalUnchanged":True})
     print(output)
     print(json.dumps({key:value for key,value in report.items() if key != "missing"},indent=2))
     return 0 if attestation["passed"] else 2

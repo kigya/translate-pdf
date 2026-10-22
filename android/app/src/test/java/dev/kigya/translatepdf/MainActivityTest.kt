@@ -1,6 +1,9 @@
 package dev.kigya.translatepdf
 
 import android.app.Application
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.os.Bundle
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -21,5 +24,20 @@ class MainActivityTest {
       isAccessible = true
     }.invoke(activity)
     assertEquals("main", componentName)
+  }
+
+  @Test
+  fun onCreateSetsTheBrandedWindowSurfaceBeforeReactNativeStartup() {
+    val activity = Robolectric.buildActivity(MainActivity::class.java).get()
+
+    // Host-only React Native startup can stop at its JNI boundary. The app must set
+    // its launch surface before crossing that boundary, even when startup cannot run here.
+    runCatching {
+      MainActivity::class.java.getDeclaredMethod("onCreate", Bundle::class.java)
+        .apply { isAccessible = true }.invoke(activity, Bundle())
+    }
+
+    val background = activity.window.decorView.background as? ColorDrawable
+    assertEquals(Color.rgb(198, 40, 40), background?.color)
   }
 }

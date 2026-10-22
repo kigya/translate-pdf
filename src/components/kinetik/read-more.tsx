@@ -59,6 +59,7 @@ export function ReadMore({
   const isOpen = expanded ?? inner;
   const [full, setFull] = useState(0);
 
+  // The first entry is always a concrete style, so flatten cannot be null.
   const flat = StyleSheet.flatten([
     {
       color: colors.textMuted,
@@ -66,7 +67,7 @@ export function ReadMore({
       lineHeight: Math.round(font.size.md * 1.55),
     },
     textStyle,
-  ]) ?? {};
+  ])!;
   const lineHeight = flat.lineHeight ?? Math.round((flat.fontSize ?? font.size.md) * 1.55);
   const folded = lines * lineHeight;
   // Only offer the toggle when there is more to read.

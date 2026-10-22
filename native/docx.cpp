@@ -20,6 +20,13 @@
 #include <vector>
 
 namespace translatepdf {
+// Internal dependency boundary, shared by production and host fault tests.
+namespace docxops {
+decltype(&::mz_zip_reader_file_stat) fileStat = ::mz_zip_reader_file_stat;
+decltype(&::mz_zip_reader_get_filename) filename = ::mz_zip_reader_get_filename;
+decltype(&::mz_zip_reader_extract_to_heap) extractToHeap = ::mz_zip_reader_extract_to_heap;
+decltype(&::mz_free) freeMemory = ::mz_free;
+}
 namespace {
 using json = nlohmann::json;
 namespace fs = std::filesystem;
@@ -44,25 +51,21 @@ void ensureDocxExtension(const std::string& path) {
 
 struct ZipReader {
   mz_zip_archive z{};
-  bool opened = false;
   explicit ZipReader(const std::string& path) {
     std::error_code ec;
     auto size = fs::file_size(path, ec);
     if (ec || size < 22 || size > kMaxArchive) throw std::runtime_error("DOCX archive is missing, empty, or too large");
     if (!mz_zip_reader_init_file(&z, path.c_str(), 0)) throw std::runtime_error("Invalid or encrypted ZIP package");
-    opened = true;
-    if (mz_zip_reader_get_num_files(&z) > kMaxEntries) { mz_zip_reader_end(&z); opened=false; throw std::runtime_error("DOCX contains too many ZIP entries"); }
+    if (mz_zip_reader_get_num_files(&z) > kMaxEntries) { mz_zip_reader_end(&z); throw std::runtime_error("DOCX contains too many ZIP entries"); }
   }
-  ~ZipReader() { if (opened) mz_zip_reader_end(&z); }
+  ~ZipReader() { mz_zip_reader_end(&z); }
 };
 struct ZipWriter {
   mz_zip_archive z{};
-  bool opened = false;
   explicit ZipWriter(const std::string& path) {
     if (!mz_zip_writer_init_file(&z, path.c_str(), 0)) throw std::runtime_error("Cannot create translated DOCX package");
-    opened = true;
   }
-  ~ZipWriter() { if (opened) mz_zip_writer_end(&z); }
+  ~ZipWriter() { mz_zip_writer_end(&z); }
   void finish() {
     if (!mz_zip_writer_finalize_archive(&z)) throw std::runtime_error("Cannot finalize translated DOCX package");
   }
@@ -72,7 +75,7 @@ struct Entry { mz_uint index; mz_zip_archive_file_stat stat{}; std::string name;
 bool safeEntryName(std::string_view n) {
   if (n.empty() || n.front() == '/' || n.find('\\') != n.npos || n.find('\0') != n.npos) return false;
   size_t start = 0;
-  while (start <= n.size()) {
+  for (;;) {
     auto end = n.find('/', start);
     auto part = n.substr(start, end == n.npos ? n.size() - start : end - start);
     if (part == ".." || part == ".") return false;
@@ -88,8 +91,14 @@ std::vector<Entry> listEntries(ZipReader& r) {
   uint64_t expanded = 0;
   for (mz_uint i = 0; i < mz_zip_reader_get_num_files(&r.z); ++i) {
     Entry e{}; e.index = i;
-    if (!mz_zip_reader_file_stat(&r.z, i, &e.stat)) throw std::runtime_error("Malformed DOCX ZIP directory");
-    e.name = e.stat.m_filename;
+    if (!docxops::fileStat(&r.z, i, &e.stat)) throw std::runtime_error("Malformed DOCX ZIP directory");
+    // file_stat's display name is truncated and NUL-terminated. Validate the
+    // complete central-directory name before handing the package to a renderer.
+    const auto nameSize = docxops::filename(&r.z, i, nullptr, 0);
+    if (nameSize == 0 || nameSize > 4097) throw std::runtime_error("DOCX ZIP path exceeds the safe size limit");
+    e.name.resize(nameSize);
+    docxops::filename(&r.z, i, e.name.data(), nameSize);
+    e.name.resize(nameSize - 1);
     if (!safeEntryName(e.name) || !seen.insert(e.name).second) throw std::runtime_error("DOCX contains an unsafe or duplicate ZIP path");
     if (e.stat.m_is_encrypted) throw std::runtime_error("Encrypted DOCX documents are not supported");
     if (!e.stat.m_is_supported) throw std::runtime_error("DOCX uses unsupported ZIP compression or encryption");
@@ -103,10 +112,10 @@ std::vector<Entry> listEntries(ZipReader& r) {
 std::string extract(ZipReader& r, const Entry& e, size_t limit) {
   if (e.stat.m_uncomp_size > limit) throw std::runtime_error("DOCX XML part exceeds the safe size limit");
   size_t got = 0;
-  void* p = mz_zip_reader_extract_to_heap(&r.z, e.index, &got, 0);
-  if (!p || got != e.stat.m_uncomp_size) { if (p) mz_free(p); throw std::runtime_error("DOCX ZIP entry failed integrity validation"); }
+  void* p = docxops::extractToHeap(&r.z, e.index, &got, 0);
+  if (!p || got != e.stat.m_uncomp_size) { if (p) docxops::freeMemory(p); throw std::runtime_error("DOCX ZIP entry failed integrity validation"); }
   std::string s(static_cast<const char*>(p), got);
-  mz_free(p);
+  docxops::freeMemory(p);
   return s;
 }
 const Entry* findEntry(const std::vector<Entry>& entries, const std::string& name) {
@@ -123,11 +132,12 @@ void validateXmlUtf8(std::string_view value) {
       reference=end+3;continue;
     }
     if(value.substr(reference,2)!="&#"){++reference;continue;}
-    size_t position=reference+2;bool hex=position<value.size()&&(value[position]=='x'||value[position]=='X');if(hex)++position;
+    // XML CharRef permits the lowercase x prefix only (W3C XML 1.0, production 66).
+    size_t position=reference+2;bool hex=position<value.size()&&value[position]=='x';if(hex)++position;
     uint32_t scalar=0;size_t digits=0;
     for(;position<value.size()&&value[position]!=';';++position){
       const char c=value[position];const int digit=c>='0'&&c<='9'?c-'0':hex&&c>='a'&&c<='f'?c-'a'+10:hex&&c>='A'&&c<='F'?c-'A'+10:-1;
-      if(digit<0||(!hex&&digit>9)||scalar>0x10ffffu/(hex?16u:10u))throw std::runtime_error("DOCX contains an invalid XML character reference");
+      if(digit<0||scalar>0x10ffffu/(hex?16u:10u))throw std::runtime_error("DOCX contains an invalid XML character reference");
       scalar=scalar*(hex?16u:10u)+static_cast<uint32_t>(digit);++digits;
     }
     if(digits==0||position==value.size()||scalar>0x10ffff||(scalar>=0xd800&&scalar<=0xdfff)||scalar==0xfffe||scalar==0xffff||
@@ -140,7 +150,7 @@ void validateXmlUtf8(std::string_view value) {
     if(length==0||i+length>value.size())throw std::runtime_error("DOCX contains malformed UTF-8 XML");
     uint32_t scalar=first&static_cast<unsigned char>(length==1?0x7f:(1u<<(7-length))-1);
     for(size_t j=1;j<length;++j){const auto next=static_cast<unsigned char>(value[i+j]);if((next&0xc0)!=0x80)throw std::runtime_error("DOCX contains malformed UTF-8 XML");scalar=(scalar<<6)|(next&0x3f);}
-    if((length==2&&scalar<0x80)||(length==3&&scalar<0x800)||(length==4&&scalar<0x10000)||scalar>0x10ffff||
+    if((length==3&&scalar<0x800)||(length==4&&scalar<0x10000)||scalar>0x10ffff||
        (scalar>=0xd800&&scalar<=0xdfff)||scalar==0xfffe||scalar==0xffff||(scalar<0x20&&scalar!=9&&scalar!=10&&scalar!=13))
       throw std::runtime_error("DOCX contains an invalid XML character");
     i+=length;
@@ -231,7 +241,7 @@ std::vector<std::string> splitUtf8(std::string_view text) {
       auto previousStart=[&](size_t at){size_t s=at-1;while(s>pos&&(static_cast<unsigned char>(text[s])&0xc0)==0x80)--s;return s;};
       auto extend=[](uint32_t cp){return (cp>=0x0300&&cp<=0x036f)||(cp>=0x1ab0&&cp<=0x1aff)||(cp>=0x1dc0&&cp<=0x1dff)||(cp>=0x20d0&&cp<=0x20ff)||(cp>=0xfe00&&cp<=0xfe0f)||(cp>=0xfe20&&cp<=0xfe2f)||(cp>=0x1f3fb&&cp<=0x1f3ff)||(cp>=0xe0100&&cp<=0xe01ef);};
       auto regional=[](uint32_t cp){return cp>=0x1f1e6&&cp<=0x1f1ff;};
-      while(end>pos&&end<text.size()){
+      while(end>pos){
         const size_t prev=previousStart(end),next=end;
         const uint32_t before=decode(prev),after=decode(next);
         bool unsafe=extend(after)||after==0x200d||before==0x200d;
@@ -290,14 +300,18 @@ std::vector<Segment> segmentsFor(const std::string& path, ZipReader& r, const st
 
   std::vector<Segment> all;
   for (const auto& part : xmlParts(entries)) {
-    const auto* e = findEntry(entries, part); if (!e) continue;
+    // xmlParts only selects names from this same immutable entry list.
+    const auto* e = findEntry(entries, part);
     auto xml = extract(r, *e, kMaxXml);
     auto parsed = parseXml(xml);
-    // Every relevant text part must use the WordprocessingML namespace.
-    bool wordNs = false;
-    for (auto n = parsed.first_child(); n; n = n.next_sibling()) if (n.type() == pugi::node_element)
-      for (auto a = n.first_attribute(); a; a = a.next_attribute()) if (std::string(a.value()) == kWordNs) wordNs = true;
-    if (!wordNs && part == "word/document.xml") throw std::runtime_error("DOCX main document uses an unsupported XML namespace");
+    if (part == "word/document.xml") {
+      const auto root = parsed.document_element();
+      const std::string rootName = root.name();
+      const auto colon = rootName.find(':');
+      const auto declaration = colon == std::string::npos ? std::string("xmlns") : "xmlns:" + rootName.substr(0, colon);
+      if (localName(root) != "document" || std::string(root.attribute(declaration.c_str()).value()) != kWordNs)
+        throw std::runtime_error("DOCX main document uses an unsupported XML namespace");
+    }
     std::vector<pugi::xml_node> paragraphs; walk(parsed, "p", paragraphs);
     for (size_t pi = 0; pi < paragraphs.size(); ++pi) {
       auto pieces = splitUtf8(paragraphText(paragraphs[pi]));
@@ -315,15 +329,13 @@ std::vector<Segment> segmentsFor(const std::string& path, ZipReader& r, const st
 json warningsFor(const std::vector<Entry>& entries, ZipReader& r, const std::vector<std::string>& parts) {
   json warnings = json::array();
   for (const auto& e : entries) {
-    if (e.name.size() >= 5 && e.name.compare(e.name.size()-5, 5, ".rels") == 0 && e.stat.m_uncomp_size <= kMaxXml) {
-      try {
-        auto d = parseXml(extract(r,e,kMaxXml));
+    if (e.name.size() >= 5 && e.name.compare(e.name.size()-5, 5, ".rels") == 0) {
+      auto d = parseXml(extract(r,e,kMaxXml));
         for (auto n : d.select_nodes("//*[local-name()='Relationship']")) {
           std::string mode=n.node().attribute("TargetMode").value();
           std::transform(mode.begin(),mode.end(),mode.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
           if(mode=="external"){warnings.push_back("External relationship preserved without fetching: " + e.name);break;}
         }
-      } catch (const std::exception&) { throw; }
     }
   }
   for (const auto& e : entries) {
@@ -366,6 +378,25 @@ void setParagraphText(pugi::xml_node p, const std::string& value) {
     }
     start=i+1;
   }
+}
+// Close the complete ZIP before its atomic destination rename.
+void writePackage(const std::string& temp, ZipReader& r, const std::vector<Entry>& entries,
+                  const std::unordered_map<std::string,std::string>& originalXml) {
+  ZipWriter w(temp);
+  for (const auto& e : entries) {
+    if (e.stat.m_is_directory) {
+      if (!mz_zip_writer_add_mem(&w.z,e.name.c_str(),nullptr,0,MZ_DEFAULT_COMPRESSION)) throw std::runtime_error("Cannot preserve DOCX package directory");
+      continue;
+    }
+    auto changed=originalXml.find(e.name);
+    if (changed != originalXml.end()) {
+      if (!mz_zip_writer_add_mem(&w.z,e.name.c_str(),changed->second.data(),changed->second.size(),MZ_DEFAULT_COMPRESSION)) throw std::runtime_error("Cannot write translated Word text");
+    } else {
+      auto bytes=extract(r,e,64ull*1024*1024);
+      if (!mz_zip_writer_add_mem(&w.z,e.name.c_str(),bytes.data(),bytes.size(),MZ_DEFAULT_COMPRESSION)) throw std::runtime_error("Cannot preserve DOCX package part");
+    }
+  }
+  w.finish();
 }
 std::string tempPath(const std::string& dest) { return dest + ".folivela-tmp"; }
 }
@@ -439,23 +470,7 @@ std::string exportDocx(const std::string& source, const std::string& segmentsJso
     if (destination.empty()) throw std::runtime_error("DOCX output path is empty");
     const std::string temp=tempPath(destination);
     std::error_code ec; fs::remove(temp,ec);
-    {
-      ZipWriter w(temp);
-      for (const auto& e : entries) {
-        if (e.stat.m_is_directory) {
-          if (!mz_zip_writer_add_mem(&w.z,e.name.c_str(),nullptr,0,MZ_DEFAULT_COMPRESSION)) throw std::runtime_error("Cannot preserve DOCX package directory");
-          continue;
-        }
-        auto changed=originalXml.find(e.name);
-        if (changed != originalXml.end()) {
-          if (!mz_zip_writer_add_mem(&w.z,e.name.c_str(),changed->second.data(),changed->second.size(),MZ_DEFAULT_COMPRESSION)) throw std::runtime_error("Cannot write translated Word text");
-        } else {
-          auto bytes=extract(r,e,64ull*1024*1024);
-          if (!mz_zip_writer_add_mem(&w.z,e.name.c_str(),bytes.data(),bytes.size(),MZ_DEFAULT_COMPRESSION)) throw std::runtime_error("Cannot preserve DOCX package part");
-        }
-      }
-      w.finish();
-    }
+    writePackage(temp,r,entries,originalXml);
     fs::rename(temp,destination,ec);
     if (ec) { fs::remove(temp); throw std::runtime_error("Cannot finalize translated DOCX at the selected destination"); }
     return json{{"path",destination},{"partial",partial},{"warnings",warnings}}.dump();

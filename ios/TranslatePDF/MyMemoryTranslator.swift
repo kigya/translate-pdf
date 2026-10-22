@@ -1,9 +1,20 @@
 import Foundation
 
 /// Minimal, consent-gated MyMemory client. Request text and URLs are never logged.
-final class MyMemoryTranslator: NSObject, URLSessionTaskDelegate {
+final class MyMemoryTranslator: NSObject, URLSessionDataDelegate {
+  private static let maximumResponseBytes = 256_000
+
+  private final class RequestState {
+    let completed = DispatchSemaphore(value: 0)
+    var task: URLSessionDataTask?
+    var body = Data()
+    var statusCode: Int?
+    var failure: Failure?
+    var result: Result<String, Failure>?
+  }
+
   private let lock = NSLock()
-  private var activeTask: URLSessionDataTask?
+  private var activeRequest: RequestState?
   private let protocolClasses: [AnyClass]?
   private lazy var session: URLSession = {
     let configuration = URLSessionConfiguration.ephemeral
@@ -41,8 +52,65 @@ final class MyMemoryTranslator: NSObject, URLSessionTaskDelegate {
   }
 
   func cancel() {
-    lock.lock(); let task = activeTask; activeTask = nil; lock.unlock()
+    lock.lock(); let task = activeRequest?.task; lock.unlock()
     task?.cancel()
+  }
+
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                  didReceive response: URLResponse,
+                  completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+    lock.lock()
+    guard let request = activeRequest, request.task === dataTask else {
+      lock.unlock(); completionHandler(.cancel); return
+    }
+    guard let http = response as? HTTPURLResponse else {
+      request.failure = .invalidResponse
+      lock.unlock(); completionHandler(.cancel); return
+    }
+    request.statusCode = http.statusCode
+    if http.expectedContentLength > Int64(Self.maximumResponseBytes) {
+      request.failure = .invalidResponse
+      lock.unlock(); completionHandler(.cancel); return
+    }
+    lock.unlock()
+    completionHandler(.allow)
+  }
+
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    lock.lock()
+    guard let request = activeRequest, request.task === dataTask else { lock.unlock(); return }
+    let remaining = Self.maximumResponseBytes - request.body.count
+    guard data.count <= remaining else {
+      request.failure = .invalidResponse
+      lock.unlock()
+      dataTask.cancel()
+      return
+    }
+    request.body.append(data)
+    lock.unlock()
+  }
+
+  func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    lock.lock()
+    guard let request = activeRequest, request.task === task else { lock.unlock(); return }
+    let result: Result<String, Failure>
+    if let failure = request.failure {
+      result = .failure(failure)
+    } else if let error {
+      result = .failure((error as NSError).code == NSURLErrorCancelled ? .canceled : .unavailable)
+    } else if let status = request.statusCode, status == 429 {
+      result = .failure(.quota)
+    } else if let status = request.statusCode, (200...299).contains(status) {
+      result = Self.parseResponse(request.body)
+    } else if request.statusCode != nil {
+      result = .failure(.unavailable)
+    } else {
+      result = .failure(.invalidResponse)
+    }
+    request.result = result
+    activeRequest = nil
+    lock.unlock()
+    request.completed.signal()
   }
 
   func translate(_ text: String, source: String, target: String) throws -> String {
@@ -58,26 +126,21 @@ final class MyMemoryTranslator: NSObject, URLSessionTaskDelegate {
     var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
     request.httpMethod = "GET"
     request.setValue("application/json", forHTTPHeaderField: "Accept")
-    let semaphore = DispatchSemaphore(value: 0)
-    var result: Result<String, Failure> = .failure(Failure.unavailable)
-    let task = session.dataTask(with: request) { [weak self] data, response, error in
-      defer { self?.lock.lock(); self?.activeTask = nil; self?.lock.unlock(); semaphore.signal() }
-      if let error {
-        result = .failure((error as NSError).code == NSURLErrorCancelled ? Failure.canceled : Failure.unavailable)
-        return
-      }
-      guard let http = response as? HTTPURLResponse, let data, data.count <= 256_000 else {
-        result = .failure(Failure.invalidResponse); return
-      }
-      if http.statusCode == 429 { result = .failure(Failure.quota); return }
-      guard (200...299).contains(http.statusCode) else { result = .failure(Failure.unavailable); return }
-      result = Self.parseResponse(data)
-    }
-    lock.lock(); activeTask = task; lock.unlock()
+    let state = RequestState()
+    let task = session.dataTask(with: request)
+    state.task = task
+    lock.lock()
+    guard activeRequest == nil else { lock.unlock(); task.cancel(); throw Failure.unavailable }
+    activeRequest = state
+    lock.unlock()
     task.resume()
-    if semaphore.wait(timeout: .now() + 30) == .timedOut { cancel(); throw Failure.unavailable }
-    lock.lock(); let stillActive = activeTask === task; if stillActive { activeTask = nil }; lock.unlock()
-    if stillActive { throw Failure.canceled }
+    if state.completed.wait(timeout: .now() + 30) == .timedOut {
+      lock.lock(); let shouldCancel = activeRequest === state; if shouldCancel { activeRequest = nil }; lock.unlock()
+      if shouldCancel { task.cancel() }
+      throw Failure.unavailable
+    }
+    lock.lock(); let result = state.result; lock.unlock()
+    guard let result else { throw Failure.canceled }
     return leading + (try result.get()) + trailing
   }
 

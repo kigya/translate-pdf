@@ -19,6 +19,7 @@ internal class ModelDownloader(
   private val database: TranslatorDatabase,
   private val definitionLookup: (String) -> ModelDefinition = ModelCatalog::get,
   private val cancellationWaitMillis: Long = 50_000,
+  private val urlForDefinition: (ModelDefinition) -> URL = { URL(it.url) },
 ) {
   private val appContext = context.applicationContext
   private val modelDirectory = File(appContext.filesDir, "models").apply { mkdirs() }
@@ -160,7 +161,7 @@ internal class ModelDownloader(
         if (offset >= definition.bytes) offset = 0
         if (offset == 0L) partial.delete()
         if (transfer.stopRequested) throw ModelDownloadCanceled()
-        connection = (downloadUrl ?: URL(definition.url)).openConnection() as HttpURLConnection
+        connection = (downloadUrl ?: urlForDefinition(definition)).openConnection() as HttpURLConnection
         transfer.connection = connection
         connection.apply {
           connectTimeout = 20_000

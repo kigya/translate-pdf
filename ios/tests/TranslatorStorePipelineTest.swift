@@ -36,9 +36,12 @@ enum TranslatorStorePipelineTest {
     try testMyMemoryUsesOnlyConsentScopedGetAndPausesQuotaErrors()
     try testMyMemoryPreservesParagraphWhitespaceAndDecodesEntities()
     try testMyMemoryRecognizesQuotaFlagOnSuccessStatus()
+    try testMyMemoryRejectsOversizedChunkedResponsesWithoutContentLength()
+    try testMyMemoryRejectsOversizedDeclaredAndLyingLengthsButAcceptsBoundedBody()
+    try testMyMemoryCancellationCannotBeReplacedByLateProtocolData()
     try testDocxWarningsAndExpandedTranslationCheckpoint()
     try testSchema6LabelsAndRatingPreferencesPreserveLegacyState()
-    print("PASS 26 TranslatorStore pipeline/catalog/language/online/labels tests")
+    print("PASS 29 TranslatorStore pipeline/catalog/language/online/labels tests")
   }
 
   private static func testDocxAndOnlineJobMigrationAndConsent() throws {
@@ -114,6 +117,85 @@ enum TranslatorStorePipelineTest {
     try expect(MyMemoryTranslator.parseResponse(markup) == .success("25 Нм <literal>"),"known TMX group wrappers must not leak into translated document text")
     let literal=try JSONSerialization.data(withJSONObject:["responseStatus":200,"responseData":["translatedText":"&lt;g id=&quot;2297&quot;&gt;literal&lt;/g&gt; <g>ordinary</g>"]])
     try expect(MyMemoryTranslator.parseResponse(literal) == .success("<g id=\"2297\">literal</g> <g>ordinary</g>"),"escaped or unqualified group text must remain literal")
+  }
+
+  private static func testMyMemoryRejectsOversizedChunkedResponsesWithoutContentLength() throws {
+    let chunks = [Data(repeating: 0x61, count: 140_000), Data(repeating: 0x62, count: 140_000)]
+    MockTranslationProtocol.reset(status: 200, chunks: chunks)
+    do {
+      _ = try MyMemoryTranslator(protocolClasses: [MockTranslationProtocol.self])
+        .translate("hello", source: "en", target: "fr")
+      throw TestFailure(description: "an oversized chunked provider response must be rejected")
+    } catch let failure as MyMemoryTranslator.Failure {
+      try expect(failure == .invalidResponse, "the response cap must apply cumulatively when Content-Length is absent")
+    }
+  }
+
+  private static func testMyMemoryRejectsOversizedDeclaredAndLyingLengthsButAcceptsBoundedBody() throws {
+    MockTranslationProtocol.reset(status: 200, chunks: [Data(repeating: 0x61, count: 1)], declaredContentLength: "256001")
+    do {
+      _ = try MyMemoryTranslator(protocolClasses: [MockTranslationProtocol.self]).translate("hello", source: "en", target: "fr")
+      throw TestFailure(description: "a provider response declaring more than the byte cap must be rejected")
+    } catch let failure as MyMemoryTranslator.Failure {
+      try expect(failure == .invalidResponse, "oversized declared Content-Length must fail before body accumulation")
+    }
+
+    let overflow = [Data(repeating: 0x61, count: 140_000), Data(repeating: 0x62, count: 140_000)]
+    MockTranslationProtocol.reset(status: 200, chunks: overflow, declaredContentLength: "1")
+    do {
+      _ = try MyMemoryTranslator(protocolClasses: [MockTranslationProtocol.self]).translate("hello", source: "en", target: "fr")
+      throw TestFailure(description: "a provider response lying about a small Content-Length must still be bounded")
+    } catch let failure as MyMemoryTranslator.Failure {
+      try expect(failure == .invalidResponse, "cumulative chunk cap must not trust Content-Length")
+    }
+
+    let valid = "{\"responseStatus\":200,\"responseData\":{\"translatedText\":\"bounded\"}}"
+    MockTranslationProtocol.reset(status: 200, chunks: [Data(valid.utf8)], declaredContentLength: String(valid.utf8.count))
+    let translated = try MyMemoryTranslator(protocolClasses: [MockTranslationProtocol.self]).translate("hello", source: "en", target: "fr")
+    try expect(translated == "bounded", "a valid body under the byte cap should still translate")
+  }
+
+  private static func testMyMemoryCancellationCannotBeReplacedByLateProtocolData() throws {
+    MockTranslationProtocol.reset(status: 200, body: "{\"responseStatus\":200,\"responseData\":{\"translatedText\":\"late success\"}}")
+    MockTranslationProtocol.holdResponse = true
+    let started = DispatchSemaphore(value: 0)
+    let completed = DispatchSemaphore(value: 0)
+    let resultLock = NSLock()
+    var result: Result<String, Error>?
+    MockTranslationProtocol.onStart = { started.signal() }
+    let translator = MyMemoryTranslator(protocolClasses: [MockTranslationProtocol.self])
+    DispatchQueue.global().async {
+      let resultForRequest: Result<String, Error>
+      do { resultForRequest = .success(try translator.translate("hello", source: "en", target: "fr")) }
+      catch { resultForRequest = .failure(error) }
+      resultLock.lock(); result = resultForRequest; resultLock.unlock()
+      completed.signal()
+    }
+    try expect(started.wait(timeout: .now() + 3) == .success, "the URLProtocol request should start before cancellation")
+    translator.cancel()
+    try expect(completed.wait(timeout: .now() + 3) == .success, "canceling the active request should release its waiting translation worker")
+    resultLock.lock(); let finalResult = result; resultLock.unlock()
+    guard case .failure(let error)? = finalResult else { throw TestFailure(description: "a canceled request must not return a later translation") }
+    try expect(error as? MyMemoryTranslator.Failure == .canceled, "the active request cancellation should be reported explicitly")
+    let canceledRequest = MockTranslationProtocol.lastInstance
+    MockTranslationProtocol.reset(status: 200, body: "{\"responseStatus\":200,\"responseData\":{\"translatedText\":\"new success\"}}")
+    MockTranslationProtocol.holdResponse = true
+    let secondStarted = DispatchSemaphore(value: 0)
+    MockTranslationProtocol.onStart = { secondStarted.signal() }
+    var secondResult: Result<String, Error>?
+    DispatchQueue.global().async {
+      let resultForRequest: Result<String, Error>
+      do { resultForRequest = .success(try translator.translate("hello again", source: "en", target: "fr")) }
+      catch { resultForRequest = .failure(error) }
+      resultLock.lock(); secondResult = resultForRequest; resultLock.unlock()
+      completed.signal()
+    }
+    try expect(secondStarted.wait(timeout: .now() + 3) == .success, "a fresh request should start after cancellation cleanup")
+    canceledRequest?.sendLateResponse()
+    MockTranslationProtocol.lastInstance?.sendLateResponse()
+    try expect(completed.wait(timeout: .now() + 3) == .success, "the fresh request should finish after the canceled request sends late data")
+    resultLock.lock(); let restartedResult = secondResult; resultLock.unlock()
+    try expect(try restartedResult?.get() == "new success", "late data from a canceled URLSession task must not replace a newer request result")
   }
 
   private static func testDocxWarningsAndExpandedTranslationCheckpoint() throws {
@@ -647,19 +729,35 @@ private struct TestFailure: Error, CustomStringConvertible {
 }
 
 private final class MockTranslationProtocol: URLProtocol {
+  private var lateBody=Data()
   static var body=Data()
+  static var chunks:[Data]?
   static var status=200
   static var lastRequest:URLRequest?
-  static func reset(status:Int,body:String){self.status=status;self.body=Data(body.utf8);lastRequest=nil}
+  static var declaredContentLength:String?
+  static var holdResponse=false
+  static var onStart:(()->Void)?
+  static var lastInstance:MockTranslationProtocol?
+  static var instances:[MockTranslationProtocol]=[]
+  static func reset(status:Int,body:String){reset(status:status,chunks:[Data(body.utf8)],declaredContentLength:nil)}
+  static func reset(status:Int,chunks:[Data],declaredContentLength:String?=nil){self.status=status;self.chunks=chunks;self.body=chunks.reduce(into:Data()){$0.append($1)};self.declaredContentLength=declaredContentLength;lastRequest=nil;holdResponse=false;onStart=nil;lastInstance=nil;instances=[]}
   override class func canInit(with request:URLRequest)->Bool{request.url?.host=="api.mymemory.translated.net"}
   override class func canonicalRequest(for request:URLRequest)->URLRequest{request}
   override func startLoading(){
+    Self.lastInstance=self
+    Self.instances.append(self)
+    lateBody=Self.body
+    Self.onStart?()
     Self.lastRequest=request
-    let response=HTTPURLResponse(url:request.url!,statusCode:Self.status,httpVersion:"HTTP/1.1",headerFields:["Content-Type":"application/json"] )!
+    var headers=["Content-Type":"application/json"]
+    if let declaredContentLength=Self.declaredContentLength{headers["Content-Length"]=declaredContentLength}
+    let response=HTTPURLResponse(url:request.url!,statusCode:Self.status,httpVersion:"HTTP/1.1",headerFields:headers )!
     client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
-    client?.urlProtocol(self,didLoad:Self.body)
+    if Self.holdResponse{return}
+    for chunk in Self.chunks ?? [Self.body] { client?.urlProtocol(self,didLoad:chunk) }
     client?.urlProtocolDidFinishLoading(self)
   }
+  func sendLateResponse(){client?.urlProtocol(self,didLoad:lateBody);client?.urlProtocolDidFinishLoading(self)}
   override func stopLoading(){}
 }
 

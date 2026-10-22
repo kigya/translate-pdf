@@ -35,7 +35,19 @@ class HostedMetadataTests(unittest.TestCase):
             log = root / 'synthetic-parser-control.log';log.write_text('\n'.join(commands))
             report = runner.compile_attestation(log,manifest,str(sdk))
             self.assertTrue(report['passed'],report)
-            self.assertEqual(len(report['ownedInputs']),6)
+            expected_modules = {
+                "TranslatePDF": {"AppDelegate.swift", "SceneDelegate.swift"},
+                "TranslateCore": {
+                    "ModelCatalog.swift", "ModelDownloadCoordinator.swift",
+                    "PdfTranslatorModule.swift", "TranslatorStore.swift",
+                    "DocxPreviewRenderer.swift", "MyMemoryTranslator.swift",
+                },
+            }
+            self.assertEqual(len(report['ownedInputs']),8)
+            observed_modules = {}
+            for path, evidence in report['ownedInputs'].items():
+                observed_modules.setdefault(evidence['module'], set()).add(Path(path).name)
+            self.assertEqual(observed_modules, expected_modules)
             self.assertEqual(sum(len(job['responseFiles']) for job in report['compileJobs']),2)
             log.write_text('\n'.join(commands).replace('-vfsoverlay '+str(overlay),''))
             self.assertFalse(runner.compile_attestation(log,manifest,str(sdk))['passed'])

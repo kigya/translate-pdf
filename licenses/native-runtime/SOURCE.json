@@ -1,0 +1,256 @@
+{
+  "reviewed": "2026-10-22",
+  "files": [
+    {
+      "component": "folly",
+      "target": "licenses/native-runtime/common/Apache-2.0.txt",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "license": "Apache-2.0",
+      "source": "https://raw.githubusercontent.com/facebook/folly/0660ead5b610047a279cc291129e98e3f2a1fc37/LICENSE",
+      "sha256": "2206c00af7013581ae0d7c8c8a0089f02fab621913daac019b32336bd4d1e1db",
+      "bytes": 11350
+    },
+    {
+      "component": "boost",
+      "target": "licenses/native-runtime/common/boost-LICENSE.txt",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "license": "BSL-1.0",
+      "source": "https://raw.githubusercontent.com/react-native-community/boost-for-react-native/59ed9e589e222fb6d54b3e0a81d510190801b1d9/LICENSE_1_0.txt",
+      "sha256": "beb8e42e9d6b4284e03304d05a81a0755200a965fc8d0a5e0aea1e84cf805d6e",
+      "bytes": 1361
+    },
+    {
+      "component": "double-conversion",
+      "target": "licenses/native-runtime/common/double-conversion-LICENSE.txt",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "license": "BSD-3-Clause",
+      "source": "https://raw.githubusercontent.com/google/double-conversion/361924fb61c043627d4179e941a102d543f6efa0/LICENSE",
+      "sha256": "4af93c12062c58058378de2397dc1c92bbff9ddfb1d583a01c84127557ce97ca",
+      "bytes": 1527
+    },
+    {
+      "component": "glog",
+      "target": "licenses/native-runtime/common/glog-COPYING.txt",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "license": "BSD-3-Clause",
+      "source": "https://raw.githubusercontent.com/google/glog/a6a166db069520dbbd653c97c2e5b12e08a8bb26/COPYING",
+      "sha256": "0fc497129c5c69ff6f22da6933c7e4aaef082fde8437fd57680c2780100772a4",
+      "bytes": 3215
+    },
+    {
+      "component": "fmt",
+      "target": "licenses/native-runtime/common/fmt-LICENSE.txt",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "license": "MIT",
+      "source": "https://raw.githubusercontent.com/fmtlib/fmt/407c905e45ad75fc29bf0f9bb7c5c2fd3475976f/LICENSE",
+      "sha256": "07580f2a3b35709ce703d523f447b242f6dfec7582a8c0df102c7fa2849375f8",
+      "bytes": 1431
+    },
+    {
+      "component": "glog source copyright",
+      "target": "licenses/native-runtime/common/glog-NOTICE.txt",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "license": "BSD-3-Clause",
+      "source": "https://raw.githubusercontent.com/google/glog/a6a166db069520dbbd653c97c2e5b12e08a8bb26/src/glog/logging.h.in",
+      "sha256": "8baed4ff563564df2ed54814446ed538bb534c47200f966041c27bfeaa74c370",
+      "bytes": 1563
+    },
+    {
+      "component": "CommonsIO",
+      "target": "licenses/native-runtime/android/commons-io-NOTICE.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "Apache-2.0 NOTICE",
+      "source": "https://repo.maven.apache.org/maven2/commons-io/commons-io/2.14.0/commons-io-2.14.0.jar",
+      "sha256": "d881568c91b929923350fa3b9db693a0b1e6ae9de972087822e4e87802561c6a",
+      "bytes": 172,
+      "archive_path": "META-INF/NOTICE.txt"
+    },
+    {
+      "component": "CommonsCodec",
+      "target": "licenses/native-runtime/android/commons-codec-NOTICE.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "Apache-2.0 NOTICE",
+      "source": "https://repo.maven.apache.org/maven2/commons-codec/commons-codec/1.10/commons-codec-1.10.jar",
+      "sha256": "bcb83645cb4d1a46e551f21a53477b3f8b7518471480e1b6afe04a5f9fc3af80",
+      "bytes": 749,
+      "archive_path": "META-INF/NOTICE.txt"
+    },
+    {
+      "component": "OkHttpPSL",
+      "target": "licenses/native-runtime/android/okhttp-psl-NOTICE.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "MPL-2.0",
+      "source": "https://repo.maven.apache.org/maven2/com/squareup/okhttp3/okhttp/4.9.2/okhttp-4.9.2.jar",
+      "sha256": "8a9c58fbded5ea3474315e4a9824ca8b1486098a1a03e897e0b19419d5e1876a",
+      "bytes": 218,
+      "archive_path": "okhttp3/internal/publicsuffix/NOTICE"
+    },
+    {
+      "component": "OkHttpPSL",
+      "target": "licenses/native-runtime/android/MPL-2.0.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "MPL-2.0",
+      "source": "https://www.mozilla.org/media/MPL/2.0/index.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+      "bytes": 16726
+    },
+    {
+      "component": "OkHttpPSL source availability",
+      "target": "licenses/native-runtime/android/okhttp-psl-SOURCE.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "MPL-2.0 source availability",
+      "source": "https://raw.githubusercontent.com/square/okhttp/3edf17ca8a5048912d19e84d0fc2a7941a97c07d/okhttp/src/test/resources/okhttp3/internal/publicsuffix/public_suffix_list.dat",
+      "sha256": "ce306140c7583bf764655e02c4806d81d5cc354dbbe927ab5fe80273b1c116df",
+      "bytes": 451
+    },
+    {
+      "component": "bolts",
+      "target": "licenses/native-runtime/android/bolts-LICENSE.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "BSD-3-Clause",
+      "source": "https://raw.githubusercontent.com/BoltsFramework/Bolts-Android/3def0de57eb06ea09056251be93e397ea28e34c1/LICENSE",
+      "sha256": "9e69750c616877af2dec86f961a53e39324c3655e25b1d6ceed06e9661ec072b",
+      "bytes": 1525
+    },
+    {
+      "component": "zstd",
+      "target": "licenses/native-runtime/android/zstd-LICENSE.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "BSD-3-Clause",
+      "source": "https://raw.githubusercontent.com/facebook/zstd/1dbc2e09084e843f6c0dcc2d0791610015c50979/LICENSE",
+      "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
+      "bytes": 1549
+    },
+    {
+      "component": "expo-v2",
+      "target": "licenses/native-runtime/android/expo-v2-LICENSE.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "MIT",
+      "source": "https://raw.githubusercontent.com/expo/expo-modules-v2-android/1d96107059902d956618f8b826e40e63142bf95d/LICENSE.txt",
+      "sha256": "a1690bef5d8880c1036a72204838b18cf9dc19f51ed6a5147e281505601ac6cf",
+      "bytes": 1106
+    },
+    {
+      "component": "pika",
+      "target": "licenses/native-runtime/android/pika-LICENSE.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "MIT",
+      "source": "https://raw.githubusercontent.com/expo/pika/8456165a82a17c670614c91e12b784ab8245de57/LICENSE.txt",
+      "sha256": "921f777d6cb71423f5a0cd8f1a0847f087b97da62e4d48ffe63e3add13f50af5",
+      "bytes": 1071
+    },
+    {
+      "component": "Brotli decoder0.1.2",
+      "target": "licenses/native-runtime/android/brotli-LICENSE.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "MIT",
+      "source": "https://raw.githubusercontent.com/google/brotli/66e798d46ae95af5fcd569b5b2ec71001688ced4/LICENSE",
+      "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94",
+      "bytes": 1084
+    },
+    {
+      "component": "Brotli source copyright",
+      "target": "licenses/native-runtime/android/brotli-NOTICE.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "MIT copyright",
+      "source": "https://repo.maven.apache.org/maven2/org/brotli/dec/0.1.2/dec-0.1.2-sources.jar",
+      "sha256": "8f299b78488da0596cca002972b0a647f829d90452a51f4f59d71ca63a0b41e7",
+      "bytes": 167
+    },
+    {
+      "component": "NDK libc++ runtime",
+      "target": "licenses/native-runtime/android/libcxx-LICENSE.txt",
+      "platforms": [
+        "android"
+      ],
+      "license": "Apache-2.0 WITH LLVM-exception and legacy licenses",
+      "source": "https://raw.githubusercontent.com/llvm/llvm-project/3c92011b600bdf70424e2547594dd461fe411a41/libcxx/LICENSE.TXT",
+      "sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b",
+      "bytes": 16703
+    },
+    {
+      "component": "Fresco native JPEGtranscoder libjpeg-turbo2.1.5.1",
+      "target": "licenses/native-runtime/android/jpeg-turbo-LICENSE.md",
+      "platforms": [
+        "android"
+      ],
+      "license": "IJG/BSD-3-Clause/zlib",
+      "source": "https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/8ecba3647edb6dd940463fedf38ca33a8e2a73d1/LICENSE.md",
+      "sha256": "60c756742db3ad1913304e8b13f0e86e22e51adb50cc0b3333c163f7e45ceec1",
+      "bytes": 5213
+    },
+    {
+      "component": "Fresco native JPEGtranscoder libjpeg-turbo2.1.5.1",
+      "target": "licenses/native-runtime/android/jpeg-turbo-README.ijg",
+      "platforms": [
+        "android"
+      ],
+      "license": "IJG/BSD-3-Clause/zlib",
+      "source": "https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/8ecba3647edb6dd940463fedf38ca33a8e2a73d1/README.ijg",
+      "sha256": "4b7b9f8c03bb8d60270dfd12684e70ab21e4abfd27e73905cd1a7c4cae6f5cdb",
+      "bytes": 12732
+    },
+    {
+      "component": "SocketRocket0.7.1",
+      "target": "licenses/native-runtime/ios/socketrocket-LICENSE.txt",
+      "platforms": [
+        "ios"
+      ],
+      "license": "BSD-3-Clause",
+      "source": "https://raw.githubusercontent.com/facebookincubator/SocketRocket/21ac000390781823dd4bd87fdc419976e05dd7a6/LICENSE",
+      "sha256": "41c74b84758ab303b091b0afbf958de909559556c8f1591dc4d687ea184356ab",
+      "bytes": 1532
+    },
+    {
+      "component": "SocketRocket original Square copyright",
+      "target": "licenses/native-runtime/ios/socketrocket-NOTICE.txt",
+      "platforms": [
+        "ios"
+      ],
+      "license": "BSD-3-Clause copyright",
+      "source": "https://raw.githubusercontent.com/facebookincubator/SocketRocket/21ac000390781823dd4bd87fdc419976e05dd7a6/SocketRocket/SRWebSocket.h",
+      "sha256": "82c0bdd903c157dfef295f81f7cb7f582672c38c8052a023a062d97d0f8fc1e5",
+      "bytes": 350
+    }
+  ]
+}

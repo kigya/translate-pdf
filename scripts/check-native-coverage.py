@@ -23,6 +23,7 @@ EXCLUDED_NATIVE_SOURCES = {
     "native/tests/core_detail_test.cpp": "handwritten native core host-regression harness; production core.cpp remains owned and measured",
     "native/tests/core_fault_test.cpp": "handwritten native core fault-injection harness; production core implementations remain owned and measured",
     "native/tests/jni_bridge_test.cpp": "handwritten JNI host-regression harness; production JNI bridge remains owned and measured",
+    "native/tests/docx_fault_test.cpp": "handwritten DOCX ZIP-boundary fault harness linked to the measured production parser object; not shipped application code",
     "native/tests/jni_shim/android/bitmap.h": "test-only Android Bitmap boundary declaration for host JNI tests",
     "ios/TranslatePDF/TranslateCoreBridge.h": "Objective-C interface declarations only; executable implementation is in TranslateCoreBridge.mm",
 }
@@ -158,6 +159,15 @@ def load_jacoco_files(path: Path) -> dict[str, dict[str, Any]]:
                     metrics["branches"] = metric
                 elif kind == "INSTRUCTION":
                     metrics["instructions"] = metric
+            # JaCoCo 0.8.15 XMLCoverageWriter omits zero-total counters. JVM
+            # branch instrumentation is supported: an executable source with
+            # no branch counter/line hits has zero branches, unlike Swift's
+            # unsupported LLVM branch mapping. Never fill a contradictory XML.
+            if ("branches" not in metrics and metrics.get("instructions", {}).get("count", 0) > 0
+                    and not any(int(line.get("mb", "0")) + int(line.get("cb", "0")) > 0
+                                for line in source.findall("line"))):
+                metrics["branches"] = {"percent": 100.0, "covered": 0, "count": 0,
+                                       "provenance": "JaCoCo XML omitted zero-total BRANCH counter"}
             files[relative] = metrics
     return files
 

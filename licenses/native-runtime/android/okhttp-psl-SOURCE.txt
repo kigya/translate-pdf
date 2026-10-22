@@ -1,0 +1,6 @@
+Public Suffix List source for the database redistributed with OkHttp 4.9.2
+
+The corresponding editable source is available under Mozilla Public License 2.0 at:
+https://raw.githubusercontent.com/square/okhttp/3edf17ca8a5048912d19e84d0fc2a7941a97c07d/okhttp/src/test/resources/okhttp3/internal/publicsuffix/public_suffix_list.dat
+
+The normal and exception rule bytes generated from this pinned source match the redistributed publicsuffixes.gz database.

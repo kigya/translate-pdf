@@ -44,3 +44,16 @@ it('drains a final rating selected while authoritative refresh is pending', asyn
   expect(save.mock.calls).toEqual([[1], [5]]);
   expect(refresh).toHaveBeenCalledTimes(2); expect(onError).not.toHaveBeenCalled();
 });
+
+it('does not report a late refresh failure to an unmounted screen', async () => {
+  let reject!: (error: Error) => void;
+  const save = jest.fn().mockResolvedValue(undefined);
+  const refresh = jest.fn(() => new Promise<void>((_resolve, failure) => { reject = failure; }));
+  const onError = jest.fn();
+  const { result, unmount } = renderHook(() => useAppRating(save, refresh, onError));
+  await act(async () => { result.current(3); await Promise.resolve(); });
+  expect(refresh).toHaveBeenCalledTimes(1);
+  unmount();
+  await act(async () => { reject(new Error('late read')); await Promise.resolve(); });
+  expect(onError).not.toHaveBeenCalled();
+});

@@ -105,6 +105,36 @@ class NativeCoverageGateTest(unittest.TestCase):
             self.assertEqual("failed", result["results"][0]["status"], failing_counter)
             self.assertTrue(any("coverage" in error or "measurable" in error for error in result["results"][0]["errors"]))
 
+    def test_jacoco_omitted_zero_branch_counter_is_measured_branchless_code(self):
+        report = '''<report><package name="example"><sourcefile name="Bridge.kt">
+          <counter type="INSTRUCTION" missed="0" covered="15"/>
+          <counter type="LINE" missed="0" covered="6"/>
+          <counter type="METHOD" missed="0" covered="4"/>
+        </sourcefile></package></report>'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "branchless.xml"
+            path.write_text(report, encoding="utf-8")
+            files = GATE.load_jacoco_files(path)
+        result = GATE.analyze(["android/app/src/main/java/example/Bridge.kt"], {}, files)
+        self.assertEqual("passed", result["results"][0]["status"])
+        branches = result["results"][0]["metrics"]["branches"]
+        self.assertEqual((0, 0, 100.0), (branches["covered"], branches["count"], branches["percent"]))
+
+    def test_jacoco_missing_counter_does_not_erase_reported_line_branches(self):
+        report = '''<report><package name="example"><sourcefile name="Bridge.kt">
+          <line nr="1" mi="0" ci="15" mb="1" cb="1"/>
+          <counter type="INSTRUCTION" missed="0" covered="15"/>
+          <counter type="LINE" missed="0" covered="1"/>
+          <counter type="METHOD" missed="0" covered="1"/>
+        </sourcefile></package></report>'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "inconsistent.xml"
+            path.write_text(report, encoding="utf-8")
+            files = GATE.load_jacoco_files(path)
+        result = GATE.analyze(["android/app/src/main/java/example/Bridge.kt"], {}, files)
+        self.assertEqual("failed", result["results"][0]["status"])
+        self.assertIn("missing branches coverage data", result["results"][0]["errors"])
+
     def test_llvm_source_metrics_take_precedence_without_hiding_missing_files(self):
         llvm = {"native/core.cpp": {
             "lines": {"percent": 100, "covered": 2, "count": 2},

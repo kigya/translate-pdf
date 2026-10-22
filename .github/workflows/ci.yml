@@ -79,7 +79,7 @@ jobs:
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: false
           packages: |-
-            platforms;android-37
+            platforms;android-37.0
             build-tools;37.0.0
             ndk;27.1.12297006
 
@@ -256,29 +256,40 @@ jobs:
           retention-days: 5
 
   source-analysis:
-    name: JavaScript and TypeScript source analysis
+    name: JavaScript and TypeScript source security analysis
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
-      actions: read
       contents: read
-      security-events: write
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3.39.0
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          languages: javascript-typescript
-          build-mode: none
+          python-version: '3.12'
 
-      - name: Analyze source
-        uses: github/codeql-action/analyze@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3.39.0
+      - name: Install checksum-locked source scanner
+        run: |
+          python3 -m venv .local-private/security-tools
+          .local-private/security-tools/bin/python -m pip install --require-hashes -r scripts/security/requirements.txt
+
+      - name: Run pinned source security rules
+        run: bash scripts/security/scan-source.sh
+
+      - name: Preserve source scan evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          category: /language:javascript-typescript
+          name: source-security-scan
+          path: |
+            .local-private/security-source/semgrep.json
+            .local-private/security-source/rules-receipt.json
+          if-no-files-found: ignore
+          retention-days: 5
 
   publication-screen:
     name: Changed-source publication and privacy screen

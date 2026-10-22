@@ -150,7 +150,7 @@ export function MorphSheet({
       }
       let best = 0;
       for (let i = 1; i < tops.length; i++) {
-        if (Math.abs((tops[i] ?? 0) - projected) < Math.abs((tops[best] ?? 0) - projected))
+        if (Math.abs(tops[i] - projected) < Math.abs(tops[best] - projected))
           best = i;
       }
       const changed = best !== current.get();
@@ -206,7 +206,7 @@ export function MorphSheet({
       case 'expand':
         if (i < tops.length - 1) {
           current.set(i + 1);
-          animateTo(tops[i + 1] ?? highest);
+          animateTo(tops[i + 1]);
           settle(i + 1);
         }
         break;

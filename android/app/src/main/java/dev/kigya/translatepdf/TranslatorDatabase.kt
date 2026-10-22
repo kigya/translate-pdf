@@ -402,6 +402,17 @@ internal class TranslatorDatabase(
     writableDatabase.update("jobs", values, "id=?", arrayOf(id))
   }
 
+  /** Atomically transitions a job only while a worker still owns its active row. */
+  fun transitionActiveJob(id: String, status: String, stage: String? = null, error: String? = null): Boolean {
+    val values = ContentValues().apply {
+      put("status", status)
+      stage?.let { put("stage", it) }
+      if (error == null) putNull("error") else put("error", error)
+      put("updated_at", System.currentTimeMillis())
+    }
+    return writableDatabase.update("jobs", values, "id=? AND status IN ('queued','running')", arrayOf(id)) > 0
+  }
+
   fun jobGlossaryId(id: String): String? = readQuery(
     "SELECT glossary_id FROM jobs WHERE id=?", arrayOf(id),
   ).use { if (it.moveToFirst() && !it.isNull(0)) it.getString(0) else null }
@@ -496,6 +507,43 @@ internal class TranslatorDatabase(
     writableDatabase.insertWithOnConflict("exports", null, ContentValues().apply {
       put("id", id); put("path", path); put("name", name); put("created_at", System.currentTimeMillis()); put("mime_type", mimeType)
     }, SQLiteDatabase.CONFLICT_REPLACE)
+  }
+
+  /** Finalizes an active job and publishes its durable export as one SQLite commit. */
+  fun completeActiveJobWithExport(
+    jobId: String,
+    exportId: String,
+    path: String,
+    name: String,
+    mimeType: String,
+    partial: Boolean,
+  ): Boolean {
+    val db = writableDatabase
+    db.beginTransaction()
+    try {
+      val values = ContentValues().apply {
+        put("status", if (partial) "partial" else "completed")
+        put("stage", "complete")
+        putNull("current_page")
+        putNull("error")
+        put("updated_at", System.currentTimeMillis())
+      }
+      if (db.update("jobs", values, "id=? AND status IN ('queued','running')", arrayOf(jobId)) == 0) {
+        return false
+      }
+      val inserted = db.insertWithOnConflict("exports", null, ContentValues().apply {
+        put("id", exportId)
+        put("path", path)
+        put("name", name)
+        put("created_at", System.currentTimeMillis())
+        put("mime_type", mimeType)
+      }, SQLiteDatabase.CONFLICT_REPLACE)
+      check(inserted != -1L) { "The translated document export could not be saved." }
+      db.setTransactionSuccessful()
+      return true
+    } finally {
+      db.endTransaction()
+    }
   }
 
   fun deleteExport(id: String) { writableDatabase.delete("exports", "id=?", arrayOf(id)) }

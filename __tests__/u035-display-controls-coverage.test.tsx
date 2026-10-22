@@ -2,6 +2,14 @@ import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react-native-legacy';
 import { AccessibilityInfo, Text, View } from 'react-native';
 
+let mockPressed = false;
+jest.mock('react-native/Libraries/Components/Pressable/Pressable', () => {
+  const ReactRuntime = require('react');
+  const actual = jest.requireActual('react-native/Libraries/Components/Pressable/Pressable');
+  return { ...actual, default: ReactRuntime.forwardRef((props: object, ref: unknown) =>
+    ReactRuntime.createElement(actual.default, { ...props, ref, testOnly_pressed: mockPressed })) };
+});
+
 jest.mock('react-native-reanimated', () => {
   const ReactRuntime = require('react');
   const RN = require('react-native');
@@ -46,6 +54,7 @@ const wrap = (children: React.ReactNode, reduceMotion: 'always' | 'never' = 'alw
 
 afterEach(() => {
   jest.useRealTimers();
+  mockPressed = false;
   jest.restoreAllMocks();
 });
 
@@ -381,4 +390,26 @@ describe('U035 display controls: Timeline', () => {
     expect(view.UNSAFE_getByProps({ accessibilityLabel: 'Just now, Prepared' }).props.accessible).toBe(true);
     expect(view.UNSAFE_getByProps({ accessibilityLabel: 'Soon, Waiting' }).props.accessible).toBe(true);
   });
+});
+
+test('empty-state and search actions expose pressed feedback without moving reduced-motion buttons', () => {
+  const { StyleSheet } = require('react-native');
+  mockPressed = true;
+  const view = render(wrap(<EmptyState title="No documents" action={{ label: 'Import', onPress: jest.fn() }} secondaryAction={{ label: 'Help', onPress: jest.fn() }} />, 'never'));
+  expect(StyleSheet.flatten(screen.getByRole('button', { name: 'Import' }).props.style).transform).toEqual([{ scale: 0.97 }]);
+  expect(StyleSheet.flatten(screen.getByRole('button', { name: 'Help' }).props.style).opacity).toBe(0.6);
+  view.rerender(wrap(<EmptyState title="No documents" action={{ label: 'Import', onPress: jest.fn() }} />));
+  expect(StyleSheet.flatten(screen.getByRole('button', { name: 'Import' }).props.style).transform).toEqual([{ scale: 1 }]);
+  view.rerender(wrap(<SearchMorph open value="" onChangeText={jest.fn()} cancelLabel="Cancel search" />));
+  expect(StyleSheet.flatten(screen.getByRole('button', { name: 'Cancel search' }).props.style).opacity).toBe(0.6);
+});
+
+test('read-more recovers omitted text metrics and keeps the toggle feedback readable', () => {
+  const { StyleSheet } = require('react-native');
+  mockPressed = true;
+  const view = render(wrap(<ReadMore lines={1} textStyle={{ fontSize: 22, lineHeight: undefined }}>Long text</ReadMore>));
+  fireEvent(screen.getByText('Long text'), 'layout', { nativeEvent: { layout: { width: 90, height: 200 } } });
+  expect(StyleSheet.flatten(screen.getByRole('button', { name: 'Read more' }).props.style).opacity).toBe(0.6);
+  view.rerender(wrap(<ReadMore lines={1} textStyle={{ fontSize: undefined, lineHeight: undefined }}>Long text</ReadMore>));
+  expect(screen.getByRole('button', { name: 'Read more' })).toBeOnTheScreen();
 });

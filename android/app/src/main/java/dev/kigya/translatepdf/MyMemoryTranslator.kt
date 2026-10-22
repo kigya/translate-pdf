@@ -20,6 +20,7 @@ internal class MyMemoryException(val failure: MyMemoryFailure) : IOException(
 
 /** Public MyMemory GET integration. Request text and URLs are intentionally never logged. */
 internal class MyMemoryTranslator(
+  private val openConnection: (URL) -> java.net.URLConnection = URL::openConnection,
   private val request: ((String, String, String) -> String)? = null,
 ) {
   private val cancelled = AtomicBoolean(false)
@@ -106,7 +107,8 @@ internal class MyMemoryTranslator(
           byteCount += bytes
           if (Character.isWhitespace(cp) || cp == '.'.code || cp == '!'.code || cp == '?'.code || cp == '。'.code || cp == '！'.code || cp == '？'.code) lastPreferred = end
         }
-        check(end > start) { "A text code point exceeds the online request limit." }
+        // The first scalar always advances: UTF-8 needs at most four bytes,
+        // below the fixed 500-byte limit; a leading newline advances above.
         val boundary = if (end < text.length && lastPreferred > start) lastPreferred else end
         result += text.substring(start, boundary)
         start = boundary
@@ -140,10 +142,10 @@ internal class MyMemoryTranslator(
         val codePoint = when (token.lowercase()) {
           "&amp;" -> '&'.code; "&quot;" -> '"'.code; "&apos;" -> '\''.code
           "&lt;" -> '<'.code; "&gt;" -> '>'.code; "&nbsp;" -> 0xA0
-          else -> runCatching {
-            if (token.startsWith("&#x", ignoreCase = true)) token.substring(3, token.length - 1).toInt(16)
+          // The regex bounds decimal references to 7 digits and hex to 6;
+          // both fit Int. Invalid Unicode scalars remain literal below.
+          else -> if (token.startsWith("&#x", ignoreCase = true)) token.substring(3, token.length - 1).toInt(16)
             else token.substring(2, token.length - 1).toInt(10)
-          }.getOrDefault(-1)
         }
         if (!Character.isValidCodePoint(codePoint) || codePoint in 0xD800..0xDFFF) token
         else String(Character.toChars(codePoint))
@@ -165,7 +167,7 @@ internal class MyMemoryTranslator(
           .appendQueryParameter("q", fragment)
           .appendQueryParameter("langpair", "$source|$target")
           .build()
-        connection = (URL(uri.toString()).openConnection() as HttpURLConnection).apply {
+        connection = (openConnection(URL(uri.toString())) as HttpURLConnection).apply {
           requestMethod = "GET"
           connectTimeout = 12_000
           readTimeout = 18_000
@@ -173,10 +175,7 @@ internal class MyMemoryTranslator(
           instanceFollowRedirects = false
         }
         activeConnection = connection
-        if (cancelled.get()) {
-          connection.disconnect()
-          checkCancelled()
-        }
+        checkCancelled()
         val code = connection.responseCode
         if (code == 429) throw MyMemoryException(MyMemoryFailure.QUOTA)
         if (code !in 200..299) throw MyMemoryException(MyMemoryFailure.TEMPORARY)

@@ -167,7 +167,7 @@ export function MorphSelect({
     const option = options[i];
     if (!option || option.disabled) return;
     haptic('tick');
-    const top = rowOffsets[i] ?? 0;
+    const top = rowHeights.slice(0, i).reduce((sum, height) => sum + height, 0);
     highlight.set(reduced ? top : withSpring(top, spring('snappy')));
     close(option.value);
   };
@@ -301,7 +301,8 @@ export function MorphSelect({
                   fontSize={font.size.md}
                   minHeight={baseRowHeight}
                   onHeight={(height) => setRowHeights((previous) => {
-                    if (Math.abs((previous[i] ?? 0) - height) < 1) return previous;
+                    // An unmeasured row has no previous height; NaN leaves it eligible for its first update.
+                    if (Math.abs(previous[i] - height) < 1) return previous;
                     const next = [...previous];
                     next[i] = height;
                     return next;

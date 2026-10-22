@@ -102,5 +102,6 @@ export function libraryUx(locale: string, key: LibraryUxKey): string {
   const normalized = normalizeLocale(locale);
   if (normalized === 'ru') return libraryUxRu[key];
   if (normalized === 'en' || normalized === 'system') return libraryUxEn[key];
-  return localized[normalized as LocalizedLocale]?.[key] ?? libraryUxEn[key];
+  // normalizeLocale returns a supported locale; all remaining catalogs are complete.
+  return localized[normalized as LocalizedLocale][key];
 }

@@ -731,6 +731,20 @@ class ShadowNativePdfCore {
     return inspectCallback?.invoke(path) ?: inspectionResponse ?: JSONObject().put("pageCount", 1).toString()
   }
 
+  @Implementation fun inspectDocx(path: String): String {
+    inspectDocxCallback?.let { return it(path) }
+    check(File(path).readBytes().take(4) == listOf<Byte>(80,75,3,4))
+    return """{"format":"docx","pageCount":2,"segmentCount":2,"warnings":["Unsupported element preserved"]}"""
+  }
+
+  @Implementation fun exportDocx(source: String, segmentsJson: String, destination: String): String {
+    exportDocxCallback?.let { return it(source, segmentsJson, destination) }
+    check(File(source).readText() == "original")
+    check(JSONArray(segmentsJson).length() == 2)
+    File(destination).writeText("translated Word")
+    return """{"path":"$destination","partial":false,"warnings":[]}"""
+  }
+
   @Implementation fun exportPage(
     source: String, index: Int, blocksJson: String, destination: String, fontPath: String, cjkFontPath: String,
   ): String {
@@ -753,6 +767,8 @@ class ShadowNativePdfCore {
   @Implementation fun loadModel(path: String, context: Int, threads: Int, profile: String): String =
     loadCallback?.invoke() ?: "{}"
   @Implementation fun readPage(path: String, index: Int): String = readCallback?.invoke() ?: "{}"
+  @Implementation fun readDocxSegment(path: String, index: Int): String =
+    readDocxCallback?.invoke(path, index) ?: error("A Word segment response must be configured by the test.")
   @Implementation fun translate(text: String, glossary: String, context: String, sourceLanguage: String, targetLanguage: String): String =
     translateCallback?.invoke() ?: "{}"
   @Implementation fun releaseModel() { releaseCallback?.invoke() }
@@ -761,6 +777,9 @@ class ShadowNativePdfCore {
   companion object {
     var inspectionResponse: String? = null
     var inspectCallback: ((String) -> String)? = null
+    var inspectDocxCallback: ((String) -> String)? = null
+    var exportDocxCallback: ((String, String, String) -> String)? = null
+    var readDocxCallback: ((String, Int) -> String)? = null
     var exportCallback: ((String) -> String)? = null
     var mergeCallback: ((String, String) -> String)? = null
     var renderCallback: (() -> Bitmap)? = null
@@ -772,6 +791,7 @@ class ShadowNativePdfCore {
     fun resetCallbacks() {
       inspectCallback = null; exportCallback = null; mergeCallback = null; renderCallback = null
       loadCallback = null; readCallback = null; translateCallback = null; releaseCallback = null; cancelCallback = null
+      inspectDocxCallback = null; exportDocxCallback = null; readDocxCallback = null
     }
   }
 }

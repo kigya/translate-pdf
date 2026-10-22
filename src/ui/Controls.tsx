@@ -192,7 +192,7 @@ export function Sheet({ visible, title, onClose, colors, children, closeLabel = 
   return <Modal visible={mounted || visible} transparent animationType="none" onRequestClose={onClose}>
     <GestureHandlerRootView style={{ flex: 1 }}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <MorphSheet open={visible} onOpenChange={open => { if (!open) onClose(); }} initialSnap={1} snapPoints={[0.5, 0.9]} blur={false} accessibilityLabel={title} closeLabel={closeLabel} expandLabel={libraryUx(locale, 'expand')} collapseLabel={libraryUx(locale, 'collapse')}
+        <MorphSheet open={visible} onOpenChange={onClose} initialSnap={1} snapPoints={[0.5, 0.9]} blur={false} accessibilityLabel={title} closeLabel={closeLabel} expandLabel={libraryUx(locale, 'expand')} collapseLabel={libraryUx(locale, 'collapse')}
           sheet={<View style={{ flex: 1, paddingHorizontal: 24, paddingBottom: Math.max(20, insets.bottom) }}><View style={{ flexDirection: 'row', alignItems: 'center', paddingBottom: 12 }}><Text accessibilityRole="header" style={{ flex: 1, color: colors.text, fontSize: 21, fontWeight: '800' }}>{title}</Text><IconButton name="close" label={closeLabel} colors={colors} onPress={onClose} /></View><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 18, paddingBottom: 24 }}>{children}</ScrollView></View>}>
           <View style={{ flex: 1 }} />
         </MorphSheet>

@@ -21,7 +21,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 OWNED = tuple(f"ios/TranslatePDF/{name}.swift" for name in (
     "AppDelegate", "SceneDelegate", "ModelCatalog", "ModelDownloadCoordinator",
-    "PdfTranslatorModule", "TranslatorStore"))
+    "PdfTranslatorModule", "TranslatorStore", "DocxPreviewRenderer", "MyMemoryTranslator"))
 DEVELOPER = "/Applications/Xcode.app/Contents/Developer"
 
 

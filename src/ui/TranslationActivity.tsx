@@ -31,17 +31,18 @@ const stageIndex: Record<JobStage, number> = {
 };
 
 export function translationActivityTimeline(job: JobSnapshot, t: Translator, locale = 'en'): TimelineEvent[] {
-  const current = job.status === 'completed'
+  const finished = job.status === 'completed' || job.status === 'partial';
+  const current = finished
     ? 4
     : job.status === 'queued'
       ? 0
       : stageIndex[job.stage] ?? -1;
-  const safeCurrent = current === 4 && job.status !== 'completed' ? 3 : current;
+  const safeCurrent = current === 4 && !finished ? 3 : current;
   return stages.map((stage, index) => ({
     key: stage.key,
     title: stage.label(t, locale, job),
     time: '',
-    state: job.status === 'completed'
+    state: finished
       ? 'done'
       : index < safeCurrent
         ? 'done'
@@ -84,8 +85,8 @@ export function TranslationActivity({
   type PreviewState = { identity: string; phase: 'loading' } | { identity: string; phase: 'error' } | { identity: string; phase: 'ready'; uri?: string };
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
-  const isCompleted = job.status === 'completed';
-  const previewIdentity = JSON.stringify(isCompleted
+  const isFinished = job.status === 'completed' || job.status === 'partial';
+  const previewIdentity = JSON.stringify(isFinished
     ? [job.id, job.status, job.documentId, job.documentFormat ?? 'pdf', job.updatedAt, job.completedPages, job.totalPages]
     : [job.id, job.documentId, job.documentFormat ?? 'pdf']);
   const previewAllowed = job.documentFormat !== 'docx' || active;
@@ -99,7 +100,7 @@ export function TranslationActivity({
     const load = async () => {
       try {
         let uri: string | undefined;
-        if (isCompleted) {
+        if (isFinished) {
           if (job.documentFormat === 'docx') {
             const rendered = await PdfTranslator.renderDocxPreview(job.documentId, job.id, true);
             if (rendered.pageCount < 1) throw new Error('No translated pages');
@@ -114,12 +115,12 @@ export function TranslationActivity({
         }
         if (live) setPreview({ identity: previewIdentity, phase: 'ready', uri });
       } catch {
-        if (live) setPreview({ identity: previewIdentity, phase: isCompleted ? 'error' : 'ready' });
+        if (live) setPreview({ identity: previewIdentity, phase: isFinished ? 'error' : 'ready' });
       }
     };
     load();
     return () => { live = false; };
-  }, [isCompleted, job.documentFormat, job.documentId, job.id, previewAllowed, previewIdentity, retryNonce]);
+  }, [isFinished, job.documentFormat, job.documentId, job.id, previewAllowed, previewIdentity, retryNonce]);
 
   useEffect(() => {
     const previous = transition.current;
@@ -165,11 +166,11 @@ export function TranslationActivity({
       haptics
     >
       <View style={[styles.content, { direction: localeDirection(locale) }]}>
-        {isCompleted ? currentPreview?.phase === 'ready' && previewUri ? (
+        {isFinished ? currentPreview?.phase === 'ready' && previewUri ? (
           <Image
             accessible
             accessibilityRole="image"
-            accessibilityLabel={`${job.documentName || t('document')}, ${t('completed')}`}
+            accessibilityLabel={`${job.documentName || t('document')}, ${activityLabel(job, t, locale)}`}
             source={{ uri: previewUri }}
             resizeMode="contain"
             onError={() => {

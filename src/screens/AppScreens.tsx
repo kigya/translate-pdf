@@ -17,6 +17,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import Animated, {
   FadeIn,
@@ -425,11 +426,13 @@ export function PairPicker({
   target: TranslationLanguage;
   onChange: (s: TranslationLanguage, t: TranslationLanguage) => void;
 } & Base) {
+  const { width, fontScale } = useWindowDimensions();
+  const stacked = width / fontScale < 340;
   const options = translationLanguages.map(([value, name]) => ({ value, label: `${localeFlags[value]} ${name}`, compactLabel: `${localeFlags[value]} ${translationLanguageShortName(value)}` }));
-  return <Row style={{ alignItems: 'flex-start' }}>
-    <View style={{ flex: 1 }}><MorphSelect closeLabel={t('back')} minMenuWidth={280} label={t('sourceLanguage')} value={source} options={options} disabled={busy} onValueChange={value => onChange(value as TranslationLanguage, value === target ? source : target)} /></View>
+  return <Row style={{ flexDirection: stacked ? 'column' : 'row', alignItems: stacked ? 'stretch' : 'flex-start' }}>
+    <View style={stacked ? undefined : { flex: 1 }}><MorphSelect closeLabel={t('back')} minMenuWidth={280} label={t('sourceLanguage')} value={source} options={options} disabled={busy} onValueChange={value => onChange(value as TranslationLanguage, value === target ? source : target)} /></View>
     <IconButton name="swap" label={t('swapLanguages')} colors={colors} disabled={busy} onPress={() => onChange(target, source)} />
-    <View style={{ flex: 1 }}><MorphSelect closeLabel={t('back')} minMenuWidth={280} label={t('targetLanguage')} value={target} options={options} disabled={busy} onValueChange={value => onChange(value === source ? target : source, value as TranslationLanguage)} /></View>
+    <View style={stacked ? undefined : { flex: 1 }}><MorphSelect closeLabel={t('back')} minMenuWidth={280} label={t('targetLanguage')} value={target} options={options} disabled={busy} onValueChange={value => onChange(value === source ? target : source, value as TranslationLanguage)} /></View>
   </Row>;
 }
 export function TranslationOptionsScreen({
@@ -942,7 +945,7 @@ export function SourcePreviewScreen({
     setUri('');
     setError('');
     if (document)
-      (document.format === 'docx' ? PdfTranslator.renderDocxPreview(document.id).then(preview => { if (live) setCount(preview.pageCount); return PdfTranslator.renderPage(document.id, page, 1200); }) : PdfTranslator.renderPage(document.id, page, 1200))
+      (document.format === 'docx' ? PdfTranslator.renderDocxPreview(document.id).then(preview => { if (!live) return ''; setCount(preview.pageCount); return PdfTranslator.renderPage(document.id, page, 1200); }) : PdfTranslator.renderPage(document.id, page, 1200))
         .then(value => {
           if (live) setUri(value);
         })

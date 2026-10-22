@@ -344,10 +344,12 @@ function Row({ row, first, danger }: { row: ProfileRow; first: boolean; danger: 
           {row.icon}
         </View>
       ) : null}
-      <Text style={[styles.fill, { color: ink, fontSize: font.size.md }]}>{row.label}</Text>
-      {row.detail ? (
-        <Text style={{ color: colors.textSubtle, fontSize: font.size.sm }}>{row.detail}</Text>
-      ) : null}
+      <View style={[styles.fill, { paddingVertical: space[3], gap: space[1] }]}>
+        <Text style={{ color: ink, fontSize: font.size.md }}>{row.label}</Text>
+        {row.detail ? (
+          <Text style={{ color: colors.textSubtle, fontSize: font.size.sm }}>{row.detail}</Text>
+        ) : null}
+      </View>
     </>
   );
 

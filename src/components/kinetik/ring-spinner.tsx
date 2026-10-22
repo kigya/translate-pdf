@@ -184,7 +184,7 @@ export function RingSpinner({
         status !== 'loading'
           ? { text: status === 'success' ? 'Done' : 'Failed' }
           : determinate
-            ? { min: 0, max: 100, now: Math.round((progress ?? 0) * 100) }
+          ? { min: 0, max: 100, now: Math.round(progress * 100) }
             : undefined
       }
       style={[{ width: size, height: size }, style]}

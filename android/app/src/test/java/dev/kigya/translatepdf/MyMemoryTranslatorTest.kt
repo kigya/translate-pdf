@@ -184,4 +184,52 @@ class MyMemoryTranslatorTest {
     assertEquals("checkpoint write failed", failure?.message)
     assertEquals(listOf("a".repeat(500)), requests)
   }
+
+  @Test
+  fun handlesEmptyInputCrLfAndPreferredSentenceBoundariesWithoutDroppingText() {
+    assertEquals(emptyList<String>(), MyMemoryTranslator.chunks(""))
+    for (text in listOf("first\r\nsecond\rthird\n", "end\r", "a".repeat(497)+"!?。！？ tail", "x".repeat(497)+" . rest")) {
+      val chunks = MyMemoryTranslator.chunks(text)
+      assertEquals(text, chunks.joinToString(""))
+      assertTrue(chunks.all { it.toByteArray(Charsets.UTF_8).size <= 500 })
+    }
+    assertTrue(runCatching { MyMemoryTranslator.apiCode("xx") }.exceptionOrNull() is IllegalArgumentException)
+  }
+
+  @Test
+  fun retainsInvalidNumericEntitiesAndDecodesAllSupportedNamedEntities() {
+    val text = "&apos;&lt;&gt;&nbsp;&#65;&#x1F600;&#X1f600;&#9999999;&#xD800;"
+    val body = org.json.JSONObject().put("responseStatus",200).put("responseData",org.json.JSONObject().put("translatedText",text)).toString()
+    assertEquals("'< >".replace(" ", "")+"\u00a0A😀😀&#9999999;&#xD800;", MyMemoryTranslator.parseResponse(body).getOrThrow().getString("translatedText"))
+  }
+
+  @Test
+  fun doesNotTreatQuotaStatusCopyAsAnExhaustedQuotaAndRejectsMissingData() {
+    assertEquals("ready", MyMemoryTranslator.parseResponse("""{"responseStatus":200,"responseDetails":"quota status available","responseData":{"translatedText":"ready"}}""").getOrThrow().getString("translatedText"))
+    assertEquals(MyMemoryFailure.TEMPORARY,(MyMemoryTranslator.parseResponse("""{"responseStatus":200}""").exceptionOrNull() as MyMemoryException).failure)
+  }
+
+  @Test
+  fun quotaDetectionDoesNotRequireAnHttpErrorStatus() {
+    for (body in listOf(
+      """{"responseStatus":200,"quotaFinished":"TRUE"}""",
+      """{"responseStatus":200,"responseDetails":"quota limit reached"}""",
+      """{"responseStatus":200,"responseDetails":"all available free translation requests used"}""",
+      """{"responseStatus":200,"responseDetails":"daily request limit reached"}"""
+    )) assertEquals(MyMemoryFailure.QUOTA, (MyMemoryTranslator.parseResponse(body).exceptionOrNull() as MyMemoryException).failure)
+    for (body in listOf("{}", """{"responseStatus":200,"responseData":{}}"""))
+      assertEquals(MyMemoryFailure.TEMPORARY, (MyMemoryTranslator.parseResponse(body).exceptionOrNull() as MyMemoryException).failure)
+  }
+
+  @Test
+  fun staleBlankAndNonObjectCheckpointsAreNotReused() {
+    var requests=0
+    val translator=MyMemoryTranslator { _, _, _ -> requests++; """{"responseStatus":200,"responseData":{"translatedText":"fresh"}}""" }
+    for (saved in listOf(
+      org.json.JSONArray().put("bad"),
+      org.json.JSONArray().put(org.json.JSONObject().put("index",0).put("source","different").put("translated","old")),
+      org.json.JSONArray().put(org.json.JSONObject().put("index",0).put("source","source").put("translated",""))
+    )) assertEquals("fresh",translator.translate("source","en","ru",saved))
+    assertEquals(3,requests)
+  }
 }

@@ -96,8 +96,7 @@ describe('Folivela document library', () => {
 
     fireEvent.changeText(screen.getByLabelText(libraryUx('en', 'searchDocuments')), 'no-such-manual');
     expect(screen.getByText(libraryUx('en', 'noDocumentsFound'))).toBeOnTheScreen();
-    const clearActions = screen.getAllByRole('button', { name: `${libraryUx('en', 'clearSearch')}: ${libraryUx('en', 'searchDocuments')}` });
-    fireEvent.press(clearActions.at(-1)!);
+    fireEvent.press(screen.getByRole('button', { name: libraryUx('en', 'clearSearch') }));
     expect(screen.getByText('Café pump.pdf')).toBeOnTheScreen();
     fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.getByText('Recent documents')).toBeOnTheScreen();
@@ -128,6 +127,10 @@ describe('Folivela document library', () => {
     expect(setColor).toHaveBeenCalledWith(expect.objectContaining({ id: 'done' }), 'red');
     expect(screen.getByRole('header', { name: libraryUx('en', 'documentColor') })).toBeOnTheScreen();
     expect(screen.getByRole('button', { name: libraryUx('en', 'noColor') })).toBeDisabled();
+    fireEvent.press(screen.getByRole('radio', { name: libraryUx('en', 'blue') }));
+    fireEvent.press(screen.getByRole('button', { name: 'Close color picker' }));
+    expect(setColor).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('color-picker-sheet')).toBeOnTheScreen();
     await act(async () => { finishSave?.(); });
     await waitFor(() => expect(screen.queryByRole('header', { name: libraryUx('en', 'documentColor') })).toBeNull());
 
@@ -153,6 +156,8 @@ describe('Folivela document library', () => {
     expect(screen.getByRole('header', { name: libraryUx('en', 'documentColor') })).toBeOnTheScreen();
     await act(async () => { rejectSave?.(new Error('database unavailable')); });
     expect(await within(screen.getByTestId('color-picker-sheet')).findByRole('alert')).toHaveTextContent(t('unknownError'));
+    fireEvent.press(screen.getByRole('button', { name: 'Close color picker' }));
+    expect(screen.queryByTestId('color-picker-sheet')).toBeNull();
   });
 
   it('anchors the color help tip to the logical end for LTR and start for RTL locales', () => {

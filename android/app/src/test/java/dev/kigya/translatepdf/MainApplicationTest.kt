@@ -3,6 +3,7 @@ package dev.kigya.translatepdf
 import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.res.Configuration
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -57,5 +58,14 @@ class MainApplicationTest {
       "React Native startup should complete or report the host-only runtime boundary; observed ${startupError?.javaClass?.name}: ${startupError?.message}",
       startupError == null || startupMissingHostNativeRuntime || robolectricRuntimeGap,
     )
+  }
+
+  @Test
+  fun configurationChangesReachExpoLifecycleDispatcher() {
+    val application = MainApplication()
+    ContextWrapper::class.java.getDeclaredMethod("attachBaseContext", Context::class.java)
+      .apply { isAccessible = true }.invoke(application, RuntimeEnvironment.getApplication())
+
+    application.onConfigurationChanged(Configuration())
   }
 }

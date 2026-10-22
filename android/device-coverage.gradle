@@ -1,0 +1,71 @@
+import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.Directory
+import org.gradle.api.file.RegularFile
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.ListProperty
+import org.gradle.api.tasks.Classpath
+import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+
+/** Test-only offline probes. Original compiler outputs and all app classes stay intact. */
+abstract class InstrumentOwnedDeviceClasses extends DefaultTask {
+    @InputFiles @PathSensitive(PathSensitivity.RELATIVE)
+    abstract ListProperty<RegularFile> getInputJars()
+
+    @InputFiles @PathSensitive(PathSensitivity.RELATIVE)
+    abstract ListProperty<Directory> getInputDirectories()
+
+    @Classpath
+    abstract ConfigurableFileCollection getInstrumenterClasspath()
+
+    @OutputFile
+    abstract RegularFileProperty getOutputJar()
+
+    @TaskAction
+    void instrument() {
+        def originals = new File(temporaryDir, "originals")
+        def probes = new File(temporaryDir, "probes")
+        project.delete(originals, probes)
+        project.copy {
+            inputDirectories.get().each { from(it.asFile) }
+            inputJars.get().each { from(project.zipTree(it.asFile)) }
+            include("**/*.class")
+            duplicatesStrategy = DuplicatesStrategy.FAIL
+            into(originals)
+        }
+        ant.taskdef(name: "folivelaInstrument", classname: "org.jacoco.ant.InstrumentTask",
+            classpath: instrumenterClasspath.asPath)
+        ant.folivelaInstrument(destdir: probes) { fileset(dir: originals) }
+        def output = outputJar.get().asFile
+        output.parentFile.mkdirs()
+        ant.jar(destfile: output, basedir: probes)
+    }
+}
+
+dependencies {
+    debugImplementation("org.jacoco:org.jacoco.agent:0.8.15:runtime")
+}
+
+// Scoped CLASSES artifacts carry bytecode only: package the runtime options as
+// Java resources so the offline agent can actually read them from the APK.
+android.sourceSets.debug.resources.srcDir(file("../device-coverage"))
+
+androidComponents.onVariants(androidComponents.selector().withBuildType("debug")) { variant ->
+    def task = tasks.register("instrumentOwnedDeviceClasses${variant.name.capitalize()}", InstrumentOwnedDeviceClasses) {
+        instrumenterClasspath.from(configurations.jacocoAnt)
+    }
+    // Applied scripts have their own classloader. Resolve the documented AGP
+    // scoped API through the already-applied plugin, without a second AGP pin.
+    def agpLoader = project.plugins.getPlugin("com.android.application").class.classLoader
+    def scopeType = agpLoader.loadClass('com.android.build.api.variant.ScopedArtifacts$Scope')
+    def projectScope = scopeType.enumConstants.find { it.name() == "PROJECT" }
+    if (projectScope == null) throw new GradleException("AGP project-class scope is unavailable.")
+    def classesType = agpLoader.loadClass('com.android.build.api.artifact.ScopedArtifact$CLASSES')
+    def classesArtifact = classesType.getField("INSTANCE").get(null)
+    variant.artifacts.forScope(projectScope).use(task).toTransform(
+        classesArtifact,
+        { it.inputJars }, { it.inputDirectories }, { it.outputJar })
+}

@@ -3,8 +3,12 @@ package dev.kigya.translatepdf
 import android.app.Application
 import android.content.Context
 import java.io.File
+import java.io.IOException
+import java.net.HttpURLConnection
 import java.net.ServerSocket
 import java.net.URL
+import java.net.URLConnection
+import java.net.URLStreamHandler
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -76,6 +80,40 @@ class ModelDownloaderTest {
       assertTrue("installed state requires the ready row and expected size", downloader.isInstalled(model.id))
       assertTrue("installed readiness requires the pinned digest", downloader.isReady(model.id))
       assertEquals(model.bytes, downloader.storedLength(model.id))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun nullRequestOverrideUsesThePinnedModelUrlResolver() {
+    val bytes = byteArrayOf(4, 9, 2, 6, 5, 3, 5, 8)
+    val server = LocalResponse(200, bytes)
+    val localUrl = URL("http://127.0.0.1:${server.port}/pinned-definition")
+    val resolverCalls = java.util.concurrent.atomic.AtomicInteger()
+    val fallbackDownloader = ModelDownloader(context, database,
+      definitionLookup = { model }, urlForDefinition = { definition ->
+        assertEquals(model.id, definition.id)
+        resolverCalls.incrementAndGet()
+        localUrl
+      })
+    val finished = CountDownLatch(1)
+    val result = AtomicReference<Result<File>>()
+
+    // The ordinary test server handler consumes the request; the resolver is
+    // the only way this transfer can reach it because no per-call URL is given.
+    fallbackDownloader.start(model.id, onProgress = {}, onFinished = {
+      result.set(it)
+      finished.countDown()
+    }, downloadUrl = null)
+
+    try {
+      assertTrue("the resolver-selected response should finish", finished.await(5, TimeUnit.SECONDS))
+      assertTrue("the pinned local fixture response should verify: ${result.get().exceptionOrNull()}", result.get().isSuccess)
+      assertEquals(1, resolverCalls.get())
+      assertEquals(bytes.toList(), fallbackDownloader.fileFor(model.id).readBytes().toList())
+      assertTrue(fallbackDownloader.isReady(model.id))
+      assertEquals(Triple("ready", model.bytes, null), database.modelState(model.id))
     } finally {
       server.close()
     }
@@ -158,6 +196,33 @@ class ModelDownloaderTest {
   }
 
   @Test
+  fun rejectsStatusBelowSuccessRangeEvenWhenConnectionReturnsInformationalCode() {
+    val disconnected = CountDownLatch(1)
+    val informationalStatusUrl = URL(null, "coverage://informational-status", object : URLStreamHandler() {
+      override fun openConnection(url: URL): URLConnection = object : HttpURLConnection(url) {
+        override fun connect() = Unit
+        override fun disconnect() { disconnected.countDown() }
+        override fun usingProxy() = false
+        override fun getResponseCode() = 199
+      }
+    })
+    val result = AtomicReference<Result<File>>()
+    val finished = CountDownLatch(1)
+
+    downloader.start(model.id, onProgress = {}, onFinished = {
+      result.set(it)
+      finished.countDown()
+    }, downloadUrl = informationalStatusUrl)
+
+    assertTrue("invalid HTTP status should finish", finished.await(5, TimeUnit.SECONDS))
+    assertEquals("Model download failed with HTTP 199.", result.get().exceptionOrNull()?.message)
+    assertEquals(Triple("error", 0L, "Model download failed with HTTP 199."), database.modelState(model.id))
+    assertTrue("the rejected response must be disconnected", disconnected.await(5,TimeUnit.SECONDS))
+    assertFalse(downloader.fileFor(model.id).exists())
+    assertFalse(downloader.fileFor(model.id).resolveSibling("${model.id}.part").exists())
+  }
+
+  @Test
   fun rejectsOversizedResponseAndDoesNotWriteTheOverflowChunk() {
     val oversized = byteArrayOf(4, 9, 2, 6, 5, 3, 5, 8)
     model = model.copy(bytes = 4)
@@ -220,13 +285,52 @@ class ModelDownloaderTest {
     assertTrue(downloader.isInstalled(model.id))
     installed.appendBytes(byteArrayOf(1))
     assertFalse("a ready row with the wrong length is stale", downloader.isInstalled(model.id))
+    installed.writeBytes(bytes)
+    installed.delete()
+    assertFalse("a ready database row cannot make a missing file installed", downloader.isInstalled(model.id))
     assertNull("the file check must not rewrite the captured database state", database.modelState(model.id)?.third)
+  }
+
+  @Test
+  fun claimedAndPausedServiceHandoffRemainsBusyUntilItsClaimIsReleased() {
+    val first = downloader.reserve(model.id)
+    assertTrue(downloader.claimServiceStart(model.id, first))
+    downloader.pause(model.id)
+
+    assertTrue("a claimed service handoff must not be replaced while cancellation is settling",
+      runCatching { downloader.reserve(model.id) }.exceptionOrNull() is IllegalStateException)
+
+    downloader.releaseServiceStart(model.id, first)
+    val retry = downloader.reserve(model.id)
+    assertTrue(downloader.releaseReservation(model.id, retry))
+  }
+
+  @Test
+  fun staleServiceCleanupAfterReservationRemovalIsAnIdempotentNoOp() {
+    val token = downloader.reserve(model.id)
+    assertTrue(downloader.releaseReservation(model.id, token))
+
+    downloader.releaseServiceStart(model.id, token)
+
+    assertFalse(downloader.hasActiveTransfer(model.id))
+    assertFalse(downloader.claimServiceStart(model.id, token))
+    var enqueueRan = false
+    assertTrue(runCatching {
+      downloader.withReservation(model.id, token) { enqueueRan = true }
+    }.isFailure)
+    assertFalse(enqueueRan)
   }
 
   @Test
   fun pausedReservationCanBeReplacedAndReleaseCallbackFailureStillCleansItUp() {
     val stale = downloader.reserve(model.id)
     downloader.pause(model.id)
+    var enqueueAfterPause = false
+    assertTrue("a paused queue intent cannot be enqueued", runCatching {
+      downloader.withReservation(model.id, stale) { enqueueAfterPause = true }
+    }.isFailure)
+    assertFalse(enqueueAfterPause)
+    assertFalse("a paused reservation cannot be claimed by a service", downloader.claimServiceStart(model.id, stale))
     val current = downloader.reserve(model.id)
     assertFalse("a replaced reservation cannot release the new one", downloader.releaseReservation(model.id, stale))
     assertTrue(downloader.hasActiveTransfer(model.id))
@@ -279,6 +383,175 @@ class ModelDownloaderTest {
     )
     assertTrue(downloader.hasActiveTransfer(model.id))
     assertTrue(downloader.releaseReservation(model.id, token))
+  }
+
+  @Test
+  fun simultaneousReservationAttemptsPublishExactlyOneTransfer() {
+    val workers = 12
+    val ready = CountDownLatch(workers)
+    val startTogether = CountDownLatch(1)
+    val finished = CountDownLatch(workers)
+    val tokens = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    val failures = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+    val pool = java.util.concurrent.Executors.newFixedThreadPool(workers)
+
+    repeat(workers) {
+      pool.execute {
+        ready.countDown()
+        try {
+          runCatching {
+            check(startTogether.await(5, TimeUnit.SECONDS)) { "all contenders should reach the start barrier" }
+            downloader.reserve(model.id)
+          }
+            .onSuccess { tokens.add(it) }
+            .onFailure { failures.add(it) }
+        } finally {
+          finished.countDown()
+        }
+      }
+    }
+
+    try {
+      assertTrue("all reservation contenders should be ready", ready.await(5, TimeUnit.SECONDS))
+      startTogether.countDown()
+      assertTrue("reservation attempts should finish", finished.await(5, TimeUnit.SECONDS))
+      assertEquals("only one concurrent caller may publish a reservation", 1, tokens.size)
+      assertEquals("all remaining callers must receive the expected busy result", workers - 1, failures.size)
+      assertTrue(failures.all { it is IllegalStateException && it.message == "A model download is already queued or running." })
+      assertTrue(downloader.hasActiveTransfer(model.id))
+      assertTrue(downloader.releaseReservation(model.id, tokens.single()))
+      assertFalse(downloader.hasActiveTransfer(model.id))
+    } finally {
+      startTogether.countDown()
+      pool.shutdownNow()
+      pool.awaitTermination(5, TimeUnit.SECONDS)
+    }
+  }
+
+  @Test
+  fun wrongTokensCannotEnqueueClaimOrStartOverTheCurrentReservation() {
+    val currentToken = downloader.reserve(model.id)
+    var enqueueRan = false
+    downloader.releaseServiceStart(model.id, "missing-token")
+    downloader.releaseServiceStart(model.id, "stale-token")
+    assertTrue(runCatching {
+      downloader.withReservation(model.id, "stale-token") { enqueueRan = true }
+    }.isFailure)
+    assertFalse(enqueueRan)
+    assertFalse(downloader.claimServiceStart(model.id, "stale-token"))
+
+    val callback = AtomicReference<Result<File>>()
+    downloader.start(model.id, onProgress = {}, onFinished = { callback.set(it) },
+      downloadUrl = URL("http://127.0.0.1:1/never"), transferToken = "stale-token")
+
+    assertTrue(callback.get().isFailure)
+    assertTrue(callback.get().exceptionOrNull() is ModelDownloadCanceled)
+    assertTrue("rejecting a stale service token must leave the live reservation intact", downloader.hasActiveTransfer(model.id))
+    assertTrue(downloader.releaseReservation(model.id, currentToken))
+  }
+
+  @Test
+  fun duplicateStartCannotCreateASecondWorkerOrReleaseTheRunningReservation() {
+    val server = ServerSocket(0)
+    val requestReceived = CountDownLatch(1)
+    val sendResponse = CountDownLatch(1)
+    val serverThread = Thread {
+      try {
+        server.accept().use { socket ->
+          socket.soTimeout = 5_000
+          val request = socket.getInputStream().bufferedReader()
+          while (request.readLine()?.isNotEmpty() == true) Unit
+          requestReceived.countDown()
+          if (sendResponse.await(5, TimeUnit.SECONDS)) {
+            socket.getOutputStream().apply {
+              write("HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+              flush()
+            }
+          }
+        }
+      } catch (_: Exception) {
+        // The test closes the socket if the worker fails early.
+      } finally { server.close() }
+    }.apply { isDaemon = true; start() }
+    val token = downloader.reserve(model.id)
+    val callbackCount = java.util.concurrent.atomic.AtomicInteger()
+    val firstFinished = CountDownLatch(1)
+    val firstResult = AtomicReference<Result<File>>()
+
+    try {
+      downloader.start(model.id, onProgress = {}, onFinished = {
+        callbackCount.incrementAndGet()
+        firstResult.set(it)
+        firstFinished.countDown()
+      }, downloadUrl = URL("http://127.0.0.1:${server.localPort}/model"), transferToken = token)
+
+      assertTrue("the first worker should reach the held response", requestReceived.await(5, TimeUnit.SECONDS))
+      downloader.start(model.id, onProgress = {}, onFinished = { callbackCount.incrementAndGet() },
+        downloadUrl = URL("http://127.0.0.1:${server.localPort}/duplicate"), transferToken = token)
+      downloader.releaseServiceStart(model.id, token)
+
+      assertEquals("the duplicate delivery must not finish a second worker", 0, callbackCount.get())
+      assertFalse("a running worker cannot be released as a queued start", downloader.releaseReservation(model.id, token))
+      assertTrue(downloader.hasActiveTransfer(model.id))
+      sendResponse.countDown()
+      assertTrue("the original worker should finish after the response is released", firstFinished.await(5, TimeUnit.SECONDS))
+      assertEquals(1, callbackCount.get())
+      assertTrue(firstResult.get().isFailure)
+      assertFalse(downloader.hasActiveTransfer(model.id))
+    } finally {
+      sendResponse.countDown()
+      server.close()
+      serverThread.join(1_000)
+    }
+  }
+
+  @Test
+  fun connectionSetupFailureWithoutMessageUsesSafeFallbackAndReleasesTransfer() {
+    val noMessageFailureUrl = URL(null, "coverage://unavailable", object : URLStreamHandler() {
+      override fun openConnection(url: URL): URLConnection = throw IOException()
+    })
+    val finished = CountDownLatch(1)
+    val result = AtomicReference<Result<File>>()
+
+    downloader.start(model.id, onProgress = {}, onFinished = {
+      result.set(it)
+      finished.countDown()
+    }, downloadUrl = noMessageFailureUrl)
+
+    assertTrue("connection failure should be reported", finished.await(5, TimeUnit.SECONDS))
+    assertTrue("callback preserves the underlying connection failure", result.get().exceptionOrNull() is IOException)
+    assertNull("the platform exception may not include a message", result.get().exceptionOrNull()?.message)
+    assertEquals(Triple("error", 0L, "Model download failed."), database.modelState(model.id))
+    assertFalse("failed setup must remove the process-local reservation", downloader.hasActiveTransfer(model.id))
+  }
+
+  @Test
+  fun pauseDuringConnectionConfigurationStopsBeforeConnectAndClosesSocket() {
+    val disconnected = java.util.concurrent.atomic.AtomicBoolean(false)
+    val cancelDuringRequestSetup = URL(null, "coverage://cancel-during-setup", object : URLStreamHandler() {
+      override fun openConnection(url: URL): URLConnection = object : HttpURLConnection(url) {
+        override fun connect() { throw AssertionError("a paused transfer must not connect") }
+        override fun disconnect() { disconnected.set(true) }
+        override fun usingProxy() = false
+        override fun setRequestProperty(key: String, value: String) {
+          super.setRequestProperty(key, value)
+          downloader.pause(model.id)
+        }
+      }
+    })
+    val finished = CountDownLatch(1)
+    val result = AtomicReference<Result<File>>()
+
+    downloader.start(model.id, onProgress = {}, onFinished = {
+      result.set(it)
+      finished.countDown()
+    }, downloadUrl = cancelDuringRequestSetup)
+
+    assertTrue("pause should finish the worker", finished.await(5, TimeUnit.SECONDS))
+    assertTrue(result.get().exceptionOrNull() is ModelDownloadCanceled)
+    assertTrue("pause must disconnect the opened connection", disconnected.get())
+    assertEquals(Triple("paused", 0L, null), database.modelState(model.id))
+    assertFalse(downloader.hasActiveTransfer(model.id))
   }
 
   @Test

@@ -1,7 +1,7 @@
 jest.mock('../src/ui/useMotionReduced', () => ({ useMotionReduced: () => require('react-native-reanimated').useReducedMotion() ?? false }));
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native-legacy';
-import { AppState, BackHandler, Linking, Modal, Dimensions, Platform, StyleSheet } from 'react-native';
+import { AppState, BackHandler, Linking, Modal, Dimensions, Platform, StyleSheet, Image } from 'react-native';
 
 jest.mock('react-native-safe-area-context', () => {
   const ReactNative = require('react-native');
@@ -90,7 +90,7 @@ jest.mock('../src/components/kinetik/scan-progress', () => {
 });
 
 import App from '../App';
-import { LibraryScreen, TranslationOptionsScreen } from '../src/screens/AppScreens';
+import { LibraryScreen, TranslationOptionsScreen, SourcePreviewScreen } from '../src/screens/AppScreens';
 import { createTranslator } from '../src/i18n/messages';
 import { PRIVACY_URL } from '../src/domain/presentation';
 import type { BootstrapSnapshot } from '../src/native/PdfTranslator';
@@ -163,6 +163,31 @@ describe('native-backed app flows', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  it('renders a noninteractive captured palette overlay while the new theme is revealed', async () => {
+    mockReducedMotion = false;
+    await renderApp(snapshot({ preferences: { theme: 'light', language: 'en' } }));
+    fireEvent.press(screen.getByRole('tab', { name: 'Settings' }));
+    native.setSettings.mockResolvedValue({ theme: 'dark', language: 'en' });
+    native.bootstrap.mockResolvedValue(snapshot({ preferences: { theme: 'dark', language: 'en' } }));
+    fireEvent.press(screen.getByRole('radio', { name: 'Dark' }));
+    await waitFor(() => expect(require('react-native-view-shot').captureRef).toHaveBeenCalled());
+    const image = screen.UNSAFE_getAllByType(Image).find(node => node.props.source?.uri === 'file:///temporary-transition.png');
+    expect(image).toBeDefined();
+    expect(image!.parent!.props.pointerEvents).toBe('none');
+    fireEvent(image!, 'load');
+    fireEvent(image!, 'error');
+  });
+
+  it('ignores source preview completion after leaving the document', async () => {
+    let finish!: (preview: { uri: string; pageCount: number }) => void;
+    native.renderDocxPreview.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const view = render(<SourcePreviewScreen document={{ id: 'late', name: 'late.docx', format: 'docx', pageCount: 1, importedAt: 1 }} colors={require('../src/ui/theme').palettes.light} t={createTranslator('en')} locale="en" />);
+    view.unmount();
+    await act(async () => { finish({ uri: 'file:///late.pdf', pageCount: 2 }); await Promise.resolve(); });
+    expect(native.renderDocxPreview).toHaveBeenCalledWith('late');
+    expect(native.renderPage).not.toHaveBeenCalled();
   });
 
   it('surfaces model-download errors without requesting OS permissions', async () => {
@@ -527,6 +552,23 @@ describe('native-backed app flows', () => {
     await waitFor(() => expect(native.setOnboarding).toHaveBeenLastCalledWith({ version: 1, page: 2, done: true }));
     expect(await screen.findByRole('tab', { name: 'Library' })).toBeOnTheScreen();
     expect(screen.queryByTestId('translation-scene', { includeHiddenElements: true })).toBeNull();
+  });
+
+  it('opens imported document options when the shared imperative bridge is unavailable', async () => {
+    const globalRouter = require('expo-router').router;
+    const bridge = jest.spyOn(globalRouter, 'setParams').mockImplementation(() => {
+      throw new Error('The imperative router is unavailable before the first render has finished.');
+    });
+    try {
+      native.pickDocument.mockResolvedValueOnce(snapshot().documents[0]);
+      await renderApp(snapshot());
+      fireEvent.press(screen.getByRole('button', { name: 'Translate documents' }));
+      expect(await screen.findByRole('button', { name: 'Preview original' })).toBeOnTheScreen();
+      expect(bridge).not.toHaveBeenCalled();
+      expect(screen.queryByText('The imperative router is unavailable before the first render has finished.')).toBeNull();
+    } finally {
+      bridge.mockRestore();
+    }
   });
 
   it('keeps the library empty when import is canceled and reports picker failures', async () => {

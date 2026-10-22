@@ -1,6 +1,6 @@
 import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react-native-legacy';
-import { AppState, StyleSheet } from 'react-native';
+import { AppState, Dimensions, StyleSheet } from 'react-native';
 
 import { GrainDrift } from '../src/components/kinetik/grain-drift';
 import { MagnetButton } from '../src/components/kinetik/magnet-button';
@@ -13,6 +13,31 @@ import { OnboardingScreen } from '../src/onboarding/OnboardingScreen';
 import { onboardingScenePalette } from '../src/onboarding/OnboardingScenes';
 import { SplashScreen } from '../src/ui/SplashScreen';
 import { palettes } from '../src/ui/theme';
+import { PairPicker } from '../src/screens/AppScreens';
+import { MorphSelect } from '../src/components/kinetik/morph-select';
+import { Row } from '../src/ui/components';
+
+test('language choices retain their value and accessible names when a large-font narrow layout expands', () => {
+  const originalWindow = Dimensions.get('window');
+  const originalScreen = Dimensions.get('screen');
+  const onChange = jest.fn();
+  try {
+    act(() => Dimensions.set({ window: { ...originalWindow, width: 320, fontScale: 1.3 }, screen: originalScreen }));
+    const view = render(<KinetikProvider scheme="light" reduceMotion="always" haptics={false}>
+      <PairPicker colors={palettes.light} t={createTranslator('en')} locale="en" source="en" target="ru" onChange={onChange} />
+    </KinetikProvider>);
+    expect(view.UNSAFE_getByType(Row).props.style.flexDirection).toBe('column');
+    expect(screen.getByRole('button', { name: 'Source language, 🇬🇧 English' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Target language, 🇷🇺 Русский' })).toBeTruthy();
+    expect(view.UNSAFE_getAllByType(MorphSelect).map(node => node.props.value)).toEqual(['en', 'ru']);
+    act(() => Dimensions.set({ window: { ...originalWindow, width: 800, fontScale: 1 }, screen: originalScreen }));
+    expect(view.UNSAFE_getByType(Row).props.style.flexDirection).toBe('row');
+    expect(view.UNSAFE_getAllByType(MorphSelect).map(node => node.props.value)).toEqual(['en', 'ru']);
+    expect(onChange).not.toHaveBeenCalled();
+  } finally {
+    act(() => Dimensions.set({ window: originalWindow, screen: originalScreen }));
+  }
+});
 
 afterEach(() => jest.restoreAllMocks());
 
@@ -272,4 +297,9 @@ describe('U034 Grain Drift splash', () => {
     globalThis.requestAnimationFrame = oldRequest;
     globalThis.cancelAnimationFrame = oldCancel;
   });
+});
+
+test('splash retains the Folivela fallback when a caller overrides the ember token with an empty value', () => {
+  render(<KinetikProvider colors={{ ember: '' }}><SplashScreen onFirstFrame={jest.fn()} /></KinetikProvider>);
+  expect(StyleSheet.flatten(screen.getByTestId('custom-splash-screen').props.style).backgroundColor).toBe('#C62828');
 });

@@ -28,7 +28,8 @@ import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 /** Sandboxed, local-only docx-preview renderer. It never exposes document bytes to React Native. */
-internal class DocxPreviewRenderer(private val context: Context, private val activity: Activity) {
+internal class DocxPreviewRenderer(private val context: Context, private val activity: Activity,
+                                   private val createWebView: (Context) -> WebView = ::WebView) {
   companion object {
     private const val MAX_SOURCE_BYTES = 128L * 1024L * 1024L
     private const val MAX_PDF_BYTES = 256L * 1024L * 1024L
@@ -54,7 +55,7 @@ internal class DocxPreviewRenderer(private val context: Context, private val act
     val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
     Handler(Looper.getMainLooper()).post {
       if (cancelled.get()) { documentCopy.delete(); return@post }
-      val web = WebView(context)
+      val web = createWebView(context)
       webReference.set(web)
       val content = activity.window?.decorView?.findViewById<ViewGroup>(android.R.id.content)
       if (content == null || activity.isFinishing || activity.isDestroyed) {
@@ -243,8 +244,8 @@ internal class DocxPreviewRenderer(private val context: Context, private val act
             if (cancelled.get()) { drawNext(); return }
             var bitmap: Bitmap? = null
             try {
-              val info = PdfDocument.PageInfo.Builder(pdfWidth, pdfHeight, index + 1).create()
-              val page = document.startPage(info)
+              // Rasterize before opening a PDF page: allocation/Chromium failure
+              // must leave the document closable and the callback recoverable.
               bitmap = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888)
               val raster = Canvas(bitmap!!)
               raster.drawColor(Color.WHITE)
@@ -255,8 +256,13 @@ internal class DocxPreviewRenderer(private val context: Context, private val act
               } finally {
                 web.alpha = previewAlpha
               }
-              page.canvas.drawBitmap(bitmap!!, null, Rect(0, 0, pdfWidth, pdfHeight), null)
-              document.finishPage(page)
+              val info = PdfDocument.PageInfo.Builder(pdfWidth, pdfHeight, index + 1).create()
+              val page = document.startPage(info)
+              try {
+                page.canvas.drawBitmap(bitmap!!, null, Rect(0, 0, pdfWidth, pdfHeight), null)
+              } finally {
+                document.finishPage(page)
+              }
               pageIndex[0]++
               drawNext()
             } catch (_: OutOfMemoryError) {

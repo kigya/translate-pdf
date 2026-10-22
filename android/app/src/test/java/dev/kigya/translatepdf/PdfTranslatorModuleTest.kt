@@ -25,6 +25,7 @@ import com.facebook.react.modules.core.PermissionListener
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -66,6 +67,7 @@ class PdfTranslatorModuleTest {
   @After
   fun tearDown() {
     ShadowNativePdfCore.inspectionResponse = null
+    ShadowNativePdfCore.resetCallbacks()
     module.invalidate()
     database.close()
     ModelCatalog.models.forEach { model ->
@@ -320,6 +322,63 @@ class PdfTranslatorModuleTest {
     assertEquals("JOB_START_FAILED", missingWeights.awaitFailure().code)
     assertFalse(database.hasActiveJob())
     source.delete()
+  }
+
+  @Test
+  fun onlineJobsRequireFreshConsentAndQueueBothFormatsWithoutInstalledWeightsOrGlossary() {
+    reactContext.onHostResume(Activity())
+    database.saveGlossary("local-only-term", "SDK", "SDK", "zh-Hans", "en")
+    for (format in listOf("pdf", "docx")) {
+      val source = File(context.filesDir, "documents/online-consent.$format").apply {
+        parentFile?.mkdirs()
+        writeText("unchanged synthetic $format input")
+      }
+      val documentId = "online-consent-$format"
+      database.upsertDocument(documentId, source.name, source.absolutePath, 1, "original-hash", format, 1)
+      val input = jobInput(documentId, ModelCatalog.RECOMMENDED_ID)
+        .put("engine", JSONObject().put("kind", "online").put("id", "mymemory"))
+        .put("useGlossary", true)
+      for (consent in listOf(false, true)) {
+        input.put("onlineConsent", consent)
+        val result = PromiseCapture()
+        module.startJob(input.toString(), result.promise)
+        if (!consent) {
+          val failure = result.awaitFailure()
+          assertEquals("JOB_START_FAILED", failure.code)
+          assertTrue(failure.message.orEmpty().contains("privacy notice"))
+          assertFalse(database.hasActiveJob())
+          assertNull(Shadows.shadowOf(context.applicationContext as Application).nextStartedService)
+        } else {
+          val job = JSONObject(result.awaitSuccess().toString())
+          val id = job.getString("id")
+          val saved = database.jobJson(id)!!
+          assertEquals("mymemory", saved.getString("modelId"))
+          assertEquals("online", saved.getJSONObject("engine").getString("kind"))
+          assertTrue(saved.getBoolean("onlineConsent"))
+          assertEquals("", database.jobGlossaryText(id))
+          val command = Shadows.shadowOf(context.applicationContext as Application).nextStartedService!!
+          assertEquals(PdfTranslationService.ACTION_START, command.action)
+          assertEquals(id, command.getStringExtra(PdfTranslationService.EXTRA_JOB_ID))
+          assertEquals("unchanged synthetic $format input", source.readText())
+          database.updateJob(id, status = "canceled")
+        }
+      }
+      source.delete()
+    }
+  }
+
+  @Test
+  fun unsupportedOnlineProviderIsRejectedEvenAfterPrivacyConsent() {
+    reactContext.onHostResume(Activity())
+    val result = PromiseCapture()
+    module.startJob(jobInput("not-read-before-provider-check", ModelCatalog.RECOMMENDED_ID)
+      .put("engine", JSONObject().put("kind", "online").put("id", "unapproved-provider"))
+      .put("onlineConsent", true).toString(), result.promise)
+    val failure = result.awaitFailure()
+    assertEquals("JOB_START_FAILED", failure.code)
+    assertTrue(failure.message.orEmpty().contains("supported online translation provider"))
+    assertEquals(0, database.jobsJson().length())
+    assertNull(Shadows.shadowOf(context.applicationContext as Application).nextStartedService)
   }
 
   @Test
@@ -1041,6 +1100,32 @@ class PdfTranslatorModuleTest {
   }
 
   @Test
+  fun deletedExportDuringDestinationSelectionRejectsWithoutLosingThePublishedRecord() {
+    val source = File(context.cacheDir, "removed-during-picker.pdf").apply { writeText("%PDF-1.7 synthetic") }
+    database.saveExport("removed-during-picker", source.absolutePath, "translated.pdf")
+    val destination = File(context.cacheDir, "failed-destination.pdf")
+    val authority = "dev.kigya.translatepdf.removed-export"
+    TestPdfOutputProvider(destination).also {
+      it.attachInfo(context, ProviderInfo().apply { this.authority = authority })
+      ShadowContentResolver.registerProviderInternal(authority, it)
+    }
+    val result = PromiseCapture()
+    module.javaClass.getDeclaredField("pendingExport").apply { isAccessible = true }.set(module, result.promise)
+    module.javaClass.getDeclaredField("pendingExportFile").apply { isAccessible = true }.set(module, source)
+    module.javaClass.getDeclaredField("pendingExportId").apply { isAccessible = true }.set(module, "removed-during-picker")
+    assertTrue(source.delete())
+
+    module.onActivityResult(Activity(), 6102, Activity.RESULT_OK, Intent().setData(Uri.parse("content://$authority/result.pdf")))
+
+    assertEquals("EXPORT_SAVE_FAILED", result.awaitFailure().code)
+    assertEquals(source.absolutePath, database.exportInfo("removed-during-picker")!!.path)
+    for (field in listOf("pendingExport", "pendingExportFile", "pendingExportId")) {
+      assertNull(module.javaClass.getDeclaredField(field).apply { isAccessible = true }.get(module))
+    }
+    destination.delete()
+  }
+
+  @Test
   fun invalidLicenseIsRejectedAndPreviouslyHandledPermissionRequestDoesNotNagAgain() {
     val notices = PromiseCapture()
     module.getLicenseNotices(notices.promise)
@@ -1123,6 +1208,33 @@ class PdfTranslatorModuleTest {
   }
 
   @Test
+  fun notificationPromptFailureKeepsPermissionRetryableAndDoesNotBlockTheLibrary() {
+    Shadows.shadowOf(context.applicationContext as Application).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    reactContext.onHostResume(Activity())
+    val unsupported = PromiseCapture()
+    module.requestNotificationPermission(unsupported.promise)
+    assertEquals("NOTIFICATION_PERMISSION_UNAVAILABLE", unsupported.awaitFailure().code)
+    assertFalse(database.setting("notification_permission_requested", "false").toBoolean())
+
+    val activity = PermissionTestActivity().apply { requestFailure = IllegalStateException("synthetic platform rejection") }
+    reactContext.onHostResume(activity)
+    val failed = PromiseCapture()
+    module.requestNotificationPermission(failed.promise)
+    assertEquals("NOTIFICATION_PERMISSION_UNAVAILABLE", failed.awaitFailure().code)
+    assertNull(module.javaClass.getDeclaredField("pendingNotificationPermission").apply { isAccessible = true }.get(module))
+    assertFalse(database.setting("notification_permission_requested", "false").toBoolean())
+
+    activity.requestFailure = null
+    val retry = PromiseCapture()
+    module.requestNotificationPermission(retry.promise)
+    assertTrue(activity.listener!!.onRequestPermissionsResult(activity.requestCode, emptyArray(), intArrayOf(PackageManager.PERMISSION_DENIED)))
+    assertEquals("denied", JSONObject(retry.awaitSuccess().toString()).getString("status"))
+    val library = PromiseCapture()
+    module.bootstrap(library.promise)
+    assertEquals(0, JSONObject(library.awaitSuccess().toString()).getJSONArray("documents").length())
+  }
+
+  @Test
   fun disabledNotificationChannelIsReportedAsDeniedEvenWhenRuntimePermissionIsGranted() {
     Shadows.shadowOf(context.applicationContext as Application).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
     val manager = context.getSystemService(NotificationManager::class.java)
@@ -1136,6 +1248,220 @@ class PdfTranslatorModuleTest {
     val state = JSONObject(result.awaitSuccess().toString())
     assertEquals("denied", state.getString("status"))
     assertFalse(state.getBoolean("canRequest"))
+  }
+
+  @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
+  fun wordImportUsesContentAndPreservesSegmentWarningsAndOriginalBytes() {
+    val authority="dev.kigya.translatepdf.test-word"
+    val bytes=byteArrayOf(80,75,3,4,9,8,7,6)
+    val original=File(context.cacheDir,"word-input.docx").apply {writeBytes(bytes)}
+    val provider=TestPdfOutputProvider(original,"folder/rapport[1].DOCX")
+    provider.attachInfo(context,ProviderInfo().apply {this.authority=authority})
+    ShadowContentResolver.registerProviderInternal(authority,provider)
+    val result=PromiseCapture()
+    module.javaClass.getDeclaredField("pendingImport").apply {isAccessible=true}.set(module,result.promise)
+    module.onActivityResult(Activity(),6101,Activity.RESULT_OK,Intent().setData(Uri.parse("content://$authority/word")))
+    val document=JSONObject(result.awaitSuccess().toString())
+    assertEquals("docx",document.getString("format"))
+    assertEquals("rapport_1_.DOCX",document.getString("name"))
+    assertEquals(2,document.getInt("segmentCount"))
+    assertEquals("Unsupported element preserved",document.getJSONArray("warnings").getString(0))
+    val stored=File(database.documentPath(document.getString("id"))!!)
+    assertTrue(stored.readBytes().contentEquals(bytes))
+    assertTrue(original.readBytes().contentEquals(bytes))
+    stored.delete();original.delete()
+  }
+
+  @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
+  fun completedAndPartialWordExportsAreDurableEvenWhenDestinationUiIsUnavailable() {
+    val source=File(context.filesDir,"documents/word-export.docx").apply {parentFile?.mkdirs();writeText("original")}
+    database.upsertDocument("word-doc","word.docx",source.absolutePath,2,"hash","docx",2)
+    for(status in listOf("completed","partial")) {
+      val id="word-$status"
+      database.addJob(id,jobInput("word-doc",ModelCatalog.RECOMMENDED_ID),2)
+      database.updateJob(id,status=status)
+      for(index in 0..1) database.savePage(id,index,status,JSONArray().put(JSONObject().put("id","p$index").put("text","original").put("translatedText","translated").put("status","translated")).toString(),expectedBlocks=1)
+      val result=PromiseCapture()
+      module.exportDocument(id,"docx",result.promise)
+      assertEquals("EXPORT_UNAVAILABLE",result.awaitFailure().code)
+      val record=database.exportInfo(id)!!
+      assertEquals("application/vnd.openxmlformats-officedocument.wordprocessingml.document",record.mimeType)
+      assertEquals("word-translated.docx",record.name)
+      assertEquals("translated Word",File(record.path).readText())
+      assertEquals("original",source.readText())
+      File(record.path).delete()
+    }
+    source.delete()
+  }
+
+  @Test
+  fun wordPreviewAndExportPreconditionsRejectWithoutStartingAnActivity() {
+    val source=File(context.filesDir,"documents/preconditions.docx").apply {parentFile?.mkdirs();writeText("original")}
+    database.upsertDocument("word-preconditions","word.docx",source.absolutePath,1,"hash","docx",1)
+    database.addJob("word-waiting",jobInput("word-preconditions",ModelCatalog.RECOMMENDED_ID),1)
+    val invalid=PromiseCapture();module.exportDocument("word-waiting","doc",invalid.promise)
+    assertEquals("EXPORT_FORMAT_UNSUPPORTED",invalid.awaitFailure().code)
+    val waiting=PromiseCapture();module.exportDocument("word-waiting","docx",waiting.promise)
+    assertEquals("JOB_NOT_READY",waiting.awaitFailure().code)
+    val noJob=PromiseCapture();module.renderDocxPreview("word-preconditions",null,true,noJob.promise)
+    assertEquals("DOCX_PREVIEW_FAILED",noJob.awaitFailure().code)
+    val queued=PromiseCapture();module.renderDocxPreview("word-preconditions","word-waiting",true,queued.promise)
+    assertEquals("DOCX_PREVIEW_FAILED",queued.awaitFailure().code)
+    val noActivity=PromiseCapture();module.renderDocxPreview("word-preconditions",null,false,noActivity.promise)
+    assertEquals("DOCX_PREVIEW_FAILED",noActivity.awaitFailure().code)
+    assertTrue(noActivity.awaitFailure().message?.contains("Open Folivela")==true)
+    assertEquals("original",source.readText());source.delete()
+  }
+
+  @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
+  fun wordExportUsesTheWordMimeTypeAndCopiesTheDurableArtifactToTheChosenDestination() {
+    val source=File(context.filesDir,"documents/word-destination.docx").apply {parentFile?.mkdirs();writeText("original")}
+    database.upsertDocument("word-destination","résumé.docx",source.absolutePath,2,"hash","docx",2)
+    database.addJob("word-destination-job",jobInput("word-destination",ModelCatalog.RECOMMENDED_ID),2)
+    database.updateJob("word-destination-job",status="completed")
+    for(index in 0..1) database.savePage("word-destination-job",index,"completed",JSONArray().put(
+      JSONObject().put("id","paragraph-$index").put("sourceText","original").put("translatedText","translated").put("status","translated")
+    ).toString(),expectedBlocks=1)
+    val activity=DestinationActivity()
+    reactContext.onHostResume(activity)
+    val result=PromiseCapture()
+    module.exportDocument("word-destination-job","docx",result.promise)
+    assertTrue(activity.opened.await(10,TimeUnit.SECONDS))
+    val intent=activity.openedIntent!!
+    val mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assertEquals(Intent.ACTION_CREATE_DOCUMENT,intent.action)
+    assertEquals(mime,intent.type)
+    assertEquals("résumé-translated.docx",intent.getStringExtra(Intent.EXTRA_TITLE))
+    assertTrue(intent.hasCategory(Intent.CATEGORY_OPENABLE))
+    assertEquals(Intent.FLAG_GRANT_WRITE_URI_PERMISSION,intent.flags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+    val duplicate=PromiseCapture();module.exportDocument("word-destination-job","docx",duplicate.promise)
+    assertEquals("EXPORT_BUSY",duplicate.awaitFailure().code)
+    val destination=File(context.cacheDir,"chosen-word.docx")
+    val authority="dev.kigya.translatepdf.test-word-output"
+    val provider=TestPdfOutputProvider(destination)
+    provider.attachInfo(context,ProviderInfo().apply {this.authority=authority})
+    ShadowContentResolver.registerProviderInternal(authority,provider)
+    module.onActivityResult(activity,activity.requestCode,Activity.RESULT_OK,Intent().setData(Uri.parse("content://$authority/result.docx")))
+    val saved=JSONObject(result.awaitSuccess().toString())
+    assertEquals("docx",saved.getString("format"));assertEquals(mime,saved.getString("mimeType"))
+    assertEquals("translated Word",destination.readText())
+    assertEquals("original",source.readText())
+    val persisted=database.exportInfo("word-destination-job")!!
+    assertEquals(mime,persisted.mimeType)
+    // The editable result can be reused without invoking the native writer again.
+    ShadowNativePdfCore.exportDocxCallback={_,_,_->error("A cached Word artifact must be reused")}
+    activity.finish()
+    val reopen=PromiseCapture();module.exportDocument("word-destination-job","docx",reopen.promise)
+    assertEquals("EXPORT_UNAVAILABLE",reopen.awaitFailure().code)
+    assertEquals("translated Word",File(persisted.path).readText())
+    source.delete();destination.delete();File(persisted.path).delete()
+  }
+
+  @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
+  fun wordExportRejectsWriterErrorsAndAbsentArtifactsWithoutOpeningTheDestination() {
+    val source=File(context.filesDir,"documents/word-writer-error.docx").apply {parentFile?.mkdirs();writeText("original")}
+    database.upsertDocument("word-writer-error","word.docx",source.absolutePath,1,"hash","docx",1)
+    database.addJob("word-writer-error-job",jobInput("word-writer-error",ModelCatalog.RECOMMENDED_ID),1)
+    database.updateJob("word-writer-error-job",status="completed")
+    database.savePage("word-writer-error-job",0,"completed","[]",expectedBlocks=0)
+    val activity=DestinationActivity();reactContext.onHostResume(activity)
+    for(response in listOf("""{"error":"OOXML could not be written"}""","{}")) {
+      ShadowNativePdfCore.exportDocxCallback={_,_,_->response}
+      val result=PromiseCapture();module.exportDocument("word-writer-error-job","docx",result.promise)
+      val failure=result.awaitFailure()
+      assertEquals("EXPORT_FAILED",failure.code)
+      assertTrue(failure.message.orEmpty().contains(if(response=="{}") "could not be prepared" else "OOXML could not be written"))
+      assertNull(database.exportInfo("word-writer-error-job"))
+      assertNull(activity.openedIntent)
+      assertEquals("completed",database.jobJson("word-writer-error-job")!!.getString("status"))
+      assertEquals("original",source.readText())
+    }
+    source.delete()
+  }
+
+  @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
+  fun unsupportedAndDamagedWordImportsLeaveThePrivateLibraryUnchanged() {
+    val bytes=byteArrayOf(80,75,3,4,0,1,2,3)
+    val cases=listOf(
+      Triple("old.doc","{}","Only modern Word"),
+      Triple("macro.docm","{}","Only modern Word"),
+      Triple("damaged.docx","""{"error":"Encrypted or damaged OOXML"}""","Encrypted or damaged OOXML"),
+      Triple("empty.docx","""{"pageCount":0}""","no supported text segments"),
+      Triple("oversized.docx","""{"pageCount":10001}""","supported document limit"),
+    )
+    for((index,item) in cases.withIndex()) {
+      val (name,response,message)=item
+      ShadowNativePdfCore.inspectDocxCallback={response}
+      val input=File(context.cacheDir,"bad-word-$index").apply {writeBytes(bytes)}
+      val authority="dev.kigya.translatepdf.test-invalid-word-$index"
+      val provider=TestPdfOutputProvider(input,name)
+      provider.attachInfo(context,ProviderInfo().apply {this.authority=authority})
+      ShadowContentResolver.registerProviderInternal(authority,provider)
+      val result=PromiseCapture()
+      module.javaClass.getDeclaredField("pendingImport").apply {isAccessible=true}.set(module,result.promise)
+      module.onActivityResult(Activity(),6101,Activity.RESULT_OK,Intent().setData(Uri.parse("content://$authority/source")))
+      assertEquals("PDF_IMPORT_FAILED",result.awaitFailure().code)
+      assertTrue(result.awaitFailure().message.orEmpty().contains(message))
+      assertEquals(0,database.documentsJson().length())
+      assertTrue(File(context.filesDir,"documents").listFiles().orEmpty().isEmpty())
+      assertArrayEquals(bytes,input.readBytes());input.delete()
+    }
+  }
+
+  private class DestinationActivity:Activity() {
+    val opened=CountDownLatch(1)
+    var openedIntent:Intent?=null
+    var requestCode=-1
+    override fun startActivityForResult(intent:Intent,requestCode:Int) {
+      this.openedIntent=intent;this.requestCode=requestCode;opened.countDown()
+    }
+  }
+
+  @Test
+  fun documentPickerAdvertisesBothFormatsAndCancellationDoesNotAddALibraryRow() {
+    val activity=DestinationActivity();reactContext.onHostResume(activity)
+    val result=PromiseCapture();module.pickDocument(result.promise)
+    assertTrue(activity.opened.await(10,TimeUnit.SECONDS))
+    val intent=activity.openedIntent!!
+    assertEquals(Intent.ACTION_OPEN_DOCUMENT,intent.action)
+    assertEquals("*/*",intent.type)
+    assertEquals(listOf("application/pdf","application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+      intent.getStringArrayExtra(Intent.EXTRA_MIME_TYPES)!!.toList())
+    assertTrue(intent.hasCategory(Intent.CATEGORY_OPENABLE))
+    module.onActivityResult(activity,activity.requestCode,Activity.RESULT_CANCELED,null)
+    assertEquals("null",result.awaitSuccess())
+    assertEquals(0,database.documentsJson().length())
+  }
+
+  @Test
+  fun defaultModelDownloadAdapterQueuesAnExplicitForegroundServiceAndCanBePausedBeforeNetwork() {
+    org.robolectric.shadows.ShadowStatFs.registerStats(context.filesDir.absolutePath,4096,2_000_000,2_000_000)
+    val activity=Activity();reactContext.onHostResume(activity)
+    val model=ModelCatalog.models.first()
+    val downloader=ModelDownloader(context,database)
+    var token:String?=null
+    try {
+      val result=PromiseCapture();module.startModelDownload(model.id,result.promise)
+      assertEquals("downloading",JSONObject(result.awaitSuccess().toString()).getString("status"))
+      val intent=Shadows.shadowOf(context.applicationContext as Application).nextStartedService
+      assertEquals(PdfTranslationService.ACTION_START_MODEL,intent.action)
+      assertEquals(model.id,intent.getStringExtra(PdfTranslationService.EXTRA_MODEL_ID))
+      token=intent.getStringExtra(PdfTranslationService.EXTRA_MODEL_TRANSFER_TOKEN)
+      assertFalse(token.isNullOrBlank())
+      assertTrue(downloader.hasActiveTransfer(model.id))
+      val paused=PromiseCapture();module.pauseModelDownload(model.id,paused.promise)
+      assertEquals("paused",JSONObject(paused.awaitSuccess().toString()).getString("status"))
+      assertFalse(downloader.hasActiveTransfer(model.id))
+      assertEquals(0L,downloader.partialLength(model.id))
+    } finally {
+      downloader.cancel(model.id)
+      token?.let {downloader.releaseReservation(model.id,it)}
+    }
   }
 
   private fun moduleDatabase(): TranslatorDatabase = module.javaClass.getDeclaredField("database")
@@ -1202,11 +1528,13 @@ class PdfTranslatorModuleTest {
   private class PermissionTestActivity : Activity(), PermissionAwareActivity {
     var requestCode: Int = -1
     var listener: PermissionListener? = null
+    var requestFailure: RuntimeException? = null
 
     override fun checkPermission(permission: String, pid: Int, uid: Int): Int = PackageManager.PERMISSION_DENIED
     override fun checkSelfPermission(permission: String): Int = PackageManager.PERMISSION_DENIED
     override fun shouldShowRequestPermissionRationale(permission: String): Boolean = false
     override fun requestPermissions(permissions: Array<String>, requestCode: Int, listener: PermissionListener?) {
+      requestFailure?.let { throw it }
       this.requestCode = requestCode
       this.listener = listener
     }

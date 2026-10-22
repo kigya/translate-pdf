@@ -107,6 +107,130 @@ class PdfTranslationServiceTest {
       .put("onlineConsent", true).put("useGlossary", false), 1)
     return id
   }
+  private fun createDocxJob(segments: Int = 1): Pair<String, File> {
+    val id = "word-${++sequence}"
+    val source = File(context.filesDir, "$id.docx").apply { writeBytes(byteArrayOf(0x50, 0x4b, 0x03, 0x04, 1, 2, 3)) }
+    database.upsertDocument("doc-$id", "source.docx", source.absolutePath, segments, sha(source.readBytes()),
+      format = "docx", segmentCount = segments)
+    database.addJob(id, JSONObject().put("documentId", "doc-$id").put("sourceLanguage", "en")
+      .put("targetLanguage", "ru").put("modelId", ModelCatalog.RECOMMENDED_ID), segments)
+    return id to source
+  }
+  private fun docxSegment(index: Int, sourceText: String, warning: String? = null): String {
+    val block = ServiceNativeState.block().put("id", "segment-$index").put("text", sourceText).put("sourceText", sourceText)
+    val result = JSONObject().put("width", 612).put("height", 792).put("blocks", JSONArray().put(block))
+    warning?.let { result.put("warnings", JSONArray().put(it)) }
+    return result.toString()
+  }
+
+  @Test fun explicitCancelWinsOverDocxResourceAndAllocationCallbacks() {
+    for(boundary in listOf("memory","load","translate")) {
+      val (id,source)=createDocxJob()
+      service.memoryInfoProvider={ActivityManager.MemoryInfo().apply {
+        if(boundary=="memory") {
+          service.onStartCommand(intent(PdfTranslationService.ACTION_CANCEL,id),0,1000+sequence)
+          lowMemory=true
+        }
+      }}
+      ShadowNativePdfCore.readDocxCallback={_,index->docxSegment(index,"Source remains")}
+      ShadowNativePdfCore.loadCallback={
+        if(boundary=="load") {
+          service.onStartCommand(intent(PdfTranslationService.ACTION_CANCEL,id),0,1000+sequence)
+          """{"error":"std::bad_alloc"}"""
+        } else "{}"
+      }
+      ServiceNativeState.translation={
+        service.onStartCommand(intent(PdfTranslationService.ACTION_CANCEL,id),0,1000+sequence)
+        """{"error":"std::bad_alloc"}"""
+      }
+      start(id)
+      assertEquals("Cancellation must win at $boundary","canceled",status(id))
+      assertEquals("Canceled by the user.",error(id))
+      assertNull(database.exportInfo(id));assertTrue(source.isFile)
+    }
+  }
+
+  @Test fun explicitCancelDuringDocxExportCannotCommitACompletedJobOrExportMetadata() {
+    val (id,source)=createDocxJob()
+    ShadowNativePdfCore.readDocxCallback={_,index->docxSegment(index,"Source remains")}
+    ShadowNativePdfCore.exportDocxCallback={_,_,output->
+      File(output).writeText("private translated result")
+      service.onStartCommand(intent(PdfTranslationService.ACTION_CANCEL,id),0,1000+sequence)
+      """{"partial":false,"warnings":[]}"""
+    }
+    start(id)
+    assertEquals("canceled",status(id))
+    assertEquals("Canceled by the user.",error(id))
+    assertNull(database.exportInfo(id));assertTrue(source.isFile)
+    assertFalse(File(context.filesDir,"translated-docx/$id.docx").exists())
+  }
+
+  @Test fun failedDocxMetadataCommitRemovesTheNewFileAndKeepsCompletedCheckpoints() {
+    val (id,source)=createDocxJob()
+    ShadowNativePdfCore.readDocxCallback={_,index->docxSegment(index,"Source remains")}
+    ShadowNativePdfCore.exportDocxCallback={_,_,output->
+      File(output).writeText("private translated result")
+      """{"partial":false,"warnings":[]}"""
+    }
+    // A real SQLite insertion fault must roll back status and publish no metadata.
+    database.writableDatabase.execSQL("CREATE TRIGGER reject_final_export BEFORE INSERT ON exports BEGIN SELECT RAISE(IGNORE); END")
+    try {
+      start(id)
+      assertEquals("failed",status(id))
+      assertTrue(error(id).contains("export could not be saved"))
+      assertNull(database.exportInfo(id))
+      assertFalse(File(context.filesDir,"translated-docx/$id.docx").exists())
+      assertEquals("completed",database.page(id,0)!!.getString("status"))
+      assertTrue(source.isFile)
+    } finally {database.writableDatabase.execSQL("DROP TRIGGER reject_final_export")}
+  }
+
+  @Test fun failedDocxRewriteDoesNotDeleteAnAlreadyPublishedResult() {
+    val (id,source)=createDocxJob()
+    val output=File(context.filesDir,"translated-docx/$id.docx").apply {parentFile?.mkdirs();writeText("prior published result")}
+    database.saveExport(id,output.absolutePath,"prior.docx","application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    ShadowNativePdfCore.readDocxCallback={_,index->docxSegment(index,"Source remains")}
+    ShadowNativePdfCore.exportDocxCallback={_,_,_->throw java.io.IOException("Writer failed before replacing the published result")}
+    start(id)
+    assertEquals("failed",status(id))
+    assertEquals("prior published result",output.readText())
+    assertEquals(output.absolutePath,database.exportInfo(id)!!.path)
+    assertTrue(source.isFile)
+  }
+
+  @Test fun cancelDuringFinalPdfVerificationRemovesOnlyTheNewUnpublishedResult() {
+    val id=createJob()
+    ShadowNativePdfCore.inspectCallback={path->
+      if(File(path).parentFile==File(context.filesDir,"exports")) {
+        service.onStartCommand(intent(PdfTranslationService.ACTION_CANCEL,id),0,1000+sequence)
+      }
+      """{"pageCount":1}"""
+    }
+    start(id)
+    assertEquals("canceled",status(id))
+    assertTrue(File(context.filesDir,"exports").listFiles().orEmpty().isEmpty())
+    assertTrue(File(database.jobDocumentPath(id)!!).isFile)
+  }
+
+  @Test fun fullyCheckpointedDocxCanFinishExportWithoutModelWeightsOrInferenceMemory() {
+    val (id,source)=createDocxJob()
+    val block=JSONObject().put("id","segment-0").put("sourceText","Saved source")
+      .put("translatedText","Saved translation").put("status","translated")
+    database.savePage(id,0,"completed",JSONArray().put(block).toString(),expectedBlocks=1)
+    database.updateJob(id,completedPages=1)
+    assertTrue(downloader.fileFor(ModelCatalog.RECOMMENDED_ID).delete())
+    service.memoryInfoProvider={ActivityManager.MemoryInfo().apply {lowMemory=true}}
+    ShadowNativePdfCore.readDocxCallback={_,_->error("A completed segment must be reused")}
+    ShadowNativePdfCore.exportDocxCallback={_,blocks,output->
+      assertEquals("Saved translation",JSONArray(blocks).getJSONObject(0).getString("translatedText"))
+      File(output).writeText("private translated result")
+      """{"partial":false,"warnings":[]}"""
+    }
+    start(id)
+    assertEquals("completed",status(id))
+    assertEquals(0,ServiceNativeState.loadCalls)
+    assertNotNull(database.exportInfo(id));assertTrue(source.isFile)
+  }
   private fun intent(action: String, id: String? = null): Intent = Intent(context, PdfTranslationService::class.java)
     .setAction(action).also { if (id != null) it.putExtra(PdfTranslationService.EXTRA_JOB_ID, id) }
   private fun start(id: String) {
@@ -168,6 +292,8 @@ class PdfTranslationServiceTest {
       calls++
       """{"responseStatus":200,"responseData":{"translatedText":"ignored"}}"""
     } }
+    // resumeJob moves the durable paused row to queued before service delivery.
+    database.updateJob(id,status="queued",stage="queued",clearError=true)
     newWorker()
     service.onStartCommand(intent(PdfTranslationService.ACTION_START, id), 0, sequence)
     worker.runNext()
@@ -177,6 +303,213 @@ class PdfTranslationServiceTest {
     assertEquals(3, calls)
     assertEquals(0, ServiceNativeState.loadCalls)
     assertEquals("Переводignored", database.pageBlockArray(id, 0).getJSONObject(0).getString("translatedText"))
+  }
+
+  @Test fun localDocxTranslatesStableSegmentsPreservesWhitespaceAndExportsEditableDocument() {
+    val (id, source) = createDocxJob(segments = 3)
+    val originalBytes = source.readBytes()
+    val sourceSegments = listOf("  First sentence\n", "", "文書の段落")
+    val readIndices = mutableListOf<Int>()
+    val translatedInputs = mutableListOf<String>()
+    var exportedSource = ""
+    var exportedBlocks = ""
+    var exportedPath = ""
+    ShadowNativePdfCore.readDocxCallback = { path, index ->
+      assertEquals(source.absolutePath, path)
+      readIndices += index
+      docxSegment(index, sourceSegments[index], if (index == 2) "Unsupported inline element preserved" else null)
+    }
+    ServiceNativeState.translation = {
+      translatedInputs += "native-translation"
+      JSONObject().put("text", "translated-${translatedInputs.size}").toString()
+    }
+    ShadowNativePdfCore.exportDocxCallback = { input, blocks, output ->
+      exportedSource = input
+      exportedBlocks = blocks
+      exportedPath = output
+      File(output).apply { parentFile?.mkdirs(); writeBytes(byteArrayOf(0x50, 0x4b, 0x03, 0x04, 9, 8, 7)) }
+      JSONObject().put("path", output).put("partial", false).put("warnings", JSONArray()).toString()
+    }
+
+    assertEquals("segment", job(id).getString("progressUnit"))
+    start(id)
+
+    assertEquals("completed", status(id))
+    assertEquals("complete", job(id).getString("stage"))
+    assertEquals(3, job(id).getInt("completedPages"))
+    assertEquals("segment", job(id).getString("progressUnit"))
+    assertEquals(listOf(0, 1, 2), readIndices)
+    assertEquals(listOf("native-translation", "native-translation"), translatedInputs)
+    assertEquals(originalBytes.toList(), source.readBytes().toList())
+    assertEquals(source.absolutePath, exportedSource)
+    assertEquals(File(context.filesDir, "translated-docx/$id.docx").absolutePath, exportedPath)
+    val writtenBlocks = JSONArray(exportedBlocks)
+    assertEquals(3, writtenBlocks.length())
+    assertEquals("  First sentence\n", writtenBlocks.getJSONObject(0).getString("sourceText"))
+    assertEquals("translated-1", writtenBlocks.getJSONObject(0).getString("translatedText"))
+    assertEquals("translated", writtenBlocks.getJSONObject(1).getString("status"))
+    assertEquals("", writtenBlocks.getJSONObject(1).getString("translatedText"))
+    assertEquals("文書の段落", writtenBlocks.getJSONObject(2).getString("sourceText"))
+    assertEquals("Unsupported inline element preserved", database.page(id, 2)?.optString("error"))
+    assertEquals(File(context.filesDir, "translated-docx/$id.docx").absolutePath to "source-translated.docx", database.export(id))
+    assertEquals("application/vnd.openxmlformats-officedocument.wordprocessingml.document", database.exportInfo(id)?.mimeType)
+  }
+
+  @Test fun docxReadFailureStopsBeforeExportAndPreservesOriginalAndSavedCheckpoints() {
+    val (id, source) = createDocxJob(segments = 2)
+    val originalBytes = source.readBytes()
+    var exports = 0
+    val readIndices = mutableListOf<Int>()
+    ShadowNativePdfCore.readDocxCallback = { path, index ->
+      assertEquals(source.absolutePath, path)
+      readIndices += index
+      if (index == 0) docxSegment(index, "Saved paragraph") else JSONObject().put("error", "DOCX segment is corrupt.").toString()
+    }
+    ShadowNativePdfCore.exportDocxCallback = { _, _, _ -> exports++; error("export must not run after extraction fails") }
+
+    start(id)
+
+    assertEquals("failed", status(id))
+    assertEquals("DOCX segment is corrupt.", error(id))
+    assertEquals(listOf(0, 1), readIndices)
+    assertEquals(0, exports)
+    assertEquals("completed", database.page(id, 0)?.getString("status"))
+    assertNull(database.page(id, 1))
+    assertNull(database.exportInfo(id))
+    assertEquals(originalBytes.toList(), source.readBytes().toList())
+  }
+
+  @Test fun docxExportWarningsPersistAsNeedsReviewAndExportFailureKeepsSource() {
+    val (partialId, partialSource) = createDocxJob()
+    val partialOriginal = partialSource.readBytes()
+    ShadowNativePdfCore.readDocxCallback = { path, index ->
+      assertEquals(partialSource.absolutePath, path)
+      docxSegment(index, "Text")
+    }
+    ShadowNativePdfCore.exportDocxCallback = { _, _, output ->
+      File(output).apply { parentFile?.mkdirs(); writeBytes(byteArrayOf(0x50, 0x4b, 0x03, 0x04, 4)) }
+      JSONObject().put("path", output).put("partial", true)
+        .put("warnings", JSONArray().put("Header text was not translatable.").put("null")).toString()
+    }
+    start(partialId)
+    assertEquals("partial", status(partialId))
+    assertTrue(job(partialId).getJSONArray("warnings").toString().contains("Header text was not translatable."))
+    assertEquals("Header text was not translatable.", database.page(partialId, 0)?.optString("error"))
+    assertNotNull(database.exportInfo(partialId))
+    assertEquals(partialOriginal.toList(), partialSource.readBytes().toList())
+
+    val (failedId, failedSource) = createDocxJob()
+    val failedOriginal = failedSource.readBytes()
+    ShadowNativePdfCore.readDocxCallback = { path, index ->
+      assertEquals(failedSource.absolutePath, path)
+      docxSegment(index, "Second document")
+    }
+    ShadowNativePdfCore.exportDocxCallback = { _, _, _ -> JSONObject().put("error", "Word package could not be written.").toString() }
+    start(failedId)
+    assertEquals("failed", status(failedId))
+    assertEquals("Word package could not be written.", error(failedId))
+    assertNull(database.exportInfo(failedId))
+    assertEquals(failedOriginal.toList(), failedSource.readBytes().toList())
+  }
+
+  @Test fun localDocxPausesBeforeLoadingWhenSystemMemoryOrDiskIsInsufficient() {
+    for (mode in 0..1) {
+      val (id, source) = createDocxJob()
+      val originalBytes = source.readBytes()
+      val readIndices = mutableListOf<Int>()
+      var exports = 0
+      service.memoryInfoProvider = { ActivityManager.MemoryInfo().apply { lowMemory = mode == 0 } }
+      service.availableDiskBytes = { if (mode == 1) 0L else Long.MAX_VALUE }
+      ShadowNativePdfCore.readDocxCallback = { _, index -> readIndices += index; docxSegment(index, "Resource test") }
+      ShadowNativePdfCore.exportDocxCallback = { _, _, _ -> exports++; error("a resource-paused job must not export") }
+
+      start(id)
+
+      assertEquals("paused", status(id))
+      assertTrue("resource reason should be visible: ${error(id)}", error(id).contains(if (mode == 0) "memory" else "storage", ignoreCase = true))
+      assertEquals(0, ServiceNativeState.loadCalls)
+      assertTrue("no segment should be read before resource checks", readIndices.isEmpty())
+      assertEquals(0, exports)
+      assertNull(database.page(id, 0))
+      assertEquals(originalBytes.toList(), source.readBytes().toList())
+      service.memoryInfoProvider = { ActivityManager.MemoryInfo().apply { lowMemory = false } }
+      service.availableDiskBytes = { Long.MAX_VALUE }
+    }
+  }
+
+  @Test fun docxMemoryPressureAfterOneSegmentPausesWithItsCheckpointAndSkipsLaterTranslation() {
+    val (id, source) = createDocxJob(segments = 2)
+    val readIndices = mutableListOf<Int>()
+    var memoryPressure = false
+    var translations = 0
+    var exports = 0
+    service.memoryInfoProvider = { ActivityManager.MemoryInfo().apply { lowMemory = memoryPressure } }
+    ShadowNativePdfCore.readDocxCallback = { _, index ->
+      readIndices += index
+      docxSegment(index, "Segment $index")
+    }
+    ServiceNativeState.translation = {
+      translations++
+      memoryPressure = true
+      JSONObject().put("text", "Translated $translations").toString()
+    }
+    ShadowNativePdfCore.exportDocxCallback = { _, _, _ -> exports++; error("a paused DOCX job must not export") }
+
+    start(id)
+
+    assertEquals("paused", status(id))
+    assertTrue(error(id).contains("memory", ignoreCase = true))
+    assertEquals(1, translations)
+    assertTrue("the latest completed segment must be checkpointed", readIndices == listOf(0) || readIndices == listOf(0, 1))
+    assertEquals("completed", database.page(id, 0)?.getString("status"))
+    assertEquals(1, job(id).getInt("completedPages"))
+    assertTrue("the next segment must not be translated", database.page(id, 1) == null ||
+      database.pageBlockArray(id, 1).getJSONObject(0).optString("status") != "translated")
+    assertEquals(0, exports)
+    assertEquals(source.absolutePath, database.jobDocumentPath(id))
+  }
+
+  @Test fun docxModelLoadAllocationFailurePausesBeforeExtractingSegments() {
+    val (id, source) = createDocxJob()
+    var reads = 0
+    var exports = 0
+    ShadowNativePdfCore.loadCallback = {
+      ServiceNativeState.loadCalls++
+      JSONObject().put("error", "std::bad_alloc").toString()
+    }
+    ShadowNativePdfCore.readDocxCallback = { _, index -> reads++; docxSegment(index, "Not read") }
+    ShadowNativePdfCore.exportDocxCallback = { _, _, _ -> exports++; error("failed model load cannot export") }
+
+    start(id)
+
+    assertEquals("paused", status(id))
+    assertTrue(error(id).contains("memory", ignoreCase = true))
+    assertEquals(1, ServiceNativeState.loadCalls)
+    assertEquals(0, reads)
+    assertEquals(0, exports)
+    assertNull(database.page(id, 0))
+    assertTrue(source.exists())
+  }
+
+  @Test fun docxTranslationBadAllocPausesAtSavedCheckpointWithoutExport() {
+    val (id, source) = createDocxJob()
+    var exports = 0
+    ShadowNativePdfCore.readDocxCallback = { _, index -> docxSegment(index, "Recoverable source") }
+    ServiceNativeState.translation = { JSONObject().put("error", "std::bad_alloc").toString() }
+    ShadowNativePdfCore.exportDocxCallback = { _, _, _ -> exports++; error("allocation failure must not export") }
+
+    start(id)
+
+    assertEquals("paused", status(id))
+    assertTrue(error(id).contains("memory", ignoreCase = true))
+    assertEquals(0, job(id).getInt("completedPages"))
+    val checkpoint = database.page(id, 0) ?: fail("translation allocation failure must retain its segment checkpoint")
+    val block = database.pageBlockArray(id, 0).getJSONObject(0)
+    assertEquals("Recoverable source", block.getString("sourceText"))
+    assertTrue(block.optString("status") == "pending" || block.optString("status") == "failed")
+    assertEquals(0, exports)
+    assertTrue(source.exists())
+    assertNotNull(checkpoint)
   }
 
   @Test fun onlineOfflineFailurePausesAtSavedFragmentAndResumeSkipsIt() {
@@ -206,6 +539,7 @@ class PdfTranslationServiceTest {
     assertEquals(0, job(id).getInt("completedPages"))
     assertEquals(0, ServiceNativeState.loadCalls)
 
+    database.updateJob(id,status="queued",stage="queued",clearError=true)
     newWorker()
     service.onStartCommand(intent(PdfTranslationService.ACTION_START, id), 0, sequence + 1)
     worker.runNext()
@@ -245,6 +579,7 @@ class PdfTranslationServiceTest {
       requestedFragments += fragment
       """{"responseStatus":200,"responseData":{"translatedText":"Восстановлено"}}"""
     } }
+    database.updateJob(id,status="queued",stage="queued",clearError=true)
     newWorker()
     service.onStartCommand(intent(PdfTranslationService.ACTION_START, id), 0, sequence + 200)
     worker.runNext()
@@ -698,7 +1033,7 @@ class PdfTranslationServiceTest {
   }
 
 
-  @Test fun missingJobDuringInterruptCleanupDoesNotInventAStatus() {
+  @Test fun interruptCleanupUsesAtomicStatusEvenWhenTheReadAdapterCannotReturnTheJob() {
     val id = createJob()
     val racing = TranslatorDatabase(context, queryForRead = { db, sql, args ->
       val cursor = db.rawQuery(sql, args)
@@ -713,9 +1048,31 @@ class PdfTranslationServiceTest {
     try {
       start(id)
       Thread.interrupted()
-      assertEquals("running", status(id))
+      assertEquals("paused", status(id))
       assertTrue(worker.isShutdown)
     } finally { Thread.interrupted(); racing.close() }
+  }
+
+  @Test fun interruptCleanupDoesNotRecreateAJobThatWasActuallyRemoved() {
+    val id=createJob()
+    ServiceNativeState.load={database.deleteJob(id);Thread.currentThread().interrupt();"{}"}
+    try {
+      start(id)
+      Thread.interrupted()
+      assertNull(database.jobJson(id))
+      assertTrue(worker.isShutdown)
+    } finally {Thread.interrupted()}
+  }
+
+  @Test fun pauseAndCancelOfAPersistedJobReleaseANewIdleService() {
+    for((index,action) in listOf(PdfTranslationService.ACTION_PAUSE,PdfTranslationService.ACTION_CANCEL).withIndex()) {
+      val id=createJob()
+      database.updateJob(id,status="paused")
+      service.onStartCommand(Intent(context,PdfTranslationService::class.java).setAction(action)
+        .putExtra(PdfTranslationService.EXTRA_JOB_ID,id),0,800+index)
+      assertEquals(if(action==PdfTranslationService.ACTION_CANCEL) "canceled" else "paused",status(id))
+      assertTrue("A persisted-job action must release an idle service",canceledJobs.contains(800+index))
+    }
   }
 
   @Test fun notificationHasNoLaunchActionWhenPackageManagerCannotResolveOne() {

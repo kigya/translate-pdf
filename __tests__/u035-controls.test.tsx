@@ -2,6 +2,8 @@ import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react-native-legacy';
 import { Dimensions, Modal, ScrollView, StyleSheet, Text } from 'react-native';
 
+let mockPressed = false;
+let mockFinished = true;
 let mockMeasureRect = { x: 18, y: 300, width: 190, height: 52 };
 
 jest.mock('react-native/Libraries/Components/Pressable/Pressable', () => {
@@ -12,7 +14,7 @@ jest.mock('react-native/Libraries/Components/Pressable/Pressable', () => {
       measureInWindow: (callback: (x: number, y: number, width: number, height: number) => void) =>
         callback(mockMeasureRect.x, mockMeasureRect.y, mockMeasureRect.width, mockMeasureRect.height),
     }), []);
-    return ReactRuntime.createElement(actual.default, { ...props, ref: undefined });
+    return ReactRuntime.createElement(actual.default, { ...props, ref: undefined, testOnly_pressed: mockPressed });
   });
   return { ...actual, default: PressableMock };
 });
@@ -23,7 +25,7 @@ jest.mock('react-native-reanimated', () => {
   const identity = (value: unknown) => value;
   return {
     __esModule: true,
-    default: { View: RN.View, Text: RN.Text, ScrollView: RN.ScrollView, Image: RN.Image },
+    default: { View: RN.View, Text: RN.Text, ScrollView: RN.ScrollView, Image: RN.Image, createAnimatedComponent: (component: unknown) => component },
     Easing: { linear: identity, bezier: () => identity, sin: identity, inOut: identity },
     ReduceMotion: { Always: 'always', Never: 'never' },
     useSharedValue: (value: unknown) => {
@@ -36,7 +38,7 @@ jest.mock('react-native-reanimated', () => {
     useAnimatedScrollHandler: (callback: (event: { contentOffset: { x: number } }) => void) =>
       (event: { nativeEvent?: { contentOffset: { x: number } }; contentOffset?: { x: number } }) => callback(event.nativeEvent ?? event as { contentOffset: { x: number } }),
     useDerivedValue: (factory: () => unknown) => ({ get: factory }),
-    withTiming: (value: unknown, _config?: unknown, callback?: (finished: boolean) => void) => { callback?.(true); return value; },
+    withTiming: (value: unknown, _config?: unknown, callback?: (finished: boolean) => void) => { callback?.(mockFinished); return value; },
     withSpring: identity,
     withDelay: (_delay: number, value: unknown) => value,
     interpolate: (_value: number, _input: number[], output: number[]) => output[0],
@@ -47,6 +49,9 @@ jest.mock('react-native-reanimated', () => {
 
 jest.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }) }));
 
+import { LanguagePair } from '../src/ui/LanguagePair';
+import { Icon } from '../src/ui/Controls';
+import { palettes } from '../src/ui/theme';
 import { LiquidTabs } from '../src/components/kinetik/liquid-tabs';
 import { MagnetButton } from '../src/components/kinetik/magnet-button';
 import { MorphSelect } from '../src/components/kinetik/morph-select';
@@ -205,3 +210,48 @@ describe('U035 Kinetik controls', () => {
   });
 });
 
+
+
+test('select handles an empty option list, measured row reuse and changed labels', () => {
+  const change = jest.fn();
+  const view = render(wrap(<MorphSelect label="Language" value="" options={[]} onValueChange={change} />, 'always'));
+  fireEvent.press(screen.getByRole('button', { name: 'Language, Choose' }));
+  expect(screen.queryByRole('menuitem')).toBeNull();
+  view.rerender(wrap(<MorphSelect label="Language" value="ru" options={[{ value: 'ru', label: 'Русский' }]} onValueChange={change} />, 'always'));
+  let row = screen.getByRole('menuitem', { name: 'Русский' });
+  fireEvent(row, 'layout', { nativeEvent: { layout: { height: 84 } } });
+  fireEvent(row, 'layout', { nativeEvent: { layout: { height: 84.5 } } });
+  expect(StyleSheet.flatten(view.UNSAFE_getByProps({ testID: 'morph-select-highlight' }).props.style).height).toBe(84);
+  view.rerender(wrap(<MorphSelect label="Language" value="ru" options={[{ value: 'ru', label: 'Russian language' }]} onValueChange={change} />, 'always'));
+  row = screen.getByRole('menuitem', { name: 'Russian language' });
+  fireEvent.press(row);
+  expect(change).toHaveBeenCalledWith('ru');
+});
+
+test('a nondismissable dialog retains explicit actions and survives a cancelled exit animation', () => {
+  const close = jest.fn(), confirm = jest.fn();
+  mockPressed = true;
+  const dialog = (visible: boolean) => wrap(<PopDialog visible={visible} dismissable={false} title="Consent" onClose={close} actions={[{ label: 'Continue', onPress: confirm }]} />);
+  const view = render(dialog(true));
+  fireEvent(screen.getByText('Continue'), 'textLayout', { nativeEvent: { lines: [{ text: 'Continue' }] } });
+  expect(StyleSheet.flatten(screen.getByRole('button', { name: 'Continue' }).props.style).opacity).toBe(0.75);
+  expect(screen.UNSAFE_getByType(Modal).props.onRequestClose).toBeUndefined();
+  expect(close).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByRole('button', { name: 'Continue' })); expect(confirm).toHaveBeenCalledTimes(1);
+  mockFinished = false;
+  view.rerender(dialog(false));
+  expect(screen.UNSAFE_getByType(Modal).props.visible).toBe(true);
+  mockFinished = true;
+  view.rerender(dialog(true)); view.rerender(dialog(false));
+  expect(screen.queryByText('Consent')).toBeNull();
+  mockPressed = false;
+});
+
+
+test('language pair mirrors its centred icon in RTL without changing the full language names', () => {
+  const view = render(<LanguagePair colors={palettes.dark} source="en" target="ru" direction="rtl" />);
+  expect(view.UNSAFE_getByType(Icon).props.rotation).toBe(180);
+  expect(screen.getByLabelText('English → Русский')).toBeOnTheScreen();
+  view.rerender(<LanguagePair colors={palettes.light} source="ru" target="en" direction="ltr" />);
+  expect(view.UNSAFE_getByType(Icon).props.rotation).toBe(0);
+});

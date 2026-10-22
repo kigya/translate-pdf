@@ -186,3 +186,27 @@ test('an old image error cannot replace the preview for a newly selected job', a
   expect(screen.queryByTestId('preview-error')).toBeNull();
   expect(screen.getByRole('image')).toBeTruthy();
 });
+
+test('falls back to the generic document label for an unnamed completed result', async () => {
+  renderActivity(job({ documentName: '' }));
+  await flush();
+  expect(screen.getByRole('image').props.accessibilityLabel).toBe(`${t('document')}, ${t('completed')}`);
+});
+
+test('keeps source progress usable when DOCX preparation returns no preview pages', async () => {
+  (PdfTranslator.renderDocxPreview as jest.Mock).mockResolvedValueOnce({ uri: 'file:///empty.pdf', pageCount: 0 });
+  renderActivity(job({ status: 'running', stage: 'translating', documentFormat: 'docx' }));
+  await flush();
+  expect(PdfTranslator.renderPage).not.toHaveBeenCalled();
+  expect(screen.getByTestId('translation-scan')).toBeTruthy();
+});
+
+test.each(['pdf', 'docx'] as const)('finished partial %s shows the real translated preview without a stopped scanner', async format => {
+  renderActivity(job({ status: 'partial', stage: 'complete', documentFormat: format }));
+  await flush();
+  expect(PdfTranslator.renderTranslatedPage).toHaveBeenCalledWith('job-a', 0, 420);
+  expect(screen.queryByTestId('translation-scan')).toBeNull();
+  expect(screen.getByRole('image').props.source).toEqual({ uri: 'file:///translated.png' });
+  expect(screen.getByRole('image').props.accessibilityLabel).toBe(`manual.pdf, ${t('partial')}`);
+  expect(mockBurst).not.toHaveBeenCalled();
+});

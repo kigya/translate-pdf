@@ -206,7 +206,7 @@ export function MagnetButton({
             {typeof children === 'string' ? (
               <Text
                 numberOfLines={1}
-                style={{ color: palette.fg, fontSize: size === 'lg' ? font.size.lg : font.size.md, fontWeight: font.weight.bold }}
+                style={{ color: palette.fg, fontSize: size === 'lg' ? font.size.lg : font.size.md, fontWeight: font.weight.bold, letterSpacing: -0.2 }}
               >
                 {children}
               </Text>

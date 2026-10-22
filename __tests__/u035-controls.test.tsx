@@ -83,7 +83,12 @@ describe('U035 Kinetik controls', () => {
     const button = screen.getByRole('button', { name: 'Next' });
     expect(StyleSheet.flatten(button.props.style)).toEqual(expect.objectContaining({ height: 56, alignSelf: 'stretch' }));
     expect(StyleSheet.flatten(screen.getByTestId('magnet-button-face').props.style)).toEqual(expect.objectContaining({ backgroundColor: expect.any(String) }));
-    expect(screen.getByText('Next')).toHaveStyle({ fontSize: expect.any(Number) });
+    const jellyLabel = StyleSheet.flatten(view.getByText('Continue').props.style);
+    expect(screen.getByText('Next')).toHaveStyle({
+      fontSize: jellyLabel.fontSize,
+      fontWeight: jellyLabel.fontWeight,
+      letterSpacing: jellyLabel.letterSpacing,
+    });
     expect(magnet).toBeTruthy();
   });
 

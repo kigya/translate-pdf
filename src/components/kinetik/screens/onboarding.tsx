@@ -104,12 +104,23 @@ export function Onboarding({
     }
   };
 
+  const settleWithoutMomentum = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const w = widthRef.current;
+    const { contentOffset, velocity } = e.nativeEvent;
+    if (w <= 0 || count <= 0 || velocity?.x !== 0) return;
+    const page = Math.round(contentOffset.x / w);
+    if (page < 0 || page >= count || Math.abs(contentOffset.x - page * w) > 1) return;
+    setIndex(page);
+  };
+
   const next = () => {
     if (disabled) return;
     if (last) return onFinish();
     const to = index + 1;
     scroller.current?.scrollTo({ x: to * widthRef.current, animated: !reduced });
-    setIndex(to);
+    // Keep the incoming title/illustration inactive until the pager settles.
+    // Reduced motion scrolls immediately, so it can settle in the same frame.
+    if (reduced) setIndex(to);
   };
 
   const pad = space[6];
@@ -135,6 +146,7 @@ export function Onboarding({
         showsHorizontalScrollIndicator={false}
         onScroll={onScroll}
         scrollEventThrottle={16}
+        onScrollEndDrag={settleWithoutMomentum}
         onMomentumScrollEnd={settle}
         onLayout={(e) => setHeight(e.nativeEvent.layout.height)}
         style={styles.fill}
@@ -188,6 +200,7 @@ export function Onboarding({
                   ) : null}
                   <WordCascade
                     text={slide.title}
+                    active={sceneActive}
                     replayKey={sceneActive ? `${slide.key}-on` : slide.key}
                     stagger={55}
                     rise={14}

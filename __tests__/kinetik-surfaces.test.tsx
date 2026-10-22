@@ -1,6 +1,6 @@
 import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react-native-legacy';
-import { Image, Modal, Platform, StyleSheet, Text, View } from 'react-native';
+import { AppState, Image, Modal, Platform, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 
 const mockAnimationControl = { finished: true };
@@ -21,6 +21,7 @@ jest.mock('react-native-reanimated', () => {
     useAnimatedRef: () => require('react').useRef(null),
     useAnimatedScrollHandler: (callback: (event: { contentOffset: { x: number } }) => void) => (event: { nativeEvent?: { contentOffset: { x: number } }; contentOffset?: { x: number } }) => callback(event.nativeEvent ?? event as { contentOffset: { x: number } }),
     useAnimatedStyle: (factory: () => object) => factory(),
+    cancelAnimation: jest.fn(),
     useDerivedValue: (factory: () => unknown) => { const value = factory(); return { get: () => value }; },
     useReducedMotion: () => false,
     withTiming: (value: unknown, _config?: unknown, callback?: (finished: boolean) => void) => {
@@ -152,7 +153,10 @@ it('keeps primary button fills solid without gloss or glow across both animated 
   const magnet = render(wrapper(<MagnetButton flatAppearance={false}>Magnet action</MagnetButton>));
   const node = magnet.UNSAFE_getByProps({ accessibilityRole: 'button' });
   expect(StyleSheet.flatten(node.props.style)).not.toHaveProperty('boxShadow');
-  expect(magnet.UNSAFE_queryAllByProps({ pointerEvents: 'none' })).toHaveLength(0);
+  const face = StyleSheet.flatten(magnet.getByTestId('magnet-button-face').props.style);
+  expect(face).toEqual(expect.objectContaining({ backgroundColor: expect.any(String) }));
+  expect(face).not.toHaveProperty('experimental_backgroundImage');
+  expect(face).not.toHaveProperty('boxShadow');
 });
 
 it('renders the Aurora defaults and evaluates its shader uniforms lazily through Skia', () => {
@@ -236,7 +240,7 @@ it('pages onboarding illustrations, honors skip and finish, and hides inactive c
   expect(firstVisual).toHaveBeenCalledWith(false);
   expect(screen.queryByRole('text', { name: 'Import a document' })).toBeNull();
   expect(screen.getByRole('text', { name: 'Compare and save' })).toBeOnTheScreen();
-  fireEvent.press(screen.getByRole('button', { name: 'Get started' }));
+  fireEvent(screen.getByRole('button', { name: 'Get started' }), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } });
   expect(finish).toHaveBeenCalledTimes(1);
   view.rerender(<KinetikProvider scheme="light" reduceMotion="always" haptics={false}><Onboarding slides={slides} active={false} disabled onFinish={finish} /></KinetikProvider>);
   expect(screen.getByTestId('second-visual', { includeHiddenElements: true })).toHaveTextContent('false');
@@ -398,6 +402,8 @@ it('switches theme accessibly with and without a visible label', () => {
 
 it('cascades multiline text, completes animated sequences and skips motion when requested', () => {
   const done = jest.fn();
+  const originalState = AppState.currentState;
+  Object.defineProperty(AppState, 'currentState', { configurable: true, writable: true, value: 'active' });
   const view = render(<KinetikProvider scheme="light" reduceMotion="never" haptics={false}><WordCascade text={'One  word\nnext'} delay={4} stagger={2} wordDuration={9} rise={12} onDone={done} /></KinetikProvider>);
   expect(screen.getByRole('text', { name: 'One  word\nnext' })).toBeOnTheScreen();
   expect(done).toHaveBeenCalled();
@@ -408,6 +414,7 @@ it('cascades multiline text, completes animated sequences and skips motion when 
   mockAnimationControl.finished = true;
   view.rerender(<KinetikProvider scheme="light" reduceMotion="always" haptics={false}><WordCascade text="Static words" animateOnMount={false} onDone={done} /></KinetikProvider>);
   expect(screen.getByRole('text', { name: 'Static words' })).toBeOnTheScreen();
+  Object.defineProperty(AppState, 'currentState', { configurable: true, writable: true, value: originalState });
 });
 
 it('supports pulse toggle labels, hints, active styling, and disabled activation', () => {

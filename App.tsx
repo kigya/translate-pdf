@@ -1,4 +1,3 @@
-import { useAppRating } from './src/ui/useAppRating';
 import { ReviewLayout, ReviewColumn } from './src/ui/ReviewLayout';
 import { TranslationActivity } from './src/ui/TranslationActivity';
 import { UiLocaleContext } from './src/i18n/UiLocaleContext';
@@ -7,9 +6,8 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { KinetikProvider } from './src/lib/kinetik/tokens/theme';
 import { usePaletteTransition } from './src/ui/usePaletteTransition';
 import { LiquidTabs } from './src/components/kinetik/liquid-tabs';
-import { ThemeSwitch } from './src/components/kinetik/theme-switch';
-import { PulseToggle } from './src/components/kinetik/pulse-toggle';
 import { Icon } from './src/ui/Controls';
+import { LanguagePair } from './src/ui/LanguagePair';
 import { useMotionReduced } from './src/ui/useMotionReduced';
 import React, {
   useCallback,
@@ -71,7 +69,6 @@ import {
 } from './src/onboarding/OnboardingScreen';
 
 import { SplashScreen } from './src/ui/SplashScreen';
-import { Sheet } from './src/ui/Controls';
 import { DialogContext, useDialogController } from './src/ui/Dialog';
 import {
   LibraryScreen,
@@ -189,7 +186,6 @@ function AppContent() {
     [],
   );
   const [replayIntro, setReplayIntro] = useState(false);
-  const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [useGlossary, setUseGlossary] = useState(true);
   const [bootComplete, setBootComplete] = useState(false);
   const [onboardingOverride, setOnboardingOverride] =
@@ -420,7 +416,6 @@ function AppContent() {
     }
   };
 
-  const saveAppRating = useAppRating(value => PdfTranslator.setSettings({ appRating: value }), refresh, () => setInlineError(t('unknownError')));
 
   const pickPdf = () =>
     safely(
@@ -612,7 +607,7 @@ function AppContent() {
       </>
     );
 
-  const screenHeader = (title: string, subtitle?: string) => (
+  const screenHeader = (title: string, subtitle?: React.ReactNode) => (
     <Header
       direction={direction}
       title={title}
@@ -622,7 +617,7 @@ function AppContent() {
       backLabel={t('back')}
     />
   );
-  const tabBar = () => <View style={{ padding: 12, paddingBottom: Math.max(12, insets.bottom), backgroundColor: colors.background }}><LiquidTabs tabs={[{ key: 'home', label: t('home'), icon: <Icon name="document" color={route === 'home' ? colors.onPrimary : colors.muted} size={18} /> }, { key: 'settings', label: t('settings'), icon: <Icon name="monitor" color={route === 'settings' ? colors.onPrimary : colors.muted} size={18} /> }]} value={route} onChange={value => { routeStack.current = []; setRoute(value as Route); }} /></View>;
+  const tabBar = () => <View style={{ padding: 12, paddingBottom: Math.max(12, insets.bottom), backgroundColor: colors.background }}><LiquidTabs iconOnly tabs={[{ key: 'home', label: t('home'), icon: <Icon name="document" color={route === 'home' ? colors.onPrimary : colors.muted} size={18} /> }, { key: 'settings', label: t('settings'), icon: <Icon name="settings" color={route === 'settings' ? colors.onPrimary : colors.muted} size={18} /> }]} value={route} onChange={value => { routeStack.current = []; setRoute(value as Route); }} /></View>;
   const base = { colors, t, locale, busy };
   const renderHome = () => (
     <LibraryScreen
@@ -882,7 +877,7 @@ function AppContent() {
       {screenHeader(
         t('previewTitle'),
         details?.job.id === selectedJobId
-          ? pairLabel(details.job.sourceLanguage, details.job.targetLanguage)
+          ? <LanguagePair source={details.job.sourceLanguage} target={details.job.targetLanguage} colors={colors} direction={direction} />
           : undefined,
       )}
       <View
@@ -894,13 +889,13 @@ function AppContent() {
         }}
       >
         <Button
-          label={t('original')}
+          label={ux(locale, 'original')}
           colors={colors}
           variant={previewOriginal ? 'primary' : 'secondary'}
           onPress={() => setPreviewOriginal(true)}
         />
         <Button
-          label={t('translated')}
+          label={ux(locale, 'target')}
           colors={colors}
           variant={!previewOriginal ? 'primary' : 'secondary'}
           onPress={() => setPreviewOriginal(false)}
@@ -955,71 +950,6 @@ function AppContent() {
           {details?.selectedPage?.error ? (
             <Notice text={details.selectedPage.error} colors={colors} />
           ) : null}
-          <Card colors={colors}>
-            <Text
-              style={{ color: colors.text, fontSize: 16, fontWeight: '800' }}
-            >
-              {t('original')}
-            </Text>
-            {details?.selectedPage?.blocks.length ? (
-              details.selectedPage.blocks.map(block => (
-                <View
-                  key={block.id}
-                  style={{
-                    borderTopWidth: 1,
-                    borderTopColor: colors.border,
-                    paddingTop: 9,
-                    gap: 6,
-                  }}
-                >
-                  <Text style={{ color: colors.muted, lineHeight: 19 }}>
-                    {block.sourceText}
-                  </Text>
-                </View>
-              ))
-            ) : (
-              <Text style={{ color: colors.muted }}>{t('noDocuments')}</Text>
-            )}
-          </Card>
-          <Card colors={colors}>
-            <Text
-              style={{ color: colors.text, fontSize: 16, fontWeight: '800' }}
-            >
-              {t('translated')}
-            </Text>
-            {details?.selectedPage?.blocks.length ? (
-              details.selectedPage.blocks.map(block => (
-                <View
-                  key={block.id}
-                  style={{
-                    borderTopWidth: 1,
-                    borderTopColor: colors.border,
-                    paddingTop: 9,
-                    gap: 6,
-                  }}
-                >
-                  <Text
-                    style={{
-                      color:
-                        block.status === 'partial' || block.status === 'failed'
-                          ? colors.warning
-                          : colors.text,
-                      lineHeight: 20,
-                    }}
-                  >
-                    {block.translatedText ?? block.error ?? '—'}
-                  </Text>
-                  {block.status === 'partial' || block.status === 'failed' ? (
-                    <Text style={{ color: colors.warning, fontSize: 12 }}>
-                      {block.error ?? t('issues')}
-                    </Text>
-                  ) : null}
-                </View>
-              ))
-            ) : (
-              <Text style={{ color: colors.muted }}>{t('noDocuments')}</Text>
-            )}
-          </Card>
           <Card colors={colors}>
             <Text
               style={{ color: colors.text, fontSize: 16, fontWeight: '800' }}
@@ -1121,10 +1051,9 @@ function AppContent() {
         {...base}
         snapshot={snapshot}
         onRoute={go}
-        onAppearance={() => setAppearanceOpen(true)}
+        onTheme={theme => void safely(() => PdfTranslator.setSettings({ theme }))}
         onPrivacy={openPrivacy}
         onReplay={() => setReplayIntro(true)}
-        onRate={saveAppRating}
       />
     </>
   );
@@ -1285,16 +1214,6 @@ function AppContent() {
         </View>
       ) : null}
       {route === 'home' || route === 'settings' ? tabBar() : null}
-      <Sheet
-        visible={appearanceOpen}
-        title={t('appearance')}
-        onClose={() => setAppearanceOpen(false)}
-        colors={colors}
-        closeLabel={t('back')}
-      >
-        <PulseToggle label={ux(locale, 'followSystem')} value={preferenceTheme === 'system'} onValueChange={follow => void safely(() => PdfTranslator.setSettings({ theme: follow ? 'system' : activeTheme }))} />
-        <ThemeSwitch label={t('dark')} stateLabel={t(activeTheme)} value={activeTheme} onValueChange={theme => void safely(() => PdfTranslator.setSettings({ theme }))} />
-      </Sheet>
     </Screen>
     </View>
     {dialog}

@@ -137,6 +137,7 @@ export function SearchMorph({
               autoCorrect={false}
               accessibilityLabel={placeholder}
               selectionColor={colors.azure}
+              cursorColor={colors.azure}
               style={[styles.input, { color: colors.text, fontSize: font.size.md }]}
             />
             {value ? (

@@ -97,6 +97,12 @@ function layoutOnboarding() {
   fireEvent(screen.getByTestId('onboarding'), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 360, height: 700 } } });
 }
 
+function activateNextAndSettle(targetPage: number) {
+  fireEvent(screen.getByRole('button', { name: 'Next' }), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } });
+  const pager = screen.UNSAFE_getByProps({ pagingEnabled: true });
+  fireEvent(pager, 'momentumScrollEnd', { nativeEvent: { contentOffset: { x: targetPage * 360, y: 0 } } });
+}
+
 const reanimated = jest.requireMock('react-native-reanimated') as {
   cancelAnimation: jest.Mock;
   useReducedMotion: jest.Mock;
@@ -239,8 +245,8 @@ describe('onboarding boundary behavior', () => {
       ios={false}
     />);
     layoutOnboarding();
-    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
-    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
+    activateNextAndSettle(1);
+    activateNextAndSettle(2);
     expect(screen.getByRole('button', { name: 'Next' })).toBeOnTheScreen();
     await act(async () => {
       fireEvent(screen.getByRole('button', { name: 'Next' }), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } });
@@ -265,8 +271,8 @@ describe('onboarding boundary behavior', () => {
       onExit={onExit}
     />);
     layoutOnboarding();
-    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
-    fireEvent.press(screen.getByRole('button', { name: 'Next' }));
+    activateNextAndSettle(1);
+    activateNextAndSettle(2);
     expect(screen.getByRole('button', { name: 'Next' })).toBeTruthy();
     await act(async () => { fireEvent(screen.getByRole('button', { name: 'Next' }), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } }); await Promise.resolve(); });
     expect(onExit).toHaveBeenCalledTimes(1);

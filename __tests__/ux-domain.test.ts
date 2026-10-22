@@ -44,7 +44,7 @@ describe('concise product presentation', () => {
     expect(modelPresentation({ ...model, tier: 'balanced' }).score).toBe(85);
     expect(modelPresentation({ ...model, tier: undefined }).score).toBe(70);
     expect(ux('en', 'capabilityInfo')).toContain(
-      'not measured translation accuracy',
+      'approximate product rating',
     );
   });
   it('formats measured bytes without confusing storage and RAM or invalid values', () => {

@@ -24,4 +24,4 @@ Documents, translations, checkpoints and dictionary entries remain in app-privat
 
 ## Interface state
 
-Document color labels and the recent/color library sort are stored with native job/preferences data. Labels are available for completed or partial translations. Filename search stays local. The settings star control stores a personal app rating on this device; it is not a public average or a store-review submission. The progress timeline reads real job stages, and confetti runs only on a foreground transition to completed work.
+Document color labels and the recent/color library sort are stored with native job/preferences data. Labels are available for completed or partial translations. Filename search stays local. No rating prompt or rating control is shown. Existing stored preferences remain compatible. The progress timeline reads real job stages, and confetti runs only on a foreground transition to completed work.

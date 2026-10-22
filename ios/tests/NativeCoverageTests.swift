@@ -272,6 +272,10 @@ final class NativeCoverageTests: XCTestCase {
     let string = try XCTUnwrap(try resolved { module.getLicenseNotices($0, rejecter: $1) } as? String)
     let notices = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(string.utf8)) as? [[String: String]])
     XCTAssertGreaterThan(notices.count, 20)
+    let ids = notices.compactMap { $0["id"] }
+    XCTAssertEqual(ids.count, Set(ids).count)
+    XCTAssertTrue(Set(ids).isSuperset(of: ["react", "react-native", "pdfium", "docx-preview", "hy-mt2-7b", "translategemma-4b"]))
+    XCTAssertFalse(ids.contains { $0.contains("/") || $0.contains("..") || $0.contains("cpp-httplib") || $0.contains("new-app-screen") || $0.contains("iq3") || $0.contains("iq2") })
     for notice in notices {
       let id = try XCTUnwrap(notice["id"])
       let text = try XCTUnwrap(try resolved { module.getLicenseNotice(id, resolver: $0, rejecter: $1) } as? String)

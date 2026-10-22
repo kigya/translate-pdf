@@ -162,15 +162,22 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
 
   @objc func getLicenseNotices(_ resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
     run(resolve,reject,"LICENSES_READ_FAILED") {
-      let notices=self.licenseNoticeURLs().map { url in ["id":url.lastPathComponent,"title":url.deletingPathExtension().lastPathComponent.replacingOccurrences(of:"__",with:" · ")] }
+      let notices=try self.licenseNoticeEntries().map { entry in ["id":entry.id,"title":entry.title] }
       return try jsonString(notices)
     }
   }
 
   @objc func getLicenseNotice(_ id:String,resolver resolve:@escaping RCTPromiseResolveBlock,rejecter reject:@escaping RCTPromiseRejectBlock){
     run(resolve,reject,"LICENSE_READ_FAILED") {
-      guard !id.isEmpty,!id.contains("/"),!id.contains("\\"),!id.contains(".."),let url=self.licenseNoticeURLs().first(where:{$0.lastPathComponent == id}) else { throw self.error("The requested license notice is unavailable.") }
-      return try String(contentsOf:url,encoding:.utf8)
+      guard let entry=try self.licenseNoticeEntries().first(where:{$0.id == id}),
+        let bundle=self.licenseBundle() else { throw self.error("The requested license notice is unavailable.") }
+      return try entry.files.map { file in
+        guard self.isSafeLicensePath(file) else { throw self.error("The license catalog contains an invalid path.") }
+        let resource=file.replacingOccurrences(of:"/",with:"__")
+        let url=bundle.bundleURL.appendingPathComponent(resource,isDirectory:false)
+        guard FileManager.default.fileExists(atPath:url.path) else { throw self.error("A required license notice is unavailable.") }
+        return try String(contentsOf:url,encoding:.utf8)
+      }.joined(separator:"\n\n")
     }
   }
 
@@ -398,14 +405,31 @@ final class PdfTranslatorModule: NSObject, RCTBridgeModule {
     guard let url=Bundle.main.url(forResource:"TranslatePDFLicenses",withExtension:"bundle") else{return nil}
     return Bundle(url:url)
   }
-  private func licenseNoticeURLs()->[URL]{
-    guard let bundle=licenseBundle(),let urls=try? FileManager.default.contentsOfDirectory(at:bundle.bundleURL,includingPropertiesForKeys:[.isRegularFileKey]) else{return []}
-    return urls.filter { url in
-      guard url.lastPathComponent != "Info.plist",!url.lastPathComponent.hasPrefix("."),
-        (try? url.resourceValues(forKeys:[.isRegularFileKey]).isRegularFile) == true,
-        let text=try? String(contentsOf:url,encoding:.utf8),!text.isEmpty else{return false}
-      return true
-    }.sorted{$0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending}
+  private struct LicenseNoticeEntry: Decodable {
+    let id: String
+    let title: String
+    let platforms: [String]
+    let files: [String]
+  }
+  private struct LicenseNoticeCatalog: Decodable {
+    let version: Int
+    let notices: [LicenseNoticeEntry]
+  }
+  private func licenseNoticeEntries() throws -> [LicenseNoticeEntry] {
+    guard let bundle=licenseBundle(),let url=bundle.url(forResource:"catalog",withExtension:"json") else {
+      throw error("The required license catalog is unavailable.")
+    }
+    let catalog=try JSONDecoder().decode(LicenseNoticeCatalog.self,from:Data(contentsOf:url))
+    guard catalog.version == 1,!catalog.notices.isEmpty,
+      Set(catalog.notices.map(\.id)).count == catalog.notices.count,
+      catalog.notices.allSatisfy({ !$0.id.isEmpty && !$0.title.isEmpty && !$0.files.isEmpty && $0.files.allSatisfy(isSafeLicensePath) }) else {
+      throw error("The required license catalog is invalid.")
+    }
+    return catalog.notices.filter { $0.platforms.contains("ios") }
+  }
+  private func isSafeLicensePath(_ path:String)->Bool{
+    guard !path.isEmpty,!path.hasPrefix("/"),!path.contains("\\") else{return false}
+    return path.split(separator:"/",omittingEmptySubsequences:false).allSatisfy{!$0.isEmpty && $0 != "." && $0 != ".."}
   }
   private func error(_ message:String)->NSError{NSError(domain:"PdfTranslator",code:100,userInfo:[NSLocalizedDescriptionKey:message])}
   private func recoverInterruptedJobs() throws {

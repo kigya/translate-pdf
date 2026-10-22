@@ -1,8 +1,6 @@
 import { ScrambleText } from '../components/kinetik/scramble-text';
 import { RingSpinner } from '../components/kinetik/ring-spinner';
-import { ReadMore } from '../components/kinetik/read-more';
 import { UsageMeter } from '../components/kinetik/usage-meter';
-import { StarRating } from '../components/kinetik/star-rating';
 import { libraryUx } from '../i18n/libraryUx';
 import { DocumentLibrary, DocumentLibraryProps } from '../ui/DocumentLibrary';
 import { MorphSelect } from '../components/kinetik/morph-select';
@@ -28,6 +26,7 @@ import type {
   DocumentSnapshot,
   GlossaryEntry,
   ModelSnapshot,
+  ThemePreference,
 } from '../native/PdfTranslator';
 import { PdfTranslator } from '../native/PdfTranslator';
 import type { Palette } from '../ui/theme';
@@ -46,6 +45,7 @@ import {
 } from '../domain/modelEligibility';
 import {
   translationLanguages,
+  translationLanguageShortName,
   TranslationLanguage,
 } from '../domain/translationLanguages';
 import { Button, Field, Notice, ProgressBar, Row } from '../ui/components';
@@ -136,7 +136,8 @@ export function ModelScreen({
           <Row style={{ justifyContent: 'space-between' }}><Title colors={colors}>{ux(locale, 'modelOnline')}</Title><Icon name="globe" color={colors.accent} /></Row>
           <Text style={{ color: colors.success }}>{ux(locale, 'onlineAvailable')}</Text>
           <Text style={{ color: colors.muted }}>{ux(locale, 'onlineQuota')}</Text>
-          <Row><AnimatedNumber value={70} suffix="%" color={colors.accent} /><IconButton name="info" label={`70% · ${ux(locale, 'details')}`} colors={colors} onPress={() => info('70%', ux(locale, 'capabilityInfo'))} /></Row>
+          <View style={{ gap: 4 }}><AnimatedNumber value={70} suffix="%" color={colors.accent} /><Text style={{ color: colors.muted, fontSize: 12 }}>{ux(locale, 'approximateRating')}</Text></View>
+          <Button colors={colors} variant="quiet" label={ux(locale, 'details')} onPress={() => { setLicenseError(''); setDetails(ONLINE_MODEL); }} />
           <Button colors={colors} label={t('useThisModel')} disabled={busy || selected?.id === 'mymemory'} onPress={() => onSelect(ONLINE_MODEL)} />
         </View>
         {!snapshot.models.some(m => m.translationEnabled) ? (
@@ -176,12 +177,7 @@ export function ModelScreen({
                   >
                     {ux(locale, p.title)}
                   </Text>
-                  <IconButton
-                    name="info"
-                    label={`${ux(locale, 'details')}: ${ux(locale, p.title)}`}
-                    onPress={() => { setLicenseError(''); setDetails(model); }}
-                    colors={colors}
-                  />
+
                 </Row>
                 <Row style={{ gap: 28, alignItems: 'flex-end' }}>
                   <View style={{ flex: 1, gap: 4 }}>
@@ -198,11 +194,12 @@ export function ModelScreen({
                       {t('fileSize')}
                     </Text>
                   </View>
-                  <Row>
+                  <View style={{ flex: 1, gap: 4, alignItems: 'flex-end' }}>
                     <AnimatedNumber value={p.score} suffix="%" color={colors.accent} />
-                    <IconButton name="info" label={`${p.score}% · ${ux(locale, 'details')}`} colors={colors} onPress={() => info(`${p.score}%`, ux(locale, 'capabilityInfo'))} />
-                  </Row>
+                    <Text style={{ color: colors.muted, fontSize: 12, textAlign: 'right' }}>{ux(locale, 'approximateRating')}</Text>
+                  </View>
                 </Row>
+                <Button colors={colors} variant="quiet" label={ux(locale, 'details')} accessibilityLabel={`${ux(locale, 'details')}: ${model.label}`} onPress={() => { setLicenseError(''); setDetails(model); }} />
                 {downloading ? (
                   <>
                     <View
@@ -320,11 +317,7 @@ export function ModelScreen({
         {details ? (
           <View style={{ gap: 16 }}>
             <ScrambleText text={details.label} duration={480} style={{ color: colors.text, fontSize: 21, fontWeight: '700' }} />
-            <ReadMore moreLabel={libraryUx(locale, 'readMore')} lessLabel={libraryUx(locale, 'readLess')} fadeColor={colors.surface} textStyle={{ color: colors.text, fontSize: 16, lineHeight: 23 }}>{`${details.label} · ${formatBytes(details.bytes)}
 
-${t('qualityPending')}
-
-${ux(locale, 'capabilityInfo')}`}</ReadMore>
             {licenseError ? <Notice colors={colors} text={licenseError}/> : null}
             {details.licenseUrl ? (
               <SettingsRow
@@ -363,6 +356,8 @@ export function LanguageChoices({
         accessibilityLabel={ux(locale, 'search')}
         placeholder={ux(locale, 'search')}
         placeholderTextColor={colors.muted}
+        selectionColor={colors.accent}
+        cursorColor={colors.accent}
         value={search}
         onChangeText={setSearch}
         autoCorrect={false}
@@ -429,11 +424,11 @@ export function PairPicker({
   target: TranslationLanguage;
   onChange: (s: TranslationLanguage, t: TranslationLanguage) => void;
 } & Base) {
-  const options = translationLanguages.map(([value, name]) => ({ value, label: `${localeFlags[value]} ${name}` }));
+  const options = translationLanguages.map(([value, name]) => ({ value, label: `${localeFlags[value]} ${name}`, compactLabel: `${localeFlags[value]} ${translationLanguageShortName(value)}` }));
   return <Row style={{ alignItems: 'flex-start' }}>
-    <View style={{ flex: 1 }}><MorphSelect label={t('sourceLanguage')} value={source} options={options} disabled={busy} onValueChange={value => onChange(value as TranslationLanguage, value === target ? source : target)} /></View>
+    <View style={{ flex: 1 }}><MorphSelect closeLabel={t('back')} minMenuWidth={280} label={t('sourceLanguage')} value={source} options={options} disabled={busy} onValueChange={value => onChange(value as TranslationLanguage, value === target ? source : target)} /></View>
     <IconButton name="swap" label={t('swapLanguages')} colors={colors} disabled={busy} onPress={() => onChange(target, source)} />
-    <View style={{ flex: 1 }}><MorphSelect label={t('targetLanguage')} value={target} options={options} disabled={busy} onValueChange={value => onChange(value === source ? target : source, value as TranslationLanguage)} /></View>
+    <View style={{ flex: 1 }}><MorphSelect closeLabel={t('back')} minMenuWidth={280} label={t('targetLanguage')} value={target} options={options} disabled={busy} onValueChange={value => onChange(value === source ? target : source, value as TranslationLanguage)} /></View>
   </Row>;
 }
 export function TranslationOptionsScreen({
@@ -613,23 +608,28 @@ export function SettingsScreen({
   locale,
   snapshot,
   onRoute,
-  onAppearance,
+  onTheme,
+  busy,
   onPrivacy,
   onReplay,
-  onRate,
 }: {
   snapshot: BootstrapSnapshot;
   onRoute: (r: 'language' | 'storage' | 'dictionary' | 'licenses') => void;
-  onAppearance: () => void;
+  onTheme: (theme: ThemePreference) => void;
   onPrivacy: () => void;
   onReplay: () => void;
-  onRate?: (value: number) => void;
 } & Base) {
   return <View style={{ flex: 1 }}><Profile sections={[
     { rows: [
       { key: 'language', label: t('language'), icon: <Icon name="globe" color={colors.accent} />, detail: `${localeFlags[snapshot.preferences.language] ?? '🌐'} ${snapshot.preferences.language === 'system' ? ux(locale, 'systemDefault') : localeOptions.find(([id]) => id === snapshot.preferences.language)?.[1] ?? ''}`, onPress: () => onRoute('language') },
-      { key: 'appearance', label: t('appearance'), icon: <Icon name="moon" color={colors.accent} />, detail: t(snapshot.preferences.theme), onPress: onAppearance },
     ] },
+    { title: t('appearance'), rows: [], content: <View accessibilityRole="radiogroup" accessibilityLabel={t('appearance')}>
+      {(['system', 'dark', 'light'] as const).map((theme, index) => <Pressable key={theme} accessibilityRole="radio" accessibilityLabel={theme === 'system' ? ux(locale, 'systemDefault') : t(theme)} accessibilityState={{ checked: snapshot.preferences.theme === theme, disabled: !!busy }} disabled={busy} onPress={() => onTheme(theme)} style={{ flexDirection: 'row', alignItems: 'center', gap: 14, minHeight: 56, paddingHorizontal: 16, paddingVertical: 10, borderTopWidth: index ? 0.5 : 0, borderTopColor: colors.border }}>
+        <Icon name={theme === 'system' ? 'monitor' : theme === 'dark' ? 'moon' : 'sun'} color={snapshot.preferences.theme === theme ? colors.accent : colors.muted} />
+        <Text style={{ flex: 1, color: colors.text, fontSize: 16 }}>{theme === 'system' ? ux(locale, 'systemDefault') : t(theme)}</Text>
+        {snapshot.preferences.theme === theme ? <Icon name="check" color={colors.accent} /> : null}
+      </Pressable>)}
+    </View> },
     { rows: [
       { key: 'storage', label: ux(locale, 'storage'), icon: <Icon name="storage" color={colors.accent} />, detail: formatBytes(snapshot.device.storage?.installedModelBytes ?? snapshot.models.reduce((sum, m) => sum + (m.status === 'ready' ? m.bytes : 0), 0)), onPress: () => onRoute('storage') },
       { key: 'dictionary', label: ux(locale, 'glossary'), icon: <Icon name="book" color={colors.accent} />, onPress: () => onRoute('dictionary') },
@@ -639,7 +639,7 @@ export function SettingsScreen({
       { key: 'licenses', label: t('licenses'), icon: <Icon name="license" color={colors.accent} />, onPress: () => onRoute('licenses') },
       { key: 'tutorial', label: ux(locale, 'viewTutorial'), icon: <Icon name="replay" color={colors.accent} />, onPress: onReplay },
     ] },
-  ]} /><View style={{ paddingHorizontal: 24, paddingBottom: 20, gap: 8 }}><Text style={{ color: colors.text, fontSize: 18, fontWeight: '700' }}>{libraryUx(locale, 'rateApp')}</Text><StarRating value={snapshot.preferences.appRating ?? 0} onValueChange={value => onRate?.(value)} accessibilityLabel={libraryUx(locale, 'rateApp')} color={colors.accent} /><Text style={{ color: colors.muted, fontSize: 13 }}>{libraryUx(locale, 'ratingLocal')}</Text></View></View>;
+  ]} /></View>;
 }
 export function StorageScreen({
   colors,

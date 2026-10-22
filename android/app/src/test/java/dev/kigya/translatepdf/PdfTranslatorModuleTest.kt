@@ -1045,11 +1045,19 @@ class PdfTranslatorModuleTest {
     val notices = PromiseCapture()
     module.getLicenseNotices(notices.promise)
     val indexedNotices = JSONArray(notices.awaitSuccess().toString())
-    assertTrue("generated license assets should be indexable", indexedNotices.length() > 0)
-    val firstId = indexedNotices.getJSONObject(0).getString("id")
-    val firstNotice = PromiseCapture()
-    module.getLicenseNotice(firstId, firstNotice.promise)
-    assertTrue(firstNotice.awaitSuccess().toString().isNotBlank())
+    assertTrue("curated legal notices should be indexable", indexedNotices.length() >= 20)
+    val noticeIds = (0 until indexedNotices.length()).map { indexedNotices.getJSONObject(it).getString("id") }
+    assertEquals(noticeIds.size, noticeIds.toSet().size)
+    assertTrue(noticeIds.containsAll(listOf("react", "react-native", "pdfium", "tesseract4android", "hy-mt2-7b", "translategemma-4b")))
+    assertFalse(noticeIds.any { it.contains("/") || it.contains("..") })
+    assertFalse(noticeIds.any { it.contains("cpp-httplib") || it.contains("new-app-screen") || it.contains("iq3") || it.contains("iq2") })
+    for (notice in 0 until indexedNotices.length()) {
+      val item = indexedNotices.getJSONObject(notice)
+      assertTrue(item.getString("title").isNotBlank())
+      val text = PromiseCapture()
+      module.getLicenseNotice(item.getString("id"), text.promise)
+      assertTrue("empty legal text for ${item.getString("id")}", text.awaitSuccess().toString().isNotBlank())
+    }
 
     val notice = PromiseCapture()
     module.getLicenseNotice("../missing", notice.promise)

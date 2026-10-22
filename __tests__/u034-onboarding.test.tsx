@@ -169,13 +169,13 @@ describe('U034 onboarding composition', () => {
     expect(view.UNSAFE_getAllByType(PressJelly)).toHaveLength(1);
     expect(view.UNSAFE_queryAllByType(MagnetButton)).toHaveLength(0);
 
-    fireEvent.press(primary());
+    fireEvent(primary(), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } });
     expect(view.UNSAFE_getAllByType(PressJelly)).toHaveLength(1);
-    fireEvent.press(primary());
+    fireEvent(primary(), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } });
     expect(view.UNSAFE_queryAllByType(PressJelly)).toHaveLength(0);
     expect(view.UNSAFE_getAllByType(MagnetButton)).toHaveLength(1);
     expect(primary()).toBeOnTheScreen();
-    expect(StyleSheet.flatten(primary().props.style).backgroundColor).toBe(createTheme('light').colors.ember);
+    expect(StyleSheet.flatten(screen.getByTestId('magnet-button-face').props.style).backgroundColor).toBe(createTheme('light').colors.ember);
     expect(JSON.stringify(view.toJSON())).not.toMatch(/LinearGradient|Gradient|gloss|glow/i);
 
     act(() => fireEvent(primary(), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } }));

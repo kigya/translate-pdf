@@ -2,10 +2,12 @@ import { useEffect, useState, type ReactNode } from 'react';
 import {
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
   useWindowDimensions,
+  type TextLayoutEvent,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
@@ -70,6 +72,8 @@ export function PopDialog({
   const reduced = useReduceMotion();
   const window = useWindowDimensions();
   const [mounted, setMounted] = useState(visible);
+  const [wrappedAction, setWrappedAction] = useState(false);
+  const actionLabelKey = JSON.stringify(actions.map((action) => action.label));
   if (visible && !mounted) setMounted(true);
   const t = useSharedValue(0);
 
@@ -99,7 +103,8 @@ export function PopDialog({
     };
   });
 
-  const stacked = actions.length > 2;
+  useEffect(() => setWrappedAction(false), [actionLabelKey]);
+  const stacked = actions.length > 2 || wrappedAction;
 
   return (
     <Modal
@@ -129,41 +134,49 @@ export function PopDialog({
             styles.card,
             {
               width: Math.min(MAX_W, window.width - space[6] * 2),
+              maxHeight: Math.max(0, window.height - space[8] * 2),
               backgroundColor: colors.surfaceRaised,
               borderColor: colors.border,
               borderRadius: radius.xl,
               boxShadow: shadow.lg,
-              padding: space[6],
-              gap: space[2],
+              overflow: 'hidden',
             },
             style,
             card,
           ]}
         >
+          <ScrollView
+            style={{ maxHeight: Math.max(0, window.height - space[8] * 2) }}
+            contentContainerStyle={{ padding: space[6], gap: space[2] }}
+            showsVerticalScrollIndicator
+          >
           <Text
             accessibilityRole="header"
-            style={{ color: colors.text, fontSize: font.size.lg, fontWeight: font.weight.semibold }}
+            style={{ color: colors.text, fontSize: font.size.lg, lineHeight: Math.ceil(font.size.lg * 1.25), fontWeight: font.weight.semibold }}
           >
             {title}
           </Text>
           {message ? (
-            <Text style={{ color: colors.textMuted, fontSize: font.size.sm, lineHeight: 20 }}>
+            <Text style={{ color: colors.textMuted, fontSize: font.size.sm, lineHeight: Math.ceil(font.size.sm * 1.45) }}>
               {message}
             </Text>
           ) : null}
           {children}
-          <View style={[stacked ? styles.stack : styles.pair, { marginTop: space[4] }]}>
+          <View testID="dialog-actions" style={[stacked ? styles.stack : styles.pair, { marginTop: space[4] }]}>
             {actions.map((a) => (
-              <ActionButton key={a.label} action={a} fill={!stacked} />
+              <ActionButton key={a.label} action={a} fill={!stacked} onTextLayout={(event) => {
+                if (event.nativeEvent.lines.length > 1) setWrappedAction(true);
+              }} />
             ))}
           </View>
+          </ScrollView>
         </Animated.View>
       </View>
     </Modal>
   );
 }
 
-function ActionButton({ action, fill }: { action: PopDialogAction; fill: boolean }) {
+function ActionButton({ action, fill, onTextLayout }: { action: PopDialogAction; fill: boolean; onTextLayout: (event: TextLayoutEvent) => void }) {
   const { colors, font, radius } = useKinetikTheme();
   const tone = action.tone ?? 'default';
   const bg = tone === 'primary' ? colors.ember : tone === 'danger' ? colors.danger : colors.surface;
@@ -185,7 +198,7 @@ function ActionButton({ action, fill }: { action: PopDialogAction; fill: boolean
         },
       ]}
     >
-      <Text style={{ color: fg, fontSize: font.size.md, fontWeight: font.weight.semibold }}>
+      <Text onTextLayout={onTextLayout} style={{ color: fg, fontSize: font.size.md, lineHeight: Math.ceil(font.size.md * 1.3), fontWeight: font.weight.semibold, textAlign: 'center', flexShrink: 1 }}>
         {action.label}
       </Text>
     </Pressable>
@@ -196,9 +209,10 @@ const styles = StyleSheet.create({
   root: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   card: { borderWidth: 1 },
   pair: { flexDirection: 'row', gap: 10 },
-  stack: { gap: 8 },
+  stack: { flexDirection: 'column', gap: 8 },
   action: {
     minHeight: 48,
+    paddingVertical: 8,
     paddingHorizontal: 16,
     borderWidth: 1,
     alignItems: 'center',

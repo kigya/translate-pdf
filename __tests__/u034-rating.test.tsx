@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react-native-legacy';
+import { render, screen } from '@testing-library/react-native-legacy';
 
 jest.mock('react-native-reanimated', () => ({
   __esModule: true,
@@ -56,7 +56,6 @@ jest.mock('../src/ui/components', () => ({ Button: () => null, Field: () => null
 import { SettingsScreen } from '../src/screens/AppScreens';
 import type { BootstrapSnapshot } from '../src/native/PdfTranslator';
 import { createTranslator } from '../src/i18n/messages';
-import { libraryUx } from '../src/i18n/libraryUx';
 import { palettes } from '../src/ui/theme';
 
 const snapshot = (appRating: number) => ({
@@ -65,19 +64,15 @@ const snapshot = (appRating: number) => ({
   device: {}, models: [], jobs: [], documents: [], glossary: [], onboarding: { done: true },
 } as unknown as BootstrapSnapshot);
 
-describe('local app rating in Settings', () => {
-  it('reads the saved rating, forwards only explicit values 1–5, and labels storage as device-local', () => {
-    const onRate = jest.fn();
-    render(<SettingsScreen colors={palettes.light} t={createTranslator('en')} locale="en" snapshot={snapshot(4)} onRoute={jest.fn()} onAppearance={jest.fn()} onPrivacy={jest.fn()} onReplay={jest.fn()} onRate={onRate} />);
+describe('rating preference is not exposed in Settings', () => {
+  it.each([0, 4])('does not render or mutate a saved app rating of %s', storedRating => {
+    const onTheme = jest.fn();
+    render(<SettingsScreen colors={palettes.light} t={createTranslator('en')} locale="en" snapshot={snapshot(storedRating)} onRoute={jest.fn()} onTheme={onTheme} onPrivacy={jest.fn()} onReplay={jest.fn()} />);
 
-    expect(screen.getByTestId('stored-rating')).toHaveTextContent('4');
-    expect(screen.UNSAFE_getByProps({ accessibilityRole: 'adjustable', accessibilityLabel: libraryUx('en', 'rateApp') }).props.accessibilityValue).toEqual({ min: 0, max: 5, now: 4 });
-    expect(screen.getByText(libraryUx('en', 'ratingLocal'))).toBeOnTheScreen();
-    expect(screen.queryByText(/average|app store|play store/i)).toBeNull();
-
-    for (const rating of [1, 2, 3, 4, 5]) {
-      fireEvent.press(screen.getByRole('button', { name: `Choose rating ${rating}` }));
-    }
-    expect(onRate.mock.calls.map(([rating]) => rating)).toEqual([1, 2, 3, 4, 5]);
+    expect(screen.queryByText('Rate Folivela')).toBeNull();
+    expect(screen.queryByText(/Saved on this device/)).toBeNull();
+    expect(screen.queryByRole('adjustable')).toBeNull();
+    expect(screen.queryByRole('button', { name: /rating/i })).toBeNull();
+    expect(onTheme).not.toHaveBeenCalled();
   });
 });

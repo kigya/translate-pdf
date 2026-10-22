@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { StyleSheet, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, StyleSheet, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 import Animated, {
+  cancelAnimation,
   Easing,
   useAnimatedStyle,
   useSharedValue,
@@ -27,6 +28,8 @@ export type WordCascadeProps = {
   replayKey?: string | number;
   /** Play on first render. Defaults to true. */
   animateOnMount?: boolean;
+  /** Start only after the containing page has settled. Defaults to true. */
+  active?: boolean;
   onDone?: () => void;
   style?: StyleProp<TextStyle>;
   containerStyle?: StyleProp<ViewStyle>;
@@ -44,6 +47,7 @@ export function WordCascade({
   rise = 10,
   replayKey,
   animateOnMount = true,
+  active = true,
   onDone,
   style,
   containerStyle,
@@ -53,7 +57,8 @@ export function WordCascade({
   // Split on spaces but keep line breaks as their own tokens.
   const words = useMemo(() => text.split(/(\n)| +/).filter((w): w is string => !!w), [text]);
   const total = delay + Math.max(0, words.length - 1) * stagger + wordDuration;
-  const clock = useSharedValue(animateOnMount && !reduced ? 0 : total);
+  const clock = useSharedValue(!active ? 0 : animateOnMount && !reduced ? 0 : total);
+  const [foreground, setForeground] = useState(AppState.currentState === 'active');
   const first = useRef(true);
   const onDoneRef = useRef(onDone);
   useEffect(() => {
@@ -61,9 +66,23 @@ export function WordCascade({
   }, [onDone]);
 
   useEffect(() => {
-    const skip = reduced || (first.current && !animateOnMount);
+    const subscription = AppState.addEventListener('change', (state) => {
+      setForeground(state === 'active');
+    });
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
+    if (!active) {
+      cancelAnimation(clock);
+      clock.set(0);
+      first.current = false;
+      return;
+    }
+    const skip = reduced || !foreground || (first.current && !animateOnMount);
     first.current = false;
     if (skip) {
+      cancelAnimation(clock);
       clock.set(total);
       return;
     }
@@ -75,9 +94,8 @@ export function WordCascade({
         if (done) scheduleOnRN(finished);
       }),
     );
-    // Replays when the text or replayKey changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, replayKey, reduced]);
+    // Replays when the text, activation, or replay key changes.
+  }, [active, text, replayKey, reduced, foreground, total, animateOnMount, clock]);
 
   const textStyle: StyleProp<TextStyle> = [
     {

@@ -1,6 +1,6 @@
 # Third-party notices
 
-TranslatePDF is a private prototype. No project-level license has been selected for TranslatePDF itself. This notice grants no license to the app's original code or product materials. Copies of the notices named below are tracked under [`licenses/`](licenses/) and are included in iOS and Android app assets. Consult each full text for its terms.
+TranslatePDF is a private prototype. No project-level license has been selected for TranslatePDF itself. This notice grants no license to the app's original code or product materials. Canonical notices are tracked under [`licenses/`](licenses/). The explicit [`licenses/catalog.json`](licenses/catalog.json) selects the in-app notices for each platform: 27 groups, 80 Android text files and 74 iOS text files. Android-only OCR notices are not listed on iOS. Source-only, legacy and provenance files can remain in this repository without being exposed as runtime notices. Consult each selected full text for its terms.
 
 ## Runtime and UI dependencies
 
@@ -8,7 +8,6 @@ TranslatePDF is a private prototype. No project-level license has been selected 
 |---|---|---|---|
 | React | 19.3.0 | MIT | [`licenses/react/LICENSE`](licenses/react/LICENSE) |
 | React Native | 0.88.0 | MIT | [`licenses/react-native/LICENSE`](licenses/react-native/LICENSE) |
-| React Native New App Screen | 0.88.0 | MIT; source package is part of the React Native repository | [`licenses/react-native-new-app-screen/LICENSE`](licenses/react-native-new-app-screen/LICENSE) |
 | React Native Safe Area Context | 5.10.1 | MIT | [`licenses/react-native-safe-area-context/LICENSE`](licenses/react-native-safe-area-context/LICENSE) |
 | React Native Reanimated | 4.7.1 | MIT | [`licenses/react-native-reanimated/LICENSE`](licenses/react-native-reanimated/LICENSE) |
 | React Native SVG | 15.16.0 | MIT | [`licenses/react-native-svg/LICENSE`](licenses/react-native-svg/LICENSE) |
@@ -24,14 +23,13 @@ The bundled `tessdata_fast` OCR data for English, Russian, Simplified Chinese, F
 |---|---|---|
 | llama.cpp | v0.7.0, commit `620d2225cc436ab0b001e3200e590e3b286ef9ab` | MIT; [`licenses/llama.cpp/LICENSE`](licenses/llama.cpp/LICENSE) |
 | nlohmann/json | v3.12.0 single-header dependency | MIT; [`licenses/nlohmann-json/LICENSE`](licenses/nlohmann-json/LICENSE) |
-| cpp-httplib | vendored by the pinned llama.cpp source | MIT; [`licenses/cpp-httplib/LICENSE`](licenses/cpp-httplib/LICENSE) |
 | PDFium | build 8100, `bblanchon/pdfium-binaries` package | Package notice and every license file shipped in the pinned build package are copied into [`licenses/pdfium/8100/`](licenses/pdfium/8100/), including PDFium and notices for Abseil, AGG, Dragonbox, fast_float, FreeType, HarfBuzz, ICU, Little CMS, libjpeg-turbo, OpenJPEG, libpng, LLVM libc, simdutf, and zlib. |
 
-The PDFium package directory was copied in full from the private build inputs, including its root `LICENSE` and the complete `licenses/` directory. These copies are source-tracked, and the Android `assets/licenses/` packages the hierarchy with app builds. CocoaPods flattens resource-bundle files, so the iOS bundle stores the same files under unique names formed by replacing path separators with `__`; `ios/scripts/sync-license-resources.sh` regenerates that mirror from this canonical directory. This does not establish that every transitive platform/toolchain dependency is inventoried.
+The catalog includes the full pinned PDFium license set, including its root `LICENSE` and all 17 component notices. Android packages selected files under `assets/licenses/`. The iOS resource bundle stores the selected files under unique names formed by replacing path separators with `__`; `ios/scripts/sync-license-resources.sh` validates the catalog and regenerates that mirror before CocoaPods packages it. The unused New App Screen component, mobile-unlinked cpp-httplib and disabled model variants are absent from the in-app list. This catalog is not an exhaustive platform/toolchain SBOM.
 
 ## Translation models
 
-The model is downloaded by the user at runtime and is not checked into this repository. Tencent's Hy-MT2 1.8B model repository identifies the model as Apache-2.0: [Tencent model repository](https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF), pinned source revision `a0c709d9fac510f2c807aa3af52872340dc37a4a`. The community IQ3_XS and IQ2_M conversions are from `mradermacher/Hy-MT2-1.8B-i1-GGUF`, revision `9f5c7d98d8b625800775e6197e55c7ed38f2f33a`; the pinned repository metadata reports Apache-2.0, and its canonical license text is in [`licenses/models/hy-mt2-1.8b/LICENSE-Apache-2.0.txt`](licenses/models/hy-mt2-1.8b/LICENSE-Apache-2.0.txt). Those are community conversions, not Tencent-published quantizations. Their artifact hashes and sizes are recorded in the model catalog; translation quality and device-memory compatibility remain unverified.
+The model is downloaded by the user at runtime and is not checked into this repository. Tencent's Hy-MT2 1.8B model repository identifies the model as Apache-2.0: [Tencent model repository](https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF), pinned source revision `a0c709d9fac510f2c807aa3af52872340dc37a4a`. Historical community IQ3_XS and IQ2_M conversions are from `mradermacher/Hy-MT2-1.8B-i1-GGUF`, revision `9f5c7d98d8b625800775e6197e55c7ed38f2f33a`; the pinned repository metadata reports Apache-2.0, and its canonical license text is in [`licenses/models/hy-mt2-1.8b/LICENSE-Apache-2.0.txt`](licenses/models/hy-mt2-1.8b/LICENSE-Apache-2.0.txt). Those are community conversions, not Tencent-published quantizations. Their artifact hashes and sizes are recorded in the model catalog; translation quality and device-memory compatibility remain unverified.
 
 The current chooser also offers the official [Hy-MT2 7B Q4_K_M package](https://huggingface.co/tencent/Hy-MT2-7B-GGUF), revision `ab8472660ac61fac25f1af43fac2599d52a8a775`. The exact upstream Apache-2.0 license, including Tencent's 2026 copyright notice, is preserved in [`licenses/models/hy-mt2-7b/LICENSE`](licenses/models/hy-mt2-7b/LICENSE); package provenance is in the adjacent [`NOTICE.txt`](licenses/models/hy-mt2-7b/NOTICE.txt). The legacy IQ3_XS and IQ2_M packages are disabled and absent from the three-choice picker.
 
@@ -44,8 +42,14 @@ These notices cover the listed redistributed components. They are not an exhaust
 
 ## DOCX preview and OOXML processing
 
-DOCX preview uses docx-preview0.3.7 (Apache-2.0) and JSZip3.10.1 (MIT or GPLv3; distributed here under MIT). Native OOXML processing uses the pinned miniz and pugixml versions recorded in native/vendor/README.md and their bundled license notices. Preview assets run locally; this does not describe the separate optional MyMemory service.
+DOCX preview uses docx-preview 0.3.7 (Apache-2.0) and JSZip 3.10.1 (distributed here under its MIT option). The JSZip group also includes the bundled pako, lie, immediate and setimmediate notices; the alternative GPL text is not listed as a second license choice in the app. Native OOXML processing uses the pinned miniz and pugixml versions recorded in [`native/vendor/README.md`](native/vendor/README.md) and their bundled license notices. Preview assets run locally; this does not describe the separate optional MyMemory service.
 
 ## Kinetik UI
 
-Kinetik UI source components were installed with kinetik-ui1.4.2 and adapted for Folivela under the MIT license. Source provenance is recorded in kinetik.json.
+Kinetik UI source components were installed with kinetik-ui 1.4.2 and adapted for Folivela under the MIT license. Source provenance is recorded in kinetik.json.
+
+## Expo and bundled JavaScript
+
+The catalog includes Expo SDK/Router, Gesture Handler, Screens, View Shot and the React Native Skia wrapper, in addition to the runtime components above. Android and iOS Release source maps were reconciled against the resolved runtime package paths; the grouped JavaScript notice includes the package-local MIT/ISC/BSD notices for those bundled paths. Build-only dependencies are not automatically added to the in-app list.
+
+React Native Skia 2.14.0 packages Skia m154 prebuilts. The wrapper MIT notice and pinned Google Skia BSD core notice are included. The exact embedded third-party inventory of those prebuilts remains unverified. The published standard-navigation 0.0.5 metadata identifies MIT, but its tarball has no license text; the current repository MIT copy is included with version-specific provenance still unresolved. These two limits remain release blockers and must not be presented as complete legal clearance.

@@ -17,11 +17,11 @@ This is a prototype in verification. Translation quality, long-document reliabil
 - Save translated PDFs. Word jobs also produce editable DOCX files. The original stays unchanged; Word preview and PDF pagination may differ from Microsoft Word. Unsupported elements and text that needs review are reported.
 - Use a dictionary with compatible local models. Saved jobs keep their original language, model and dictionary choices. MyMemory does not use the dictionary.
 
-Engine percentages are subjective product ratings, not measured accuracy or a guarantee for a language pair. Check important passages against the original.
+Engine percentages are approximate product ratings; results vary by language and text. Check important passages against the original.
 
 ## Interface
 
-The Expo development-build application uses Expo Router and Kinetik source components for navigation, controls, its three-page tutorial, appearance settings and branded startup. It supports light, dark and system appearance, tutorial replay and reduced-motion settings. Buttons use solid fills and white text on red in dark mode. The tutorial has three illustrated, title-only pages with a fixed progress indicator and Next/Skip controls. Grain Drift provides the startup background. Search filenames, mark completed translations with a color and sort them by color. Translation stages and storage use live job and device data. The settings star rating is stored on this device. Removing downloaded models leaves documents and saved jobs on the device.
+The Expo development-build application uses Expo Router and Kinetik source components for navigation, controls, its three-page tutorial, appearance settings and branded startup. Choose system, dark or light appearance directly in Settings. Tutorial replay and reduced-motion settings are supported. Buttons use solid fills and white text on red in dark mode. The tutorial has three illustrated, title-only pages with a fixed progress indicator and Next/Skip controls. Grain Drift provides the startup background. Search filenames, mark completed translations with a color and sort them by color. Translation stages and storage use live job and device data. Removing downloaded models leaves documents and saved jobs on the device.
 
 ## Privacy
 

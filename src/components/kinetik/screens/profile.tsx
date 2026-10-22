@@ -47,7 +47,7 @@ export type ProfileRow = {
   toggle?: { value: boolean; onValueChange: (value: boolean) => void };
 };
 
-export type ProfileSection = { title?: string; rows: readonly ProfileRow[] };
+export type ProfileSection = { title?: string; rows: readonly ProfileRow[]; content?: ReactNode };
 
 export type ProfileProps = {
   user?: ProfileUser;
@@ -243,6 +243,7 @@ export function Profile({
             {section.rows.map((row, j) => (
               <Row key={row.key} row={row} first={j === 0} danger={row.key === 'sign-out'} />
             ))}
+            {section.content}
           </View>
         </Animated.View>
       ))}

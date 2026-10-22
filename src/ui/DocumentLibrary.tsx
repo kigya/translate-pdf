@@ -58,16 +58,15 @@ export function DocumentLibrary({ colors, t, locale, busy, snapshot, model, onTr
     {!searchOpen ? <>
     <Row><Icon name="document" size={40} color={colors.accent} /><Text style={{ color: colors.text, fontSize: 32, fontWeight: '800', letterSpacing: -1 }}>{t('appName')}</Text></Row>
     {!empty ? <Button label={ux(locale, 'translatePdf')} onPress={onTranslate} colors={colors} loading={busy} /> : null}
-    <SettingsRow icon="globe" label={ux(locale, 'modelOnline')} value={ux(locale, 'onlineAvailable')} colors={colors} onPress={onModel} />
     <Pressable accessibilityRole="button" accessibilityLabel={t('useModel')} onPress={onModel} style={{ paddingVertical: 14, borderBottomWidth: 0.5, borderColor: colors.border, gap: 8 }}>
       <Text style={{ color: colors.muted, fontSize: 13 }}>{t('model')}</Text>
       <Row style={{ justifyContent: 'space-between' }}><View style={{ flex: 1 }}><ScrambleText text={model ? model.id === 'mymemory' ? ux(locale, 'modelOnline') : model.label : t('chooseModel')} duration={480} style={{ color: colors.text, fontSize: 18, fontWeight: '700' }} /></View><Icon name="chevron" color={colors.muted} size={18} /></Row>
-      {model?.id === 'mymemory' ? <Text style={{ color: colors.muted }}>{ux(locale, 'onlineAvailable')}</Text> : null}
+      {model ? <Text style={{ color: model.status === 'ready' ? colors.success : colors.muted }}>{model.id === 'mymemory' ? ux(locale, 'onlineAvailable') : t(model.status === 'ready' ? 'modelReady' : model.status === 'downloading' ? 'modelDownloading' : model.status === 'verifying' ? 'verifying' : model.status === 'paused' ? 'modelPaused' : model.status === 'error' ? 'modelError' : 'modelNotDownloaded')}</Text> : null}
     </Pressable>
     </> : null}
     {empty ? <EmptyState title={t('emptyTitle')} description={ux(locale, 'emptyLibrary')} icon={<Icon name="document" color={colors.accent} size={32} />} action={{ label: ux(locale, 'translatePdf'), onPress: onTranslate }} /> : <>
       <Row style={{ justifyContent: 'space-between', alignItems: 'center' }}>{!searchOpen ? <Text style={{ color: colors.text, fontSize: 18, fontWeight: '700' }}>{t('recent')}</Text> : null}<View style={{ flex: 1 }}><SearchMorph open={searchOpen} onOpenChange={setSearchOpen} value={query} onChangeText={setQuery} placeholder={l('searchDocuments')} cancelLabel={ux(locale, 'cancel')} clearLabel={`${l('clearSearch')}: ${l('searchDocuments')}`} /></View></Row>
-      <Row><View style={{ flex: 1 }}><MorphSelect label={l('sortDocuments')} value={sort} onValueChange={value => onSort?.(value as LibrarySort)} options={[{ value: 'recent', label: l('sortRecent') }, { value: 'color', label: l('sortColor') }]} /></View><TipBubble align={localeDirection(locale) === 'rtl' ? 'start' : 'end'} accessibilityLabel={l('documentColor')} content={l('colorHelp')}><View style={{ padding: 12 }}><Icon name="info" color={colors.accent} /></View></TipBubble></Row>
+      <Row><View style={{ flex: 1 }}><MorphSelect closeLabel={t('back')} label={l('sortDocuments')} value={sort} onValueChange={value => onSort?.(value as LibrarySort)} options={[{ value: 'recent', label: l('sortRecent') }, { value: 'color', label: l('sortColor') }]} /></View><TipBubble align={localeDirection(locale) === 'rtl' ? 'start' : 'end'} accessibilityLabel={l('documentColor')} content={l('colorHelp')}><View style={{ padding: 12 }}><Icon name="info" color={colors.accent} /></View></TipBubble></Row>
       {!jobs.length && !documents.length ? <EmptyState title={l('noDocumentsFound')} action={{ label: l('clearSearch'), onPress: () => setQuery('') }} /> : null}
       {jobs.map(job => {
         const color = documentColors.find(c => c.id === job.labelColor);

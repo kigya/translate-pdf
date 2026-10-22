@@ -291,19 +291,20 @@ internal class PdfTranslatorModule(
   @ReactMethod
   fun getLicenseNotices(promise: Promise) = runAsync(promise, "LICENSES_READ_FAILED") {
     JSONArray().also { notices ->
-      licensePaths().forEach { path ->
-        val readableTitle = path.removeSuffix(".txt").removeSuffix(".md")
-          .replace("/", " · ").replace("__", " · ").replace('-', ' ')
-        notices.put(JSONObject().put("id", path).put("title", readableTitle))
+      licenseCatalogEntries().forEach { entry ->
+        notices.put(JSONObject().put("id", entry.id).put("title", entry.title))
       }
     }.toString()
   }
 
   @ReactMethod
   fun getLicenseNotice(id: String, promise: Promise) = runAsync(promise, "LICENSE_READ_FAILED") {
-    val valid = licensePaths().contains(id)
-    require(valid) { "The requested license notice is not available." }
-    context.assets.open("licenses/$id").bufferedReader().use { it.readText() }
+    val entry = licenseCatalogEntries().firstOrNull { it.id == id }
+      ?: throw IllegalArgumentException("The requested license notice is not available.")
+    entry.files.joinToString("\n\n") { file ->
+      require(isSafeLicensePath(file)) { "The license catalog contains an invalid path." }
+      context.assets.open("licenses/$file").bufferedReader().use { it.readText() }
+    }
   }
 
   private fun notificationPermissionSnapshot(): JSONObject {
@@ -323,12 +324,34 @@ internal class PdfTranslatorModule(
       .put("canRequest", status == "not_determined" && !requestedBefore)
   }
 
-  private fun licensePaths(directory: String = "licenses"): List<String> =
-    context.assets.list(directory).orEmpty().flatMap { name ->
-      val path = "$directory/$name"
-      val children = context.assets.list(path).orEmpty()
-      if (children.isEmpty()) listOf(path.removePrefix("licenses/")) else licensePaths(path)
-    }.filter(String::isNotBlank).sorted()
+  private data class LicenseCatalogEntry(val id: String, val title: String, val files: List<String>)
+
+  private fun licenseCatalogEntries(): List<LicenseCatalogEntry> {
+    val catalog = context.assets.open("licenses/catalog.json").bufferedReader().use {
+      JSONObject(it.readText())
+    }
+    require(catalog.getInt("version") == 1) { "The required license catalog is invalid." }
+    val notices = catalog.getJSONArray("notices")
+    val entries = (0 until notices.length()).mapNotNull { index ->
+      val item = notices.getJSONObject(index)
+      val platforms = item.getJSONArray("platforms")
+      if ((0 until platforms.length()).none { platforms.optString(it) == "android" }) return@mapNotNull null
+      val files = item.getJSONArray("files")
+      LicenseCatalogEntry(
+        id = item.getString("id"),
+        title = item.getString("title"),
+        files = (0 until files.length()).map { files.getString(it) },
+      )
+    }
+    require(entries.isNotEmpty() && entries.map { it.id }.distinct().size == entries.size &&
+      entries.all { it.id.isNotBlank() && it.title.isNotBlank() && it.files.isNotEmpty() && it.files.all(::isSafeLicensePath) }
+    ) { "The required license catalog is invalid." }
+    return entries
+  }
+
+  private fun isSafeLicensePath(path: String): Boolean =
+    path.isNotBlank() && !path.startsWith('/') && !path.contains('\\') &&
+      path.split('/').all { it.isNotBlank() && it != "." && it != ".." }
 
   @ReactMethod
   fun startJob(inputJson: String, promise: Promise) = runAsync(promise, "JOB_START_FAILED") { synchronized(jobStartLock) {

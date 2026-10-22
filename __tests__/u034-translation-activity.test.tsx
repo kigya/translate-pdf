@@ -9,7 +9,7 @@ import { palettes } from '../src/ui/theme';
 const mockBurst = jest.fn();
 
 jest.mock('../src/native/PdfTranslator', () => ({
-  PdfTranslator: { renderPage: jest.fn(), renderDocxPreview: jest.fn() },
+  PdfTranslator: { renderPage: jest.fn(), renderDocxPreview: jest.fn(), renderTranslatedPage: jest.fn() },
 }));
 
 jest.mock('../src/components/kinetik/confetti-burst', () => {
@@ -52,6 +52,8 @@ jest.mock('../src/ui/Controls', () => {
   return { Icon: ({ name }: { name: string }) => ReactRuntime.createElement(Native.Text, null, name) };
 });
 
+jest.mock('../src/ui/components', () => ({ Notice: () => null }));
+
 const t = createTranslator('en');
 const baseJob = (overrides: Partial<JobSnapshot> = {}): JobSnapshot => ({
   id: 'job-1', documentId: 'doc-1', documentName: 'manual.pdf', modelId: 'model',
@@ -67,6 +69,7 @@ beforeEach(() => {
   mockBurst.mockClear();
   (PdfTranslator.renderPage as jest.Mock).mockReturnValue(new Promise(() => {}));
   (PdfTranslator.renderDocxPreview as jest.Mock).mockResolvedValue({ uri: 'file:///source.docx.pdf', pageCount: 1 });
+  (PdfTranslator.renderTranslatedPage as jest.Mock).mockResolvedValue('file:///translated.png');
 });
 
 describe('translation activity', () => {
@@ -209,8 +212,14 @@ describe('translation activity', () => {
     ['completed', 'complete', 'Complete'],
     ['running', 'complete', 'In progress'],
     ['running', 'future-stage', 'In progress'],
-  ] as const)('shows truthful status text for %s at %s', (status, stage, expected) => {
+  ] as const)('shows truthful status text for %s at %s', async (status, stage, expected) => {
     renderActivity(baseJob({ status, stage: stage as JobSnapshot['stage'], error: status === 'failed' ? 'Native failure' : undefined }));
+    if (status === 'completed') {
+      expect(screen.queryByTestId('translation-scan')).toBeNull();
+      expect(await screen.findByRole('image')).toBeTruthy();
+      expect(screen.getByText(expected)).toBeTruthy();
+      return;
+    }
     const scan = JSON.parse(screen.getByTestId('translation-scan').props.accessibilityLabel);
     expect(scan.label).toBe(expected);
     if (status === 'failed') expect(screen.getByText('Native failure')).toBeTruthy();

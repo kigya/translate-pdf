@@ -34,7 +34,7 @@ export function OnboardingScreen({ colors, t, persist, onComplete, direction = '
   });
   return <View testID="onboarding-root" style={{ flex: 1, direction }}>
     <Onboarding active={active && !saving} disabled={saving} nextLabel={t('next')} finishLabel={t('next')} skipLabel={t('skip')} progressLabel={t('progress')} onSkip={finish} onFinish={finish}
-      renderAction={(last, next) => last ? <MagnetButton flatAppearance onPress={next} disabled={saving} field={12} style={{ alignSelf: 'stretch' }}>{t('next')}</MagnetButton> : <PressJelly flatAppearance block size="lg" onPress={next} disabled={saving}>{t('next')}</PressJelly>}
+      renderAction={(last, next) => last ? <MagnetButton flatAppearance onPress={next} disabled={saving} size="lg" block field={12}>{t('next')}</MagnetButton> : <PressJelly flatAppearance block size="lg" onPress={next} disabled={saving}>{t('next')}</PressJelly>}
       slides={[
         { key: 'documents', title: t('intro1Title'), visual: playing => <View accessible={false} pointerEvents="none"><TranslationScene colors={sceneColors} active={playing} reduced={reduced} /></View> },
         { key: 'engines', title: t('intro2Title'), visual: playing => <View accessible={false} pointerEvents="none"><ModelScene colors={sceneColors} active={playing} reduced={reduced} /></View> },

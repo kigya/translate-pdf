@@ -49,6 +49,8 @@ export type LiquidTabsProps = {
   haptics?: boolean;
   /** Accessible name of the tab list. */
   accessibilityLabel?: string;
+  /** Render only icons when every tab has one; accessible labels remain full. */
+  iconOnly?: boolean;
   style?: StyleProp<ViewStyle>;
 };
 
@@ -72,6 +74,7 @@ export function LiquidTabs({
   activeTextColor,
   haptics = true,
   accessibilityLabel,
+  iconOnly = false,
   style,
 }: LiquidTabsProps) {
   const theme = useKinetikTheme();
@@ -159,6 +162,7 @@ export function LiquidTabs({
           right={right}
           inactive={theme.colors.textMuted}
           active={onFill}
+          iconOnly={iconOnly && Boolean(tab.icon)}
           onPress={() => {
             if (tab.key === value) return;
             haptic('tick');
@@ -184,6 +188,7 @@ function TabLabel({
   right,
   inactive,
   active,
+  iconOnly,
   onPress,
 }: {
   tab: LiquidTab;
@@ -193,6 +198,7 @@ function TabLabel({
   right: SharedValue<number>;
   inactive: string;
   active: string;
+  iconOnly: boolean;
   onPress: () => void;
 }) {
   const { font } = useKinetikTheme();
@@ -210,12 +216,14 @@ function TabLabel({
       style={styles.tab}
     >
       {tab.icon}
-      <Animated.Text
-        numberOfLines={1}
-        style={[{ fontSize: font.size.sm, fontWeight: font.weight.semibold }, textStyle]}
-      >
-        {tab.label}
-      </Animated.Text>
+      {!iconOnly && (
+        <Animated.Text
+          numberOfLines={1}
+          style={[{ fontSize: font.size.sm, fontWeight: font.weight.semibold }, textStyle]}
+        >
+          {tab.label}
+        </Animated.Text>
+      )}
     </Pressable>
   );
 }

@@ -43,13 +43,13 @@ it('finds language autonyms, English names, codes and unaccented text independen
 const models=(items:ModelSnapshot[],extra:object={})=><DialogProvider colors={base.colors}><ModelScreen {...base} snapshot={{...data,models:items}} onSelect={noop} onDownload={noop} onPause={noop} onDelete={noop} {...extra}/></DialogProvider>;
 beforeEach(()=>{jest.clearAllMocks();mockReduced=true;native.renderPage.mockResolvedValue('file:///source.png');native.renderTranslatedPage.mockResolvedValue('file:///translated.png');native.renderDocxPreview.mockResolvedValue({uri:'file:///preview.pdf',pageCount:2} as never);native.exportDocument.mockResolvedValue({id:'saved',uri:'file:///saved.docx',displayName:'saved.docx',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});native.getLicenseNotices.mockResolvedValue([]);native.getLicenseNotice.mockResolvedValue('Apache License');});
 afterEach(()=>jest.restoreAllMocks());
-it('keeps model details to the name and license link, with styled capability and link-failure dialogs',async()=>{
+it('offers one model info action without a score popup and keeps details to its name and license link',async()=>{
  jest.spyOn(Linking,'openURL').mockRejectedValue(new Error('offline'));
  render(models([model]));
- fireEvent.press(screen.getAllByRole('button',{name:'70% · Details'})[1]);
- expect(screen.getByText(ux('en','capabilityInfo'))).toBeOnTheScreen();
- fireEvent.press(screen.getAllByRole('button',{name:'Back'}).at(-1)!);
- fireEvent.press(screen.getByRole('button',{name:'Details: Compact'}));
+ expect(screen.queryByText(t('qualityPending'))).toBeNull();
+ expect(screen.getAllByRole('button',{name:/^Details:/})).toHaveLength(1);
+ expect(screen.queryByRole('button',{name:/70%/})).toBeNull();
+ fireEvent.press(screen.getByRole('button',{name:/Details: Pinned package/}));
  expect(screen.getByRole('text',{name:'Pinned package'})).toBeOnTheScreen();
  expect(screen.queryByText('hash')).toBeNull();
  fireEvent.press(screen.getByRole('button',{name:'Licenses'}));
@@ -91,7 +91,7 @@ it('swaps a language pair and maintains distinct source/target selections from e
  fireEvent.press(screen.getAllByRole('button',{name:/^Target language/})[0]);
  fireEvent.press(screen.getByRole('menuitem',{name:/Français/}));expect(change).toHaveBeenLastCalledWith('en','fr');
  fireEvent.press(screen.getAllByRole('button',{name:/^Source language/})[0]);
- fireEvent.press(screen.getByRole('button',{name:'Close list'}));
+ fireEvent.press(screen.getByRole('button',{name:'Back'}));
  mockReduced=false;view.rerender(<PairPicker {...props}/>);
  fireEvent.press(screen.getByRole('button',{name:'Swap languages'}));expect(change).toHaveBeenLastCalledWith('ru','en');
 });
@@ -190,10 +190,10 @@ it('ignores license inventory success/failure after unmount',async()=>{
 
 it('routes all compact settings destinations and survives an unknown saved locale from an older build',()=>{
  const route=jest.fn(),theme=jest.fn(),privacy=jest.fn(),replay=jest.fn();
- const props={...base,snapshot:{...data,preferences:{...data.preferences,language:'unknown' as never}},onRoute:route,onAppearance:theme,onPrivacy:privacy,onReplay:replay};
+ const props={...base,snapshot:{...data,preferences:{...data.preferences,language:'unknown' as never}},onRoute:route,onTheme:theme,onPrivacy:privacy,onReplay:replay};
  render(<SettingsScreen {...props}/>);
  for(const [label,destination] of [['App language','language'],['Storage','storage'],['Dictionary','dictionary'],['Licenses','licenses']]) {fireEvent.press(screen.getByRole('button',{name:label}));expect(route).toHaveBeenLastCalledWith(destination);}
- fireEvent.press(screen.getByRole('button',{name:'Appearance'}));expect(theme).toHaveBeenCalled();
+ fireEvent.press(screen.getByRole('radio',{name:'Dark'}));expect(theme).toHaveBeenCalledWith('dark');
  fireEvent.press(screen.getByRole('button',{name:'Privacy'}));expect(privacy).toHaveBeenCalled();
  fireEvent.press(screen.getByRole('button',{name:'View tutorial'}));expect(replay).toHaveBeenCalled();
 });
@@ -356,4 +356,13 @@ it('ignores a DOCX preview or page raster that resolves after leaving the result
  await waitFor(()=>expect(native.renderDocxPreview).toHaveBeenCalledTimes(previewsBeforeLateReject+1));
  third.unmount();
  await act(async()=>{rejectPreview(new Error('late preview error'));await Promise.resolve();});
+});
+
+
+it('opens one MyMemory details action with its name and service terms', async () => {
+ render(<ModelScreen {...base} snapshot={data} selected={null} onSelect={noop} onDownload={noop} onPause={noop} onDelete={noop}/>);
+ fireEvent.press(screen.getAllByRole('button',{name:'Details'})[0]);
+ expect(await screen.findByRole('text',{name:'MyMemory'})).toBeOnTheScreen();
+ expect(screen.getByRole('button',{name:'Licenses'})).toBeOnTheScreen();
+ expect(screen.queryByText('0 B')).toBeNull();
 });

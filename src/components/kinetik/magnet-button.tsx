@@ -27,6 +27,10 @@ export type MagnetButtonProps = {
   strength?: number;
   /** Width of the invisible field around the button that attracts the finger, in pt. Defaults to 40. */
   field?: number;
+  /** Visual button height. `lg` is 56 pt, matching the primary onboarding action. */
+  size?: 'md' | 'lg';
+  /** Stretch the visual button to the parent width without changing its touch field. */
+  block?: boolean;
   /** Maximum distance the button travels toward the finger, in pt. Defaults to 14. */
   maxPull?: number;
   /** Plays a tick when the finger is captured and a tap on press. Defaults to true. */
@@ -51,6 +55,8 @@ export function MagnetButton({
   variant = 'ember',
   strength = 0.5,
   field = 40,
+  size = 'md',
+  block = false,
   maxPull = 14,
   haptics = true,
   disabled = false,
@@ -163,7 +169,7 @@ export function MagnetButton({
     <GestureDetector gesture={gesture}>
       {/* collapsable={false}: a layout-only View is flattened away on Fabric and
           the gesture would have no native view to attach to. */}
-      <View collapsable={false} style={[{ padding: field, margin: -field }, styles.field, style]}>
+      <View collapsable={false} style={[{ padding: field, margin: -field }, styles.field, block && styles.block, style]}>
         <Animated.View
           accessible
           accessibilityRole="button"
@@ -179,20 +185,28 @@ export function MagnetButton({
             styles.button,
             {
               minHeight: Math.max(minTouchTarget, 52),
+              height: size === 'lg' ? 56 : undefined,
+              alignSelf: block ? 'stretch' : 'auto',
               paddingHorizontal: space[8],
               borderRadius: radius.pill,
-              backgroundColor: palette.bg,
               borderColor: palette.border,
               opacity: disabled ? 0.45 : 1,
             },
             buttonStyle,
           ]}
         >
+          <View
+            testID="magnet-button-face"
+            pointerEvents="none"
+            accessible={false}
+            collapsable={false}
+            style={[StyleSheet.absoluteFill, { backgroundColor: palette.bg, borderRadius: radius.pill }]}
+          />
           <Animated.View style={[styles.label, { gap: space[2] }, labelStyle]}>
             {typeof children === 'string' ? (
               <Text
                 numberOfLines={1}
-                style={{ color: palette.fg, fontSize: font.size.md, fontWeight: font.weight.bold }}
+                style={{ color: palette.fg, fontSize: size === 'lg' ? font.size.lg : font.size.md, fontWeight: font.weight.bold }}
               >
                 {children}
               </Text>
@@ -208,6 +222,7 @@ export function MagnetButton({
 
 const styles = StyleSheet.create({
   field: { alignSelf: 'flex-start' },
+  block: { alignSelf: 'stretch' },
   button: {
     alignItems: 'center',
     justifyContent: 'center',

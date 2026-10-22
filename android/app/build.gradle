@@ -128,8 +128,15 @@ android {
 }
 
 def generatedLicenseAssets = layout.buildDirectory.dir("generated/assets/thirdPartyLicenses")
-tasks.register("copyThirdPartyLicenses", Copy) {
+def licenseCatalog = new groovy.json.JsonSlurper().parse(file("../../licenses/catalog.json"))
+def androidLicenseFiles = licenseCatalog.notices.findAll { it.platforms.contains("android") }
+    .collectMany { it.files }.unique()
+if (androidLicenseFiles.any { it.startsWith("/") || it.contains("\\") || it.split("/").any { part -> part == ".." } }) {
+    throw new GradleException("Invalid license catalog path")
+}
+tasks.register("copyThirdPartyLicenses", Sync) {
     from(file("../../licenses"))
+    include(androidLicenseFiles + ["catalog.json"])
     into(generatedLicenseAssets.map { it.dir("licenses") })
 }
 android.sourceSets.main.assets.srcDir(generatedLicenseAssets.get().asFile)

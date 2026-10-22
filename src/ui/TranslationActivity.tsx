@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, View } from 'react-native';
 
 import { ConfettiBurst, type ConfettiHandle } from '../components/kinetik/confetti-burst';
 import { ScanProgress } from '../components/kinetik/scan-progress';
@@ -8,6 +8,7 @@ import { PdfTranslator, type JobSnapshot, type JobStage } from '../native/PdfTra
 import { localeDirection, Translator } from '../i18n/messages';
 import { ux } from '../i18n/ux';
 import { Icon } from './Controls';
+import { Notice } from './components';
 import { Palette } from './theme';
 
 const stages: readonly { key: string; label: (t: Translator, locale: string, job: JobSnapshot) => string }[] = [
@@ -80,20 +81,45 @@ export function TranslationActivity({
 }) {
   const confetti = useRef<ConfettiHandle>(null);
   const transition = useRef({ jobId: job.id, status: job.status, pending: false, fired: false });
-  const [preview, setPreview] = useState<{ documentId: string; uri: string } | null>(null);
+  type PreviewState = { identity: string; phase: 'loading' } | { identity: string; phase: 'error' } | { identity: string; phase: 'ready'; uri?: string };
+  const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const isCompleted = job.status === 'completed';
+  const previewIdentity = JSON.stringify(isCompleted
+    ? [job.id, job.status, job.documentId, job.documentFormat ?? 'pdf', job.updatedAt, job.completedPages, job.totalPages]
+    : [job.id, job.documentId, job.documentFormat ?? 'pdf']);
+  const previewAllowed = job.documentFormat !== 'docx' || active;
+  const previewRef = useRef(previewIdentity);
+  previewRef.current = previewIdentity;
 
   useEffect(() => {
     let live = true;
-    setPreview(null);
-    const sourcePage = job.documentFormat === 'docx'
-      ? PdfTranslator.renderDocxPreview(job.documentId, null, false)
-          .then(() => PdfTranslator.renderPage(job.documentId, 0, 420))
-      : PdfTranslator.renderPage(job.documentId, 0, 420);
-    sourcePage
-      .then((uri) => { if (live && uri) setPreview({ documentId: job.documentId, uri }); })
-      .catch(() => { if (live) setPreview(null); });
+    if (!previewAllowed) return () => { live = false; };
+    setPreview({ identity: previewIdentity, phase: 'loading' });
+    const load = async () => {
+      try {
+        let uri: string | undefined;
+        if (isCompleted) {
+          if (job.documentFormat === 'docx') {
+            const rendered = await PdfTranslator.renderDocxPreview(job.documentId, job.id, true);
+            if (rendered.pageCount < 1) throw new Error('No translated pages');
+          }
+          uri = await PdfTranslator.renderTranslatedPage(job.id, 0, 420);
+          if (!uri) throw new Error('Translated preview unavailable');
+        } else if (job.documentFormat === 'docx') {
+          const rendered = await PdfTranslator.renderDocxPreview(job.documentId, null, false);
+          if (rendered.pageCount > 0) uri = await PdfTranslator.renderPage(job.documentId, 0, 420);
+        } else {
+          uri = await PdfTranslator.renderPage(job.documentId, 0, 420);
+        }
+        if (live) setPreview({ identity: previewIdentity, phase: 'ready', uri });
+      } catch {
+        if (live) setPreview({ identity: previewIdentity, phase: isCompleted ? 'error' : 'ready' });
+      }
+    };
+    load();
     return () => { live = false; };
-  }, [job.documentId, job.documentFormat]);
+  }, [isCompleted, job.documentFormat, job.documentId, job.id, previewAllowed, previewIdentity, retryNonce]);
 
   useEffect(() => {
     const previous = transition.current;
@@ -119,12 +145,13 @@ export function TranslationActivity({
   }, [active, job.id, job.status]);
 
   const total = Math.max(0, job.totalPages);
-  const completed = Math.max(0, Math.min(total, job.completedPages));
-  const progress = total > 0 ? completed / total : 0;
+  const completedPages = Math.max(0, Math.min(total, job.completedPages));
+  const progress = total > 0 ? completedPages / total : 0;
   const progressUnit = job.progressUnit === 'segment' ? ux(locale, 'segments') : t('pageProgress');
   const timeline = translationActivityTimeline(job, t, locale);
   const running = job.status === 'running';
-  const previewUri = preview?.documentId === job.documentId ? preview.uri : null;
+  const currentPreview = preview?.identity === previewIdentity ? preview : null;
+  const previewUri = currentPreview?.phase === 'ready' ? currentPreview.uri : undefined;
   const mutedCaptionStyle = { color: colors.muted, fontSize: 13 } as const;
   const fallbackTextStyle = { color: colors.muted, fontSize: 14 } as const;
   const statusTitleStyle = { color: job.status === 'failed' ? colors.accent : colors.text, fontWeight: '700' as const };
@@ -138,29 +165,50 @@ export function TranslationActivity({
       haptics
     >
       <View style={[styles.content, { direction: localeDirection(locale) }]}>
-        <ScanProgress
-          source={previewUri ? { uri: previewUri } : undefined}
-          imageLabel={job.documentName}
-          height={212}
-          progress={progress}
-          done={job.status === 'completed'}
-          label={activityLabel(job, t, locale)}
-          doneLabel={t('completed')}
-          tint={colors.accent}
-          active={active && running}
-        >
-          {!previewUri ? (
-            <View style={[styles.fallback, { backgroundColor: colors.raised }]}>
-              <Icon name="document" size={42} color={colors.accent} />
-              <Text style={fallbackTextStyle} numberOfLines={2}>
-                {job.documentName || t('document')}
-              </Text>
-            </View>
-          ) : null}
-        </ScanProgress>
+        {isCompleted ? currentPreview?.phase === 'ready' && previewUri ? (
+          <Image
+            accessible
+            accessibilityRole="image"
+            accessibilityLabel={`${job.documentName || t('document')}, ${t('completed')}`}
+            source={{ uri: previewUri }}
+            resizeMode="contain"
+            onError={() => {
+              if (previewRef.current === previewIdentity) setPreview({ identity: previewIdentity, phase: 'error' });
+            }}
+            style={[styles.resultPreview, { backgroundColor: colors.raised }]}
+          />
+        ) : currentPreview?.phase === 'error' ? (
+          <Notice colors={colors} text={t('unknownError')} retry={() => setRetryNonce(value => value + 1)} retryLabel={t('retry')} />
+        ) : (
+          <View accessible accessibilityRole="progressbar" accessibilityLabel={t('loading')} style={[styles.resultPlaceholder, { backgroundColor: colors.raised }]}>
+            <Icon name="document" size={42} color={colors.accent} />
+            <Text style={fallbackTextStyle}>{t('loading')}</Text>
+          </View>
+        ) : (
+          <ScanProgress
+            source={previewUri ? { uri: previewUri } : undefined}
+            imageLabel={job.documentName}
+            height={212}
+            progress={progress}
+            done={false}
+            label={activityLabel(job, t, locale)}
+            doneLabel={t('completed')}
+            tint={colors.accent}
+            active={active && running}
+          >
+            {!previewUri ? (
+              <View style={[styles.fallback, { backgroundColor: colors.raised }]}>
+                <Icon name="document" size={42} color={colors.accent} />
+                <Text style={fallbackTextStyle} numberOfLines={2}>
+                  {job.documentName || t('document')}
+                </Text>
+              </View>
+            ) : null}
+          </ScanProgress>
+        )}
 
         <Text style={mutedCaptionStyle}>
-          {progressUnit}: {completed} / {total}
+          {progressUnit}: {completedPages} / {total}
         </Text>
         {job.documentFormat !== 'docx' && job.currentPage !== null ? (
           <Text style={mutedCaptionStyle}>
@@ -185,5 +233,7 @@ const styles = StyleSheet.create({
   confetti: { flex: 1 },
   content: { gap: 16, padding: 18 },
   fallback: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 20 },
+  resultPreview: { width: '100%', height: 212, borderRadius: 16 },
+  resultPlaceholder: { height: 212, borderRadius: 16, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 20 },
   status: { gap: 5, padding: 14, borderRadius: 14 },
 });

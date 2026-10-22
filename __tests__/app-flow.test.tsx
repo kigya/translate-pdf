@@ -1,7 +1,7 @@
 jest.mock('../src/ui/useMotionReduced', () => ({ useMotionReduced: () => require('react-native-reanimated').useReducedMotion() ?? false }));
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native-legacy';
-import { AppState, BackHandler, Image, Linking, Modal, Dimensions, Platform, StyleSheet } from 'react-native';
+import { AppState, BackHandler, Linking, Modal, Dimensions, Platform, StyleSheet } from 'react-native';
 
 jest.mock('react-native-safe-area-context', () => {
   const ReactNative = require('react-native');
@@ -23,6 +23,7 @@ jest.mock('react-native-reanimated', () => {
     __esModule: true,
     default: { createAnimatedComponent: (component: unknown) => component, View: AnimatedView, Text: ReactNative.Text, ScrollView: ReactNative.ScrollView, Image: ReactNative.Image },
     View: AnimatedView,
+    getUseOfValueInStyleWarning: () => 'Style value warning',
     useReducedMotion: () => mockReducedMotion,
     useSharedValue: (value: number) => ({ value, get() { return this.value; }, set(next: number) { this.value = next; } }),
     useAnimatedStyle: (callback: () => unknown) => callback(),
@@ -52,7 +53,7 @@ jest.mock('../src/native/PdfTranslator', () => ({
     bootstrap: jest.fn(), pickDocument: jest.fn(), startModelDownload: jest.fn(), pauseModelDownload: jest.fn(), deleteModel: jest.fn(),
     startJob: jest.fn(), pauseJob: jest.fn(), resumeJob: jest.fn(), cancelJob: jest.fn(), getJob: jest.fn(),
     renderPage: jest.fn(), renderTranslatedPage: jest.fn(), renderDocxPreview: jest.fn(), exportDocument: jest.fn(), previewJob: jest.fn(), exportJob: jest.fn(), shareExport: jest.fn(), openPdf: jest.fn(),
-    setOnboarding: jest.fn(), setSettings: jest.fn(), saveGlossaryEntry: jest.fn(), deleteGlossaryEntry: jest.fn(),
+    setOnboarding: jest.fn(), setSettings: jest.fn(), setJobColor: jest.fn(), saveGlossaryEntry: jest.fn(), deleteGlossaryEntry: jest.fn(),
     requestPermissions: jest.fn(), requestNotificationPermission: jest.fn(),
     getLicenseNotices: jest.fn().mockResolvedValue([]), getLicenseNotice: jest.fn().mockResolvedValue(''),
   },
@@ -91,7 +92,6 @@ jest.mock('../src/components/kinetik/scan-progress', () => {
 import App from '../App';
 import { LibraryScreen, TranslationOptionsScreen } from '../src/screens/AppScreens';
 import { createTranslator } from '../src/i18n/messages';
-import { ux } from '../src/i18n/ux';
 import { PRIVACY_URL } from '../src/domain/presentation';
 import type { BootstrapSnapshot } from '../src/native/PdfTranslator';
 
@@ -221,16 +221,14 @@ describe('native-backed app flows', () => {
     expect(screen.getByLabelText('85%')).toBeOnTheScreen();
     expect(screen.getByLabelText('95%')).toBeOnTheScreen();
     expect(screen.queryByText(/Meaning preserved in/)).toBeNull();
-    fireEvent.press(screen.getAllByRole('button', { name: /^70%/ })[0]);
-    expect(await screen.findByText(ux('en', 'capabilityInfo'))).toBeOnTheScreen();
-    fireEvent.press(screen.getAllByRole('button', { name: 'Back' }).at(-1)!);
-    fireEvent.press(screen.getByRole('button', { name: 'Details: Maximum' }));
+    expect(screen.queryByText(createTranslator('en')('qualityPending'))).toBeNull();
+    fireEvent.press(screen.getByRole('button', { name: /Details: Quality candidate/ }));
     expect(await screen.findByRole('text', { name: 'Quality candidate' })).toBeOnTheScreen();
     expect(screen.queryByText(/Meaning preserved in 29 of 44 test passages/)).toBeNull();
     expect(screen.queryByText(/Evidence covers only 44 technical English→Russian passages/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Licenses' })).toBeNull();
     fireEvent.press(screen.getAllByRole('button', { name: 'Back' }).at(-1)!);
-    fireEvent.press(screen.getAllByRole('button', { name: 'Details: Compact' })[0]);
+    fireEvent.press(screen.getByRole('button', { name: /Details: Compact candidate/ }));
     expect(await screen.findByRole('text', { name: 'Compact candidate' })).toBeOnTheScreen();
     expect(screen.getByRole('button', { name: 'Licenses' })).toBeOnTheScreen();
     fireEvent.press(screen.getAllByRole('button', { name: 'Back' }).at(-1)!);
@@ -319,7 +317,7 @@ describe('native-backed app flows', () => {
     await renderApp(snapshot({ models: [gemma, paused], device: { ...snapshot().device, recommendedModelId: gemma.id } }));
     fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
 
-    fireEvent.press(screen.getAllByRole('button', { name: 'Details: Compact' })[0]);
+    fireEvent.press(screen.getByRole('button', { name: /Details: TranslateGemma/ }));
     expect(await screen.findByRole('text', { name: 'TranslateGemma' })).toBeOnTheScreen();
     expect(screen.queryByText(createTranslator('en')('gemmaTermsNotice'))).toBeNull();
     fireEvent.press(screen.getAllByRole('button', { name: 'Back' })[1]);
@@ -554,34 +552,36 @@ describe('native-backed app flows', () => {
     fireEvent.press(screen.getByRole('tab', { name: 'Settings' }));
     native.setSettings.mockResolvedValue({ theme: 'dark', language: 'ru' });
 
-    fireEvent.press(screen.getByText('Appearance'));
-    native.setSettings.mockResolvedValueOnce({ theme: 'light', language: 'system' });
-    fireEvent.press(screen.getByRole('switch', { name: 'Follow system appearance' }));
-    await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ theme: 'light' }));
-    native.bootstrap.mockResolvedValue(snapshot({ preferences: { theme: 'system', language: 'system' } }));
-    native.setSettings.mockResolvedValueOnce({ theme: 'system', language: 'system' });
-    fireEvent.press(screen.getByRole('switch', { name: 'Follow system appearance' }));
-    await waitFor(() => expect(native.setSettings).toHaveBeenLastCalledWith({ theme: 'system' }));
-    fireEvent.press(screen.getByText('Dark'));
+    expect(screen.queryByRole('button', { name: 'Appearance' })).toBeNull();
+    fireEvent.press(screen.getByRole('radio', { name: 'Dark' }));
     await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ theme: 'dark' }));
+    fireEvent.press(screen.getByRole('radio', { name: 'Light' }));
+    await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ theme: 'light' }));
+    fireEvent.press(screen.getByRole('radio', { name: 'System default' }));
+    await waitFor(() => expect(native.setSettings).toHaveBeenLastCalledWith({ theme: 'system' }));
     fireEvent.press(screen.getByText('App language'));
     fireEvent.press(screen.getByRole('radio', { name: 'Русский' }));
     await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ language: 'ru' }));
   });
 
-  it('keeps theme transition captures outside the touch and accessibility trees', async () => {
-    mockReducedMotion = false;
+  it('exposes three inline theme radio choices without an appearance sheet', async () => {
     await renderApp(snapshot({ preferences: { theme: 'light', language: 'system' } }));
-    native.bootstrap.mockResolvedValue(snapshot({ preferences: { theme: 'dark', language: 'system' } }));
     fireEvent.press(screen.getByRole('tab', { name: 'Settings' }));
-    native.setSettings.mockResolvedValue({ theme: 'dark', language: 'system' });
-    fireEvent.press(screen.getByRole('button', { name: 'Appearance' }));
-    fireEvent.press(screen.getByText('Dark'));
+    const choices = screen.getAllByRole('radio');
+    expect(choices.map(choice => choice.props.accessibilityLabel)).toEqual(['System default', 'Dark', 'Light']);
+    expect(screen.queryByRole('button', { name: 'Appearance' })).toBeNull();
+    fireEvent.press(screen.getByRole('radio', { name: 'Dark' }));
     await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ theme: 'dark' }));
-    await waitFor(() => expect(screen.UNSAFE_getAllByType(Image).some(image => image.props.source?.uri === 'file:///temporary-transition.png')).toBe(true));
-    const overlay = screen.UNSAFE_getAllByType(Image).find(image => image.props.source?.uri === 'file:///temporary-transition.png');
-    expect(overlay?.parent?.props).toEqual(expect.objectContaining({ pointerEvents: 'none', importantForAccessibility: 'no-hide-descendants' }));
-    expect(overlay?.parent?.props.accessibilityElementsHidden).toBe(true);
+  });
+
+  it.each([0, 4])('keeps the stored app rating %s out of Settings without writing preferences', async appRating => {
+    await renderApp(snapshot({ preferences: { theme: 'system', language: 'system', appRating } }));
+    fireEvent.press(screen.getByRole('tab', { name: 'Settings' }));
+
+    expect(screen.queryByText('Rate Folivela')).toBeNull();
+    expect(screen.queryByText(/Saved on this device/)).toBeNull();
+    expect(screen.queryByRole('adjustable')).toBeNull();
+    expect(native.setSettings).not.toHaveBeenCalled();
   });
 
   it('renders DOCX source preview and online segment progress through the application routes', async () => {
@@ -747,13 +747,17 @@ describe('native-backed app flows', () => {
     native.shareExport.mockResolvedValue(undefined);
     await renderApp(snapshot({ jobs: [completeJob] }));
     fireEvent.press(screen.getByRole('button', { name: 'manual.pdf' }));
-    expect(await screen.findByText('Радиатор')).toBeOnTheScreen();
     await waitFor(() => expect(native.renderTranslatedPage).toHaveBeenCalledWith('job-done', 0, expect.any(Number)));
+    expect(screen.queryByText('Radiator')).toBeNull();
+    expect(screen.queryByText('Радиатор')).toBeNull();
+
+    fireEvent.press(screen.getByRole('button', { name: 'Translation' }));
+    await waitFor(() => expect(screen.getByLabelText('Page 1')).toHaveProp('source', { uri: 'file:///private/translated.png' }));
 
     fireEvent.press(screen.getByRole('button', { name: 'Next' }));
     await waitFor(() => expect(native.getJob).toHaveBeenCalledWith('job-done', 1));
     expect(await screen.findByLabelText('Page 2')).toBeOnTheScreen();
-    fireEvent.press(screen.getByRole('button', { name: 'Original text' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Original' }));
     await waitFor(() => expect(native.renderPage).toHaveBeenCalledWith('doc-1', 1, expect.any(Number)));
     fireEvent.press(screen.getByRole('button', { name: 'Previous' }));
     await waitFor(() => expect(native.getJob).toHaveBeenCalledWith('job-done', 0));
@@ -889,8 +893,9 @@ describe('native-backed app flows', () => {
     await renderApp(snapshot({ jobs: [partialJob] }));
     fireEvent.press(screen.getByRole('button', { name: 'manual.pdf' }));
     expect(await screen.findByText('Some scanned labels need review.')).toBeOnTheScreen();
-    await waitFor(() => expect(screen.getAllByText('OCR and embedded text disagree.')).toHaveLength(2));
-    fireEvent.press(screen.getByRole('button', { name: 'Original text' }));
+    expect(screen.getByText('Needs review')).toBeOnTheScreen();
+    expect(screen.queryByText('OCR and embedded text disagree.')).toBeNull();
+    fireEvent.press(screen.getByRole('button', { name: 'Original' }));
     expect(await screen.findByText('Original page preview is unavailable.')).toBeOnTheScreen();
   });
 
@@ -1022,8 +1027,9 @@ describe('native-backed app flows', () => {
     await renderApp(snapshot({ models: [model], preferences: { theme: 'system', language: 'system', sourceLanguage: 'fr', targetLanguage: 'zh-Hans' } }));
     fireEvent.press(screen.getByRole('button', { name: 'Model settings' }));
     expect(screen.queryByText(/Meaning preserved in/)).toBeNull();
-    fireEvent.press(screen.getAllByRole('button', { name: /^70%/ })[0]);
-    expect(await screen.findByText(ux('en', 'capabilityInfo'))).toBeOnTheScreen();
+    expect(screen.getAllByLabelText('70%').length).toBeGreaterThan(0);
+    expect(screen.queryByText(createTranslator('en')('qualityPending'))).toBeNull();
+    expect(screen.getByRole('button', { name: /Details:/ })).toBeOnTheScreen();
   });
 
   it.each(['allow','later','dismiss'] as const)('explains a first download then handles notification %s without blocking work', async choice => {
@@ -1084,7 +1090,7 @@ describe('native-backed app flows', () => {
     fireEvent.press(screen.getByRole('button',{name:'App language'}));
     const subscription=BackHandler.addEventListener as jest.Mock;
     act(()=>expect(subscription.mock.calls.at(-1)[1]()).toBe(true));
-    expect(screen.getByRole('button',{name:'Appearance'})).toBeOnTheScreen();
+    expect(screen.getByRole('radio',{name:'System default'})).toBeOnTheScreen();
     act(()=>subscription.mock.calls.at(-1)[1]());
     expect(screen.getByRole('button',{name:'Translate documents'})).toBeOnTheScreen();
   });
@@ -1136,15 +1142,16 @@ describe('native-backed app flows', () => {
     fireEvent.press(screen.getByRole('button',{name:'Privacy'}));
     expect(await screen.findByText('Could not open the privacy policy. Check your connection and try again.')).toBeOnTheScreen();
   });
-  it('closes the appearance sheet with system Back and completes a replay with Next',async()=>{
+  it('keeps inline theme choices available and completes a replay with Next',async()=>{
     await renderApp(snapshot());fireEvent.press(screen.getByRole('tab',{name:'Settings'}));
-    fireEvent.press(screen.getByRole('button',{name:'Appearance'}));
-    fireEvent(screen.UNSAFE_getAllByType(Modal).find(v=>v.props.visible)!,'requestClose');
+    fireEvent.press(screen.getByRole('radio',{name:'Dark'}));
+    await waitFor(()=>expect(native.setSettings).toHaveBeenCalledWith({theme:'dark'}));
+    expect(screen.queryByRole('button',{name:'Appearance'})).toBeNull();
     fireEvent.press(screen.getByRole('button',{name:'View tutorial'}));
     layoutOnboarding();
     for(let i=0;i<2;i++) await act(async()=>fireEvent.press(screen.getByRole('button',{name:'Next'})));
     await act(async()=>fireEvent(screen.getByRole('button',{name:'Next'}), 'accessibilityAction', { nativeEvent: { actionName: 'activate' } }));
-    await waitFor(()=>expect(screen.getByRole('button',{name:'Appearance'})).toBeOnTheScreen());
+    await waitFor(()=>expect(screen.getByRole('radio',{name:'System default'})).toBeOnTheScreen());
     expect(native.setOnboarding).not.toHaveBeenCalled();
   });
   it('keeps a failed startup retry visible and ignores a later rejected bootstrap after unmount',async()=>{
@@ -1182,9 +1189,10 @@ describe('native-backed app flows', () => {
     native.renderPage.mockResolvedValue('file:///original.png');native.renderTranslatedPage.mockResolvedValue('file:///translated.png');native.exportJob.mockResolvedValue(null);
     await renderApp(snapshot({jobs:[job]}));fireEvent.press(screen.getByRole('button',{name:'Mixed.pdf'}));
     expect(await screen.findByLabelText('Page 1')).toHaveStyle({height:620});
-    expect(screen.getAllByText('—')).toHaveLength(2);expect(screen.getByText('• 123')).toBeOnTheScreen();
-    fireEvent.press(screen.getByRole('button',{name:'Original text'}));await waitFor(()=>expect(native.renderPage).toHaveBeenCalled());
-    fireEvent.press(screen.getByRole('button',{name:'Translated text'}));await waitFor(()=>expect(native.renderTranslatedPage).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Needs review')).toBeOnTheScreen();
+    expect(screen.queryByText('Warning')).toBeNull();expect(screen.queryByText('Проверьте')).toBeNull();
+    fireEvent.press(screen.getByRole('button',{name:'Original'}));await waitFor(()=>expect(native.renderPage).toHaveBeenCalled());
+    fireEvent.press(screen.getByRole('button',{name:'Translation'}));await waitFor(()=>expect(native.renderTranslatedPage).toHaveBeenCalledTimes(2));
     fireEvent.press(screen.getByRole('button',{name:'Save a copy'}));await waitFor(()=>expect(native.exportJob).toHaveBeenCalled());
     expect(screen.queryByRole('button',{name:'Share'})).toBeNull();dimensions.mockRestore();
   });
@@ -1265,6 +1273,29 @@ describe('native-backed app flows', () => {
     native.bootstrap.mockRejectedValueOnce(new Error(''));
     await renderStartedApp();expect(await screen.findByText(createTranslator('en')('unknownError'))).toBeOnTheScreen();
   });
+  it('persists a translated document color and library sort through native preferences', async () => {
+    const job = { id: 'color-job', documentId: 'doc-1', documentName: 'Color.pdf', modelId: 'model-q4', sourceLanguage: 'en', targetLanguage: 'ru', status: 'completed', stage: 'complete', completedPages: 1, totalPages: 1, currentPage: 0, createdAt: 1, updatedAt: 2 };
+    let data = snapshot({ jobs: [job] });
+    native.bootstrap.mockImplementation(async () => data);
+    native.setJobColor.mockImplementation(async (_id, color) => {
+      const changed = { ...job, labelColor: color };
+      data = { ...data, jobs: [changed] };
+      return changed;
+    });
+    native.setSettings.mockImplementation(async settings => {
+      data = { ...data, preferences: { ...data.preferences, ...settings } };
+      return data.preferences;
+    });
+    await renderStartedApp();
+    fireEvent.press(screen.getByRole('button', { name: 'Color label: Color.pdf, No color' }));
+    fireEvent.press(screen.getByRole('radio', { name: 'Red' }));
+    await waitFor(() => expect(native.setJobColor).toHaveBeenCalledWith('color-job', 'red'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Color label: Color.pdf, Red' })).toBeOnTheScreen());
+    fireEvent.press(screen.getByRole('button', { name: 'Sort documents, Newest first' }));
+    fireEvent.press(screen.getByRole('menuitem', { name: 'By color' }));
+    await waitFor(() => expect(native.setSettings).toHaveBeenCalledWith({ librarySort: 'color' }));
+  });
+
   it('ignores an error from preview data after navigating away',async()=>{
     const job={id:'late-error',documentId:'doc-1',documentName:'Late.pdf',modelId:'model-q4',sourceLanguage:'en',targetLanguage:'ru',status:'completed',stage:'complete',completedPages:1,totalPages:1,currentPage:0};
     let fail!:(error:Error)=>void;native.getJob.mockReturnValue(new Promise((_,reject)=>{fail=reject;}));

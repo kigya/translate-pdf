@@ -13,11 +13,11 @@ export function Screen({ children, colors, maxWidth = 940, direction = 'ltr' }: 
   return <View style={{ flex: 1, backgroundColor: colors.background, direction }}><View style={{ width: '100%', maxWidth, alignSelf: 'center', flex: 1, direction }}>{children}</View></View>;
 }
 
-export function Header({ title, subtitle, colors, onBack, right, backLabel = 'Back', direction = 'ltr' }: { title: string; subtitle?: string; colors: Palette; onBack?: () => void; right?: ReactNode; backLabel?: string; direction?: LayoutDirection }) {
+export function Header({ title, subtitle, colors, onBack, right, backLabel = 'Back', direction = 'ltr' }: { title: string; subtitle?: ReactNode; colors: Palette; onBack?: () => void; right?: ReactNode; backLabel?: string; direction?: LayoutDirection }) {
   const textDirection = { writingDirection: direction, textAlign: direction === 'rtl' ? 'right' as const : 'left' as const };
   return <View style={[styles.header, { borderBottomColor: colors.border, direction }]}>
     {onBack ? <Pressable accessibilityRole="button" accessibilityLabel={backLabel} onPress={onBack} style={styles.back}><Icon name="arrow" size={28} color={colors.accent} rotation={direction === 'rtl' ? 0 : 180}/></Pressable> : null}
-    <View style={{ flex: 1 }}><Text accessibilityRole="header" numberOfLines={2} ellipsizeMode="middle" style={[styles.headerTitle, { color: colors.text }, textDirection]}>{title}</Text>{subtitle ? <Text style={[{ color: colors.muted, marginTop: 3, fontSize: 13 }, textDirection]}>{subtitle}</Text> : null}</View>{right}
+    <View style={{ flex: 1 }}><Text accessibilityRole="header" numberOfLines={2} ellipsizeMode="middle" style={[styles.headerTitle, { color: colors.text }, textDirection]}>{title}</Text>{typeof subtitle === 'string' ? <Text style={[{ color: colors.muted, marginTop: 3, fontSize: 13 }, textDirection]}>{subtitle}</Text> : subtitle ? <View style={{ marginTop: 3 }}>{subtitle}</View> : null}</View>{right}
   </View>;
 }
 

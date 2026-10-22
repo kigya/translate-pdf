@@ -130,6 +130,7 @@ describe('U035 display controls: SearchMorph', () => {
     const input = screen.getByLabelText('Find documents');
     expect(input.props.selectionColor).toBeTruthy();
     expect(input.props.cursorColor).toBe(input.props.selectionColor);
+    expect(input.props.selectionHandleColor).toBe(input.props.selectionColor);
     fireEvent(input, 'submitEditing');
     expect(onSubmit).toHaveBeenCalledWith('needle');
     fireEvent.press(screen.getByRole('button', { name: 'Clear query' }));

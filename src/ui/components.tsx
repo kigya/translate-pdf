@@ -47,7 +47,7 @@ export function Button({ label, onPress, colors, variant = 'primary', disabled, 
 }
 
 export function Field({ label, colors, value, onChangeText, placeholder, ...props }: TextInputProps & { label: string; colors: Palette }) {
-  return <View style={{ gap: 7 }}><Text style={{ color: colors.muted, fontSize: 12, fontWeight: '700' }}>{label}</Text><TextInput accessibilityLabel={label} value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor={colors.muted} selectionColor={colors.accent} style={[styles.field, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]} {...props} /></View>;
+  return <View style={{ gap: 7 }}><Text style={{ color: colors.muted, fontSize: 12, fontWeight: '700' }}>{label}</Text><TextInput accessibilityLabel={label} value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor={colors.muted} selectionColor={colors.accent} cursorColor={colors.accent} selectionHandleColor={colors.accent} style={[styles.field, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]} {...props} /></View>;
 }
 
 export function Notice({ text, colors, retry, retryLabel = 'Try again', tone = 'error' }: { text?: string; colors: Palette; retry?: () => void; retryLabel?: string; tone?: 'error' | 'info' }) {

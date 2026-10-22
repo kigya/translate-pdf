@@ -31,6 +31,7 @@ const noop=()=>{};
 it('finds language autonyms, English names, codes and unaccented text independently of UI locale',()=>{
  const choose=jest.fn();render(<LanguageChoices {...base} selected="en" onSelect={choose}/>);
  const search=screen.getByLabelText('Search');
+ expect([search.props.cursorColor,search.props.selectionColor,search.props.selectionHandleColor]).toEqual([base.colors.accent,base.colors.accent,base.colors.accent]);
  for(const query of ['French',' francais ','FR','Français']){
   fireEvent.changeText(search,query);
   expect(screen.getByRole('radio',{name:'Français'})).toBeOnTheScreen();
@@ -200,7 +201,13 @@ it('routes all compact settings destinations and survives an unknown saved local
 it('keeps a dictionary editor open after a failed save and lets the user dismiss it',async()=>{
  const save=jest.fn().mockResolvedValue(undefined);
  render(<DictionaryScreen {...base} entries={[]} source="en" target="ru" onPair={noop} onSave={save} onDelete={noop}/>);
+ const search=screen.getByLabelText('Search');
+ expect([search.props.cursorColor,search.props.selectionColor,search.props.selectionHandleColor]).toEqual([base.colors.accent,base.colors.accent,base.colors.accent]);
  fireEvent.press(screen.getByRole('button',{name:'Add term'}));
+ for(const label of ['Source term','Target term']){
+  const input=screen.getByLabelText(label);
+  expect([input.props.cursorColor,input.props.selectionColor,input.props.selectionHandleColor]).toEqual([base.colors.accent,base.colors.accent,base.colors.accent]);
+ }
  fireEvent.changeText(screen.getByLabelText('Source term'),'  pump  ');fireEvent.changeText(screen.getByLabelText('Target term'),'  насос  ');
  fireEvent.press(screen.getByRole('button',{name:'Save term'}));await waitFor(()=>expect(save).toHaveBeenCalledWith('pump','насос',undefined));
  expect(screen.getByLabelText('Source term')).toHaveDisplayValue('  pump  ');

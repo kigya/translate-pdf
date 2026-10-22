@@ -358,6 +358,7 @@ export function LanguageChoices({
         placeholderTextColor={colors.muted}
         selectionColor={colors.accent}
         cursorColor={colors.accent}
+        selectionHandleColor={colors.accent}
         value={search}
         onChangeText={setSearch}
         autoCorrect={false}
@@ -813,6 +814,9 @@ export function DictionaryScreen({
             placeholderTextColor={colors.muted}
             value={search}
             onChangeText={setSearch}
+            selectionColor={colors.accent}
+            cursorColor={colors.accent}
+            selectionHandleColor={colors.accent}
             style={{
               flex: 1,
               color: colors.text,

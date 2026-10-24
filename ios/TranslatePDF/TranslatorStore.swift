@@ -1,4 +1,36 @@
 import Foundation
+
+/** Worker-local, bounded reuse of successful identical local requests only. */
+final class LocalTranslationMemo {
+  private var entries=[String:String]()
+  private var order=[String]()
+  private var bytes=0
+  private let maxBytes:Int
+  private let maxEntries:Int
+  init(maxBytes:Int=2*1024*1024,maxEntries:Int=256){self.maxBytes=maxBytes;self.maxEntries=maxEntries}
+  func clear(){entries.removeAll();order.removeAll();bytes=0}
+  func translate(_ text:String,glossary:String,context:String,source:String,target:String,
+    using native:(String,String,String,String,String)->String)throws->String {
+    let key=try jsonString([text,glossary,context,source,target])
+    if let saved=entries[key] {
+      order.removeAll{$0==key};order.append(key)
+      var result=try jsonObject(saved)
+      result["tokens"]=0;result["seconds"]=0;result["tokensPerSecond"]=0;result["cacheHit"]=true
+      return try jsonString(result)
+    }
+    let raw=native(text,glossary,context,source,target)
+    let result=try jsonObject(raw)
+    guard result["error"]==nil,let translated=result["text"] as? String,!translated.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else{return raw}
+    let size=key.utf8.count+raw.utf8.count
+    guard size<=maxBytes,maxEntries>0 else{return raw}
+    while !order.isEmpty && (bytes+size>maxBytes || order.count>=maxEntries) {
+      let oldest=order.removeFirst()
+      if let value=entries.removeValue(forKey:oldest){bytes-=oldest.utf8.count+value.utf8.count}
+    }
+    entries[key]=raw;order.append(key);bytes+=size
+    return raw
+  }
+}
 import SQLite3
 
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -20,7 +52,7 @@ final class TranslatorStore {
     try execute("CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY,status TEXT NOT NULL,downloaded_bytes INTEGER NOT NULL DEFAULT 0,error TEXT)")
     try execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY,document_id TEXT NOT NULL,model_id TEXT NOT NULL,model_revision TEXT NOT NULL DEFAULT '',source_sha256 TEXT NOT NULL DEFAULT '',glossary_snapshot TEXT NOT NULL DEFAULT '',pipeline_version INTEGER NOT NULL DEFAULT 1,source_lang TEXT NOT NULL,target_lang TEXT NOT NULL,status TEXT NOT NULL,stage TEXT NOT NULL,completed_pages INTEGER NOT NULL DEFAULT 0,total_pages INTEGER NOT NULL,current_page INTEGER,glossary_id TEXT,error TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,label_color TEXT DEFAULT NULL,FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE)")
     try execute("CREATE INDEX IF NOT EXISTS jobs_document_id ON jobs(document_id)")
-    try execute("CREATE TABLE IF NOT EXISTS pages (job_id TEXT NOT NULL,page_index INTEGER NOT NULL,status TEXT NOT NULL,blocks_json TEXT NOT NULL,error TEXT,updated_at INTEGER NOT NULL,PRIMARY KEY(job_id,page_index),FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)")
+    try execute("CREATE TABLE IF NOT EXISTS pages (job_id TEXT NOT NULL,page_index INTEGER NOT NULL,status TEXT NOT NULL,blocks_json TEXT NOT NULL,error TEXT,updated_at INTEGER NOT NULL,completed_blocks INTEGER NOT NULL DEFAULT 0,total_blocks INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(job_id,page_index),FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)")
     try execute("CREATE TABLE IF NOT EXISTS glossary (id TEXT PRIMARY KEY,source TEXT NOT NULL,target TEXT NOT NULL,created_at INTEGER NOT NULL)")
     try execute("CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY,path TEXT NOT NULL,name TEXT NOT NULL,sha256 TEXT NOT NULL DEFAULT '',created_at INTEGER NOT NULL)")
     try ensureColumn("exports","sha256","TEXT NOT NULL DEFAULT ''")
@@ -40,6 +72,7 @@ final class TranslatorStore {
     try ensureColumn("glossary","source_lang","TEXT NOT NULL DEFAULT 'en'")
     try ensureColumn("glossary","target_lang","TEXT NOT NULL DEFAULT 'ru'")
     try migrateSchema6()
+    try migrateSchema7()
     try migrateSnapshots()
   }
 
@@ -69,17 +102,33 @@ final class TranslatorStore {
       guard result == SQLITE_ROW else { throw failure() }
       var row = [String: Any]()
       for column in 0..<sqlite3_column_count(statement) {
-        guard let name = sqlite3_column_name(statement, column) else { continue }
+        guard let name = sqlite3_column_name(statement, column) else {
+          throw failure("SQLite did not provide a name for result column \(column).")
+        }
+        let columnName = String(cString: name)
         switch sqlite3_column_type(statement, column) {
-        case SQLITE_INTEGER: row[String(cString: name)] = sqlite3_column_int64(statement, column)
-        case SQLITE_FLOAT: row[String(cString: name)] = sqlite3_column_double(statement, column)
+        case SQLITE_INTEGER: row[columnName] = sqlite3_column_int64(statement, column)
+        case SQLITE_FLOAT: row[columnName] = sqlite3_column_double(statement, column)
         case SQLITE_TEXT:
-          if let text = sqlite3_column_text(statement, column) { row[String(cString: name)] = String(cString: text) }
+          guard let text = sqlite3_column_text(statement, column) else {
+            throw failure("SQLite could not materialize TEXT column '\(columnName)'.")
+          }
+          let length = Int(sqlite3_column_bytes(statement, column))
+          let bytes = UnsafeBufferPointer(start: text, count: length)
+          guard let value = String(bytes: bytes, encoding: .utf8) else {
+            throw failure("SQLite returned invalid UTF-8 for TEXT column '\(columnName)'.")
+          }
+          row[columnName] = value
         case SQLITE_BLOB:
           let length = Int(sqlite3_column_bytes(statement, column))
-          if length == 0 { row[String(cString: name)] = Data() }
-          else if let bytes = sqlite3_column_blob(statement, column) { row[String(cString: name)] = Data(bytes: bytes, count: length) }
-        default: row[String(cString: name)] = NSNull()
+          if length == 0 {
+            row[columnName] = Data()
+          } else if let bytes = sqlite3_column_blob(statement, column) {
+            row[columnName] = Data(bytes: bytes, count: length)
+          } else {
+            throw failure("SQLite could not materialize non-empty BLOB column '\(columnName)'.")
+          }
+        default: row[columnName] = NSNull()
         }
       }
       rows.append(row)
@@ -292,20 +341,29 @@ final class TranslatorStore {
   }
 
   func job(_ id: String) throws -> [String: Any]? {
-    guard let r = try query("SELECT j.id,j.document_id,d.name,d.format,d.pages,d.segment_count,j.model_id,j.model_revision,j.model_profile,j.source_sha256,j.pipeline_version,j.source_lang,j.target_lang,j.status,j.stage,j.completed_pages,j.total_pages,j.current_page,j.error,j.created_at,j.updated_at,j.engine_kind,j.engine_id,j.progress_unit,j.label_color FROM jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=?", [id]).first else { return nil }
+    guard let r = try query("SELECT j.id,j.document_id,d.name,d.format,d.pages,d.segment_count,j.model_id,j.model_revision,j.model_profile,j.source_sha256,j.pipeline_version,j.source_lang,j.target_lang,j.status,j.stage,j.completed_pages,j.total_pages,j.current_page,j.error,j.created_at,j.updated_at,j.engine_kind,j.engine_id,j.progress_unit,j.label_color,j.stage_started_at AS stage_started_at,j.current_block AS current_block,(SELECT COALESCE(SUM(p.completed_blocks),0) FROM pages p WHERE p.job_id=j.id) AS completed_blocks,(SELECT COALESCE(SUM(p.total_blocks),0) FROM pages p WHERE p.job_id=j.id) AS discovered_blocks,(SELECT COALESCE(p.total_blocks,0) FROM pages p WHERE p.job_id=j.id AND p.page_index=j.current_page) AS page_blocks,(SELECT COALESCE(p.completed_blocks,0) FROM pages p WHERE p.job_id=j.id AND p.page_index=j.current_page) AS completed_page_blocks FROM jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=?", [id]).first else { return nil }
     let engineId=(r["engine_id"] as? String).flatMap{$0.isEmpty ? nil:$0} ?? (r["model_id"] as? String ?? "")
     let warnings=decodeWarnings(try query("SELECT warnings_json FROM jobs WHERE id=?",[id]).first?["warnings_json"] as? String)
     let format=r["format"] as? String ?? "pdf"
-    return ["id":r["id"]!,"documentId":r["document_id"]!,"documentName":r["name"]!,"format":format,"documentFormat":format,"pageCount":r["pages"]!,"segmentCount":r["segment_count"]!,"modelId":r["model_id"]!,"modelRevision":r["model_revision"]!,"modelProfile":r["model_profile"]!,"sourceSHA256":r["source_sha256"]!,"pipelineVersion":r["pipeline_version"]!,"sourceLanguage":r["source_lang"]!,"targetLanguage":r["target_lang"]!,"status":r["status"]!,"stage":r["stage"]!,"completedPages":r["completed_pages"]!,"totalPages":r["total_pages"]!,"totalSegments":format == "docx" ? r["total_pages"]! : 0,"progressUnit":format == "docx" ? "segment" : "page","engine":["kind":r["engine_kind"] as? String ?? "local","id":engineId],"warnings":warnings,"labelColor":r["label_color"] ?? NSNull(),"currentPage":r["current_page"] ?? NSNull(),"error":r["error"] ?? NSNull(),"createdAt":r["created_at"]!,"updatedAt":r["updated_at"]!]
+    let discoveredPages=(try query("SELECT COUNT(*) AS count FROM pages WHERE job_id=?",[id]).first?["count"] as? Int64) ?? 0
+    let knownTotal:Any=discoveredPages == (r["total_pages"] as? Int64 ?? 0) ? (r["discovered_blocks"] ?? 0) : NSNull()
+    return ["id":r["id"]!,"documentId":r["document_id"]!,"documentName":r["name"]!,"format":format,"documentFormat":format,"pageCount":r["pages"]!,"segmentCount":r["segment_count"]!,"modelId":r["model_id"]!,"modelRevision":r["model_revision"]!,"modelProfile":r["model_profile"]!,"sourceSHA256":r["source_sha256"]!,"pipelineVersion":r["pipeline_version"]!,"sourceLanguage":r["source_lang"]!,"targetLanguage":r["target_lang"]!,"status":r["status"]!,"stage":r["stage"]!,"completedPages":r["completed_pages"]!,"totalPages":r["total_pages"]!,"totalSegments":format == "docx" ? r["total_pages"]! : 0,"progressUnit":format == "docx" ? "segment" : "page","engine":["kind":r["engine_kind"] as? String ?? "local","id":engineId],"warnings":warnings,"labelColor":r["label_color"] ?? NSNull(),"currentPage":r["current_page"] ?? NSNull(),"error":r["error"] ?? NSNull(),"createdAt":r["created_at"]!,"updatedAt":r["updated_at"]!,"stageStartedAt":r["stage_started_at"] ?? r["updated_at"]!,"currentBlock":r["current_block"] ?? 0,"completedBlocks":r["completed_blocks"] ?? 0,"discoveredBlocks":r["discovered_blocks"] ?? 0,"totalBlocks":knownTotal,"pageBlocks":r["page_blocks"] ?? 0,"completedPageBlocks":r["completed_page_blocks"] ?? 0]
   }
 
-  func jobs() throws -> [[String: Any]] { try query("SELECT id FROM jobs ORDER BY created_at DESC").compactMap { try job($0["id"] as! String) } }
+  func jobs() throws -> [[String: Any]] {
+    try query("SELECT id FROM jobs ORDER BY created_at DESC").compactMap { row in
+      guard let id = row["id"] as? String else {
+        throw failure("A persisted translation job has a non-text identifier; refusing to omit it from history.")
+      }
+      return try job(id)
+    }
+  }
 
   func setJobColor(_ id:String,color:String)throws->[String:Any] {
     let allowed=Set(["red","orange","yellow","green","blue","purple"])
     guard color.isEmpty || allowed.contains(color) else { throw NSError(domain:"PdfTranslator",code:44,userInfo:[NSLocalizedDescriptionKey:"The selected document label color is invalid."]) }
     guard let row=try query("SELECT status FROM jobs WHERE id=?",[id]).first else { throw NSError(domain:"PdfTranslator",code:45,userInfo:[NSLocalizedDescriptionKey:"The translation job was not found."]) }
-    guard ["completed","partial"].contains(row["status"] as? String ?? "") else { throw NSError(domain:"PdfTranslator",code:46,userInfo:[NSLocalizedDescriptionKey:"Only completed translations can be assigned a color label."]) }
+    guard (row["status"] as? String) != "canceled" else { throw NSError(domain:"PdfTranslator",code:46,userInfo:[NSLocalizedDescriptionKey:"Canceled translations cannot be assigned a color label."]) }
     try execute("UPDATE jobs SET label_color=? WHERE id=?",[color.isEmpty ? NSNull() as Any:color,id])
     guard let result=try job(id) else { throw NSError(domain:"PdfTranslator",code:45,userInfo:[NSLocalizedDescriptionKey:"The translation job was not found."]) }
     return result
@@ -344,10 +402,10 @@ final class TranslatorStore {
   func updateJob(_ id: String, status: String? = nil, stage: String? = nil, completed: Int? = nil, currentPage: Int? = nil, clearCurrentPage: Bool = false, error: String? = nil, clearError: Bool = false) throws {
     var sets = ["updated_at=?"]; var values: [Any] = [Int64(Date().timeIntervalSince1970 * 1000)]
     if let status { sets.append("status=?"); values.append(status) }
-    if let stage { sets.append("stage=?"); values.append(stage) }
+    if let stage { sets.append("stage_started_at=CASE WHEN stage<>? THEN ? ELSE stage_started_at END"); values.append(stage); values.append(Int64(Date().timeIntervalSince1970 * 1000)); sets.append("stage=?"); values.append(stage) }
     if let completed { sets.append("completed_pages=?"); values.append(completed) }
-    if let currentPage { sets.append("current_page=?"); values.append(currentPage) }
-    if clearCurrentPage { sets.append("current_page=NULL") }
+    if let currentPage { sets.append("current_page=?"); values.append(currentPage);sets.append("current_block=0");sets.append("page_blocks=0") }
+    if clearCurrentPage { sets.append("current_page=NULL");sets.append("current_block=0");sets.append("page_blocks=0") }
     if let error { sets.append("error=?"); values.append(error) }
     if clearError { sets.append("error=NULL") }
     values.append(id)
@@ -355,10 +413,27 @@ final class TranslatorStore {
   }
 
   func savePage(jobId: String, index: Int, status: String, blocks: String, error: String? = nil) throws {
-    try execute("INSERT OR REPLACE INTO pages(job_id,page_index,status,blocks_json,error,updated_at) VALUES(?,?,?,?,?,?)", [jobId,index,status,blocks,error ?? NSNull() as Any,Int64(Date().timeIntervalSince1970 * 1000)])
+    let data=Data(blocks.utf8)
+    let values=(try? JSONSerialization.jsonObject(with:data)) as? [[String:Any]] ?? []
+    let total=values.count
+    let completed=values.reduce(into:0) { count, block in
+      if ["translated","partial","failed","skipped"].contains(block["status"] as? String ?? "") { count += 1 }
+    }
+    try execute("INSERT OR REPLACE INTO pages(job_id,page_index,status,blocks_json,error,updated_at,completed_blocks,total_blocks) VALUES(?,?,?,?,?,?,?,?)", [jobId,index,status,blocks,error ?? NSNull() as Any,Int64(Date().timeIntervalSince1970 * 1000),completed,total])
+  }
+
+  func setPageProgress(jobId:String,index:Int,currentBlock:Int,pageBlocks:Int)throws {
+    try execute("UPDATE jobs SET current_page=?,current_block=?,page_blocks=?,stage_started_at=CASE WHEN stage_started_at=0 THEN ? ELSE stage_started_at END,updated_at=? WHERE id=?",[index,max(0,currentBlock),max(0,pageBlocks),Int64(Date().timeIntervalSince1970*1000),Int64(Date().timeIntervalSince1970*1000),jobId])
   }
 
   func pageRows(_ jobId: String) throws -> [[String: Any]] { try query("SELECT page_index,status FROM pages WHERE job_id=? ORDER BY page_index", [jobId]).map { ["index":$0["page_index"]!,"status":$0["status"]!] } }
+  func pageCheckpoint(_ jobId:String,index:Int)throws->[String:Any]? {
+    guard let row=try query("SELECT status,blocks_json,error FROM pages WHERE job_id=? AND page_index=?",[jobId,index]).first,
+      let blocks=row["blocks_json"] as? String else{return nil}
+    var result:[String:Any]=["index":index,"status":row["status"]!,"blocks":try JSONSerialization.jsonObject(with:Data(blocks.utf8))]
+    if let message=row["error"] as? String {result["error"]=message}
+    return result
+  }
   func page(_ jobId: String, index: Int) throws -> [String: Any]? {
     guard let row = try query("SELECT status,blocks_json,error FROM pages WHERE job_id=? AND page_index=?", [jobId,index]).first,
           let blocks = row["blocks_json"] as? String,
@@ -373,6 +448,26 @@ final class TranslatorStore {
 
   func deleteJob(_ id: String) throws { try execute("DELETE FROM jobs WHERE id=?", [id]) }
   func deleteDocument(_ id: String) throws { try execute("DELETE FROM documents WHERE id=?", [id]) }
+  func deleteJobAndReleaseUnsharedDocument(_ id:String)throws->String? {
+    try transaction {
+      guard let row=try query("SELECT jobs.document_id,(SELECT COUNT(*) FROM jobs AS related WHERE related.document_id=jobs.document_id) AS references_count FROM jobs WHERE id=?",[id]).first,
+        let documentId=row["document_id"] as? String else { throw NSError(domain:"PdfTranslator",code:45,userInfo:[NSLocalizedDescriptionKey:"The translation job was not found."]) }
+      let shared=row["references_count"] as? Int64 ?? 0
+      let path=try documentPath(documentId)
+      try deleteJob(id)
+      if shared == 1,let path,privateDocumentPath(path) { try deleteDocument(documentId);return path }
+      return nil
+    }
+  }
+  func deleteUntranslatedDocument(_ id:String)throws->String {
+    try transaction {
+      guard let row=try query("SELECT path FROM documents WHERE id=?",[id]).first,let path=row["path"] as? String else { throw NSError(domain:"PdfTranslator",code:47,userInfo:[NSLocalizedDescriptionKey:"The imported document was not found."]) }
+      guard (try query("SELECT id FROM jobs WHERE document_id=? LIMIT 1",[id])).isEmpty else { throw NSError(domain:"PdfTranslator",code:48,userInfo:[NSLocalizedDescriptionKey:"This imported document has translation history and cannot be deleted as an untranslated import."]) }
+      guard privateDocumentPath(path) else { throw NSError(domain:"PdfTranslator",code:49,userInfo:[NSLocalizedDescriptionKey:"The imported document is outside private application storage."]) }
+      try deleteDocument(id);return path
+    }
+  }
+  private func privateDocumentPath(_ path:String)->Bool { URL(fileURLWithPath:path).standardizedFileURL.deletingLastPathComponent()==AppPaths.documents.standardizedFileURL }
   func glossary() throws -> [[String: Any]] { try query("SELECT id,source,target,source_lang,target_lang,created_at FROM glossary ORDER BY source_lang,target_lang,source COLLATE NOCASE").map { ["id":$0["id"]!,"source":$0["source"]!,"target":$0["target"]!,"sourceLanguage":$0["source_lang"]!,"targetLanguage":$0["target_lang"]!,"createdAt":$0["created_at"]!] } }
   func saveGlossary(_ id: String, source: String, target: String, sourceLanguage: String, targetLanguage: String) throws -> [String: Any] {
     _ = try TranslationLanguage.pair(source:sourceLanguage,target:targetLanguage)
@@ -425,6 +520,26 @@ final class TranslatorStore {
       try execute("INSERT OR IGNORE INTO settings(key,value) VALUES('app_rating','0')")
       try execute("INSERT OR IGNORE INTO settings(key,value) VALUES('library_sort','recent')")
       try execute("PRAGMA user_version=6")
+    }
+  }
+
+  private func migrateSchema7()throws {
+    let version=(try query("PRAGMA user_version").first?["user_version"] as? Int64) ?? 0
+    guard version<7 else{return}
+    try transaction {
+      try ensureColumn("jobs","stage_started_at","INTEGER NOT NULL DEFAULT 0")
+      try ensureColumn("jobs","current_block","INTEGER NOT NULL DEFAULT 0")
+      try ensureColumn("jobs","page_blocks","INTEGER NOT NULL DEFAULT 0")
+      try ensureColumn("pages","completed_blocks","INTEGER NOT NULL DEFAULT 0")
+      try ensureColumn("pages","total_blocks","INTEGER NOT NULL DEFAULT 0")
+      for row in try query("SELECT job_id,page_index,blocks_json FROM pages") {
+        guard let jobId=row["job_id"] as? String,let index=row["page_index"] as? Int64,let raw=row["blocks_json"] as? String else{continue}
+        let blocks=(try? JSONSerialization.jsonObject(with:Data(raw.utf8))) as? [[String:Any]] ?? []
+        let completed=blocks.reduce(into:0){count,block in if ["translated","partial","failed","skipped"].contains(block["status"] as? String ?? ""){count+=1}}
+        try execute("UPDATE pages SET completed_blocks=?,total_blocks=? WHERE job_id=? AND page_index=?",[completed,blocks.count,jobId,index])
+      }
+      try execute("UPDATE jobs SET stage_started_at=updated_at WHERE stage_started_at=0")
+      try execute("PRAGMA user_version=7")
     }
   }
 

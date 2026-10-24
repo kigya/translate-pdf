@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Rect
+import org.json.JSONArray
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -24,6 +25,18 @@ import java.nio.file.StandardCopyOption
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [37], application = Application::class)
 class OcrEngineTest {
+  @Test
+  fun lineOnlyRecognitionKeepsBinaryCompatibleThreeArgumentMethod() {
+    val method = OcrEngine::class.java.getDeclaredMethod(
+      "recognize",
+      Bitmap::class.java,
+      Float::class.javaPrimitiveType,
+      Float::class.javaPrimitiveType,
+    )
+
+    assertEquals(JSONArray::class.java, method.returnType)
+  }
+
   @Test
   fun recognitionTrimsTextScalesBoundsAndSkipsBlankOrInvalidLines() {
     val context = RuntimeEnvironment.getApplication()
@@ -55,6 +68,82 @@ class OcrEngineTest {
     assertEquals(1, api.clearCalls)
     assertEquals("eng", api.language)
     assertTrue(api.dataDirectory!!.endsWith("/tesseract"))
+    bitmap.recycle()
+  }
+
+  @Test
+  fun confidenceAndTightWordBoundsAreDiagnosticEvidenceAndDoNotFilterSingleGlyphOrLogoText() {
+    val context = RuntimeEnvironment.getApplication()
+    val api = FakeOcrApi(
+      listOf(
+        OcrFixture("a", Rect(20, 10, 180, 70), confidence = 18f),
+        OcrFixture("CHEVROLET", Rect(20, 80, 180, 104), confidence = 96f),
+      ),
+      listOf(
+        OcrWordEvidence("a", Rect(80, 30, 92, 54), 12f),
+        OcrWordEvidence("CHEVROLET", Rect(42, 84, 148, 101), 97f),
+        OcrWordEvidence("unrelated", Rect(200, 130, 240, 150), 99f),
+      ),
+    )
+    val engine = OcrEngine(context, api = api)
+    val bitmap = Bitmap.createBitmap(400, 200, Bitmap.Config.ARGB_8888)
+
+    val lines = engine.recognize(bitmap, 200f, 100f, includeWordEvidence = true)
+
+    assertEquals(2, lines.length())
+    val glyph = lines.getJSONObject(0)
+    assertEquals("a", glyph.getString("sourceText"))
+    assertEquals(18.0, glyph.getDouble("ocrConfidence"), 0.001)
+    val glyphWord = glyph.getJSONArray("wordEvidence").getJSONObject(0)
+    assertEquals("a", glyphWord.getString("text"))
+    assertEquals(40.0, glyphWord.getDouble("left"), 0.001)
+    assertEquals(46.0, glyphWord.getDouble("right"), 0.001)
+    assertEquals(12.0, glyphWord.getDouble("confidence"), 0.001)
+
+    val logoText = lines.getJSONObject(1)
+    assertEquals("CHEVROLET", logoText.getString("sourceText"))
+    assertEquals(96.0, logoText.getDouble("ocrConfidence"), 0.001)
+    assertEquals("CHEVROLET", logoText.getJSONArray("wordEvidence").getJSONObject(0).getString("text"))
+    assertEquals(1, logoText.getJSONArray("wordEvidence").length())
+    bitmap.recycle()
+  }
+
+  @Test
+  fun detailedRecognitionRetainsTightWordBoundsEvenWhenTheyDoNotMatchAnOcrLine() {
+    val api = FakeOcrApi(
+      listOf(OcrFixture("a", Rect(20, 10, 180, 70), confidence = 0f)),
+      listOf(OcrWordEvidence("a", Rect(250, 140, 290, 180), confidence = 2f)),
+    )
+    val engine = OcrEngine(RuntimeEnvironment.getApplication(), api = api)
+    val bitmap = Bitmap.createBitmap(400, 200, Bitmap.Config.ARGB_8888)
+
+    val result = engine.recognizeDetailed(bitmap, 200f, 100f)
+
+    assertEquals(1, result.lines.length())
+    assertTrue("The inflated line must not claim the tight word as a line match", result.lines.getJSONObject(0).getJSONArray("wordEvidence").length() == 0)
+    assertEquals(1, result.words.length())
+    val word = result.words.getJSONObject(0)
+    assertEquals("a", word.getString("text"))
+    assertEquals(125.0, word.getDouble("left"), 0.001)
+    assertEquals(145.0, word.getDouble("right"), 0.001)
+    assertEquals(2.0, word.getDouble("confidence"), 0.001)
+    bitmap.recycle()
+  }
+
+  @Test
+  fun invalidNativeConfidenceIsOmittedButRecognitionRemainsAvailable() {
+    val api = FakeOcrApi(
+      listOf(OcrFixture("A", Rect(4, 4, 24, 24), confidence = 101f)),
+      listOf(OcrWordEvidence("A", Rect(4, 4, 24, 24), confidence = -1f)),
+    )
+    val engine = OcrEngine(RuntimeEnvironment.getApplication(), api = api)
+    val bitmap = Bitmap.createBitmap(40, 40, Bitmap.Config.ARGB_8888)
+
+    val line = engine.recognize(bitmap, 40f, 40f, includeWordEvidence = true).getJSONObject(0)
+
+    assertFalse(line.has("ocrConfidence"))
+    assertEquals("A", line.getJSONArray("wordEvidence").getJSONObject(0).getString("text"))
+    assertFalse(line.getJSONArray("wordEvidence").getJSONObject(0).has("confidence"))
     bitmap.recycle()
   }
 
@@ -277,9 +366,9 @@ class OcrEngineTest {
     directory.deleteRecursively()
   }
 
-  private data class OcrFixture(val line: String?, val rectangle: Rect)
+  private data class OcrFixture(val line: String?, val rectangle: Rect, val confidence: Float? = null)
 
-  private class FakeOcrApi(lines: List<OcrFixture>) : OcrEngineApi {
+  private class FakeOcrApi(lines: List<OcrFixture>, private val words: List<OcrWordEvidence> = emptyList()) : OcrEngineApi {
     var initializeResult = true
     var language: String? = null
     var dataDirectory: String? = null
@@ -305,6 +394,7 @@ class OcrEngineTest {
       iteratorFailure?.let { throw it }
       return iterator
     }
+    override fun wordEvidence(): List<OcrWordEvidence> = words
     override fun clear() { clearCalls++ }
     override fun stop() { stopCalls++; stopFailure?.let { throw it } }
     override fun recycle() { recycleCalls++; recycleFailure?.let { throw it } }
@@ -317,6 +407,7 @@ class OcrEngineTest {
     override fun begin() { index = 0 }
     override fun text(): String? = lines[index].line
     override fun bounds(): Rect = lines[index].rectangle
+    override fun confidence(): Float? = lines[index].confidence
     override fun next(): Boolean { nextCalls++; index++; return index < lines.size }
     override fun delete() { deleteCalls++ }
   }

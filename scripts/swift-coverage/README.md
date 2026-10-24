@@ -188,3 +188,235 @@ Negative controls cover partial/missing/duplicate results, mutated source/AST/
 transformed bytes, manifests, registry/outcomes/counts and binary UUID/hash.
 A single host OS deliberately cannot pass both outcomes of a fixed availability
 threshold. Fixtures do not certify untested grammar or application lifecycle.
+
+## Compiler evidence for independent certification
+
+`certification.py` collects real original/transformed typed AST and raw,
+source-located ownership SIL for an exact prepared manifest. It reads actual
+`builtin-SwiftDriver` invocations, expands and hashes response files, separates
+Swift definitions from forwarded Clang definitions, and checks each owned file's
+configuration. Additional generated Xcode asset and Expo provider inputs are
+retained in both compilations and bound separately. Unknown inputs or compiler
+flags block the analysis.
+
+Analysis uses the pinned Xcode Swift compiler and explicit SDK from the actual
+job. Output destinations, scheduling and module/index caches are rebound to the
+fresh private evidence directory; the shared Xcode build caches are not modified.
+Compiler invocations run serially. Analysis never builds, installs or runs an app,
+starts a simulator, changes production files, or changes the native coverage gate.
+
+```sh
+python3 scripts/swift-coverage/prepare_certification.py \
+  --compile-log .local-private/actual-xcodebuild.log \
+  --output .local-private/certification-preparation
+
+python3 scripts/swift-coverage/certification.py \
+  --manifest .local-private/certification-preparation/measurement/manifest.json \
+  --compile-log .local-private/actual-xcodebuild.log \
+  --output .local-private/compiler-evidence \
+  --module TranslateCore --module TranslatePDF
+
+python3 scripts/swift-coverage/audit_certification.py \
+  --evidence .local-private/compiler-evidence/evidence.json \
+  --output .local-private/compiler-evidence/integrity-audit.json
+```
+
+Preparation first captures the actual original module's typed AST, then derives
+the narrowly supported result hints and prepares final test copies. It verifies
+all owned source hashes before and after preparation. A source or generated-input
+change invalidates the affected evidence rather than being silently rebound.
+
+After separately coordinating an existing simulator, the hosted runner can use
+`--configuration-manifest` with that prepared manifest. The runner binds the
+original source/compiler/target configuration again and adds its test-driver
+export overlay. This option supplies typing/configuration evidence; it grants no
+application approval.
+
+Per-source configurations can be supplied to the Python `prepare` API through
+`configurations_by_source`. Every owned source must be bound; a shared `DEBUG`
+assumption cannot stand in for actual CocoaPods/app Swift definitions. Preparation
+emits a verified UTF-8 byte map for unchanged original spans and records inserted
+probe spans. Replaced catch and dispatch regions remain visible for review.
+
+Each concrete site retains its resolved original nodes, transformed source-origin
+nodes, type/declaration/effect differences, source-mapped SIL operations and an
+explicit family-specific proof checklist. No arbitrary helper-call erasure or
+instruction-count equality is treated as semantic equivalence. Raw compiler dumps
+remain authoritative. The SIL action also records loaded Swift module inputs;
+Swift 6.3.3 rejects loaded-module tracing in the AST-dump action. Complete imported
+Clang/header dependency certification remains a separate obligation.
+
+The optional `Any` result repair is compiler guided: generic instrumentation under
+`try?` can otherwise change contextual inference from `Any` to `Any?`. A result
+annotation is offered only for an exact original call/range that resolves to
+`Any` in the bound original AST. Source and AST hashes, hint ranges and original
+types are checked again during evidence collection. This fixes compilation, not
+the independent requirement to prove overload, error, ownership and ARC behavior.
+
+An integrity audit verifies artifacts, actual compiler jobs, source inventories,
+zero-initialized outcome inventories and recomputes the concrete comparisons from
+raw AST/SIL. Its `artifactIntegrityPassed` result is distinct from semantic
+certification and application coverage. Both `semanticEquivalenceCertified` and
+`applicationGateApproved` remain false. An optional independent review attachment
+records provenance only; an `approved` field cannot bypass unresolved proofs.
+
+Required remaining evidence includes concrete transformation and invariant proofs,
+the required configuration union, imported dependencies, independent review, and
+actual loaded-image-bound runtime outcomes. Preparation and compiler analysis do
+not manufacture hits or establish a 100% denominator.
+
+`configuration_union.py` reconciles the required actual Debug simulator, Release
+device and Release ARM64 simulator packets against an unconfigured original-source
+inventory. It retains inactive-only source decisions for independent platform-scope
+review, and never marks them excluded from owned code. `dependency_evidence.py`
+can additionally record actual compiler dependency-scan graphs and hashes of
+declared source/header/module-map and existing module inputs. Planned module
+outputs are kept distinct from observed input artifacts. Scanner graph collection
+alone is not independent dependency-closure certification.
+
+References: [Swift compiler phases](https://www.swift.org/documentation/swift-compiler/),
+[SIL stages and ownership SSA](https://github.com/swiftlang/swift/blob/main/docs/SIL/SIL.md),
+[ownership rules](https://github.com/swiftlang/swift/blob/main/docs/SIL/Ownership.md),
+and [compiler options](https://github.com/swiftlang/swift/blob/main/include/swift/Option/Options.td).
+The installed compiler's help/output remains the evidence for the exact supported
+flags and version; no additional SwiftSyntax package or SDK is downloaded.
+
+`prove_local_contracts.py` computes narrower compiler-backed proof obligations:
+
+```sh
+python3 scripts/swift-coverage/prove_local_contracts.py \
+  --packet .local-private/compiler-evidence/evidence.json \
+  --output .local-private/local-contracts
+```
+
+The finite Bool/Optional, selected-delegation and throwing-callback helper rules
+compare their entire actual SIL instruction,
+SSA use, ownership and basic-block transfer programs. Only SSA spelling and
+non-semantic debug/profiling metadata are normalized. The rules check the exact
+input returned or copied, nil/Bool tests, literal outcomes and both control-flow
+edges into the exact recorder. The callback rule checks one noescape callback
+invocation, unchanged successful result transfer and propagation of the same
+error reference. These are helper-body facts; callback capture/ARC equivalence at
+the concrete source site remains separate. Unknown lowerings have no automatic rule.
+
+A separate source-specific rule compares the retained full typed expression tree
+and contextual type with the exact transformed helper argument. SwiftSyntax token
+extents, compiler-resolved helper declarations and literal registry IDs bind this
+comparison to concrete source bytes. Nested transformations, ambiguous mappings,
+closures/captures and inserted declaration references require separate rules.
+Even a passing local rule leaves concrete SIL evaluation order, ownership/weak
+lifetimes, observer behavior and independent review unresolved. It cannot approve
+an application or infer any runtime outcome.
+
+Prepared manifests now retain immutable SHA-bound original source snapshots as
+well as copied-span maps. This preserves replaced catch/switch bytes across later
+legitimate source revisions. Local proof collection can analyze exact historical
+artifacts while reporting current-source drift; it does not attest a current app
+build from an old packet. Old packets without complete original bytes remain
+blocked for the affected sources. All registered sites, classifications,
+unsupported syntax and zero outcome inventories are retained in the local report.
+
+`compositional_contracts.py` checks nested Bool/Optional contexts using freshly
+verified helper SIL rules, exact compiler-resolved literal calls, unchanged
+contextual types and complete copied-byte coverage of each original payload.
+Every contracted node retains its source-specific premises. Other helper families
+and unresolved captures remain pending. `statement_contracts.py` separately
+checks exact selected catch/switch arms, including the original pattern and body,
+after verifying the precise first probe statement. Parser-derived complete
+String/Regex literal spans resolve compound-literal AST endpoints.
+
+`sil_context_contracts.py` compares complete original and transformed function
+SIL programs after a finite Bool-call contraction. It verifies the actual helper
+transfer, exact declared literal ID, exclusive SSA uses of String setup and
+cleanup, private lifetime, and the call's exact source location. Cross-block
+lifetimes require a fully known acyclic CFG, setup dominance and destruction
+postdominance; unknown shapes remain pending. Every retained
+instruction, ownership operation, function signature and CFG edge must match;
+only SSA/block spelling and debug locations are normalized. Quoted literal
+contents remain intact. This is a conditional retained-program fact: observer
+termination/disjoint effects, literal construction/resource behavior and complete
+whole-program equivalence remain explicit obligations.
+
+Local proof packets snapshot the exact implementation as well as compiler and
+source evidence. None of these rules accepts an approval supplied by a JSON file,
+removes registered outcomes, grants application approval or supplies runtime hits.
+
+`observer_callback_contracts.py` checks three complete private initialization SIL
+programs. Both higher-order calls must use the exact capture-free private
+callbacks, substitutions and error slots. The inner callback returns the unchanged
+String paired with zero UInt64 and never writes its Never error slot. Exact
+compiler-loaded Swift interface bytes bind the Collection typed-throws and
+Dictionary rethrows declarations. Under these language/library contracts, this
+establishes the narrow callback/error-transfer fact. It does not establish trap
+freedom, allocation behavior, locking, private pointer provenance or full observer
+noninterference. See the [Swift rethrows declaration rules](https://docs.swift.org/latest/documentation/the-swift-programming-language/declarations/).
+
+`registry_sil_contracts.py` derives the entire registry-initialization SIL program
+from the declared data. It checks fresh allocation/storage paths, every bounded
+array index, literal byte length, initializing store, ownership finalization and
+the final private Dictionary store. The pinned compiler demangler verifies the
+complete logical private declaration, including compressed identifier spellings.
+Unknown lowerings fail closed. Its conclusion depends on the stated Swift
+allocation/storage/literal ABI contracts and normal resource behavior; recorder
+mutation, synchronization and full observer noninterference remain separate.
+
+## Original runtime gap inventory
+
+Keep original LLVM exports separate from transformed diagnostics. Re-export with
+the exact unchanged instrumented binary and merged profile, retain their hashes
+and compiler/source bindings, and check for LLVM mismatch diagnostics. Profile
+files without embedded binary IDs cannot provide an independent binary-ID match.
+
+Original LCOV `DA` entries can identify zero-count source-line clusters; retain
+`LF`/`LH` and original LLVM summaries separately because emitted distinct line
+entries can differ from summary counts. Keep all zero-count function records,
+including compiler-generated closures and accessors, and mark missing file
+records unmeasured. No original line/function/region observation supplies absent
+Swift true/false branch outcomes or approves the experimental semantic gate.
+
+## Measurement identity and finite roles
+
+The production measurement digest (identity schema 2) binds owned source bytes,
+transformed bodies, site/outcome registry, metric roles, selected typed facts,
+compiler and bundled syntax-library hashes, and instrumentation/runtime sources.
+It excludes export-driver UUIDs, artifact locations and allocation IDs in raw
+compiler dumps. A separate preparation digest binds the complete per-run files,
+including both original/export driver hashes, instrumenter binary and raw typed
+artifacts. Runtime exports bind the execution digest, run ID and loaded image.
+Never rewrite old results to fit a new identity; regenerate preparation after a
+tool change. Two current hosted OS runs may share production identity while
+retaining distinct execution manifests and image artifacts.
+
+Every site has an explicit `metricRole` and `metricRule`. Atomic control/logical
+predicates are proposed source conditions. A direct nested logical expression is
+composite diagnostic; calls and closures are syntax boundaries, so a logical
+predicate inside `contains(where:)` does not replace the outer condition.
+Optional operations, errors, iterator-next observations and selected dispatch
+arms have separate operation/error/iteration/dispatch roles. For-in item/exhausted
+and switch/catch arm observations remain explicit mandatory coverage obligations.
+**All candidate sites/outcomes and all zero counters remain retained and checked.**
+No role filters the validator's missing-outcome list. The accepted branch
+denominator remains null until independent policy and source review.
+
+Optional receiver reads require original typed-AST-bound selected-declaration
+facts. Non-inout selected methods, explicit value loads, declared reference
+receivers and built-in tuple reads have finite rules; unknown mutating value
+methods/getters retain their original code and are unsupported. Syntax-only
+preparation cannot grant this permission. `prepare_certification.py` obtains
+read facts from the original typed extraction and binds/recomputes them before
+instrumentation.
+
+After independently coordinated hosted runs, combine their intact receipts:
+
+```sh
+python3 scripts/swift-coverage/aggregate_ios.py \
+  --run .local-private/hosted-ios18 --run .local-private/hosted-ios26 \
+  --output .local-private/hosted-combined-candidate-observations.json
+```
+
+The aggregator reconstructs the export driver and actual compile audit, verifies
+all raw receipts and image copies, requires equal frozen native inputs, and
+rejects duplicate execution IDs or source/driver/overlay drift. It performs no
+approval and does not modify original LLVM coverage. Its application/semantic
+approval fields stay false. Successful host controls are not actual iOS18/26
+runtime evidence.

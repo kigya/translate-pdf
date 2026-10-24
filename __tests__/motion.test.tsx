@@ -134,6 +134,17 @@ afterAll(() => {
   mockAppStateSpy.mockRestore();
 });
 
+it('starts icon motion while React Native has not yet supplied the foreground state', () => {
+  const previous = AppState.currentState;
+  AppState.currentState = null as unknown as typeof AppState.currentState;
+  try {
+    const view = render(<AppIcon active reduced={false} />);
+    expect(screen.getByRole('image', { name: 'Folivela' })).toBeOnTheScreen();
+    expect(mockRepeatCalls.length).toBeGreaterThan(0);
+    view.unmount();
+  } finally { AppState.currentState = previous; }
+});
+
 describe('onboarding illustration placement and motion', () => {
   it('centers the visible asymmetric progress illustration around the canvas midpoint', () => {
     render(<ProgressScene colors={palettes.light} active={false} reduced />);
@@ -569,7 +580,7 @@ describe('branded startup handoff', () => {
     const splash = screen.getByTestId('custom-splash-screen');
     expect(splash.props.style.backgroundColor).toBe('#C62828');
     const grain = screen.UNSAFE_getByType(GrainDrift);
-    expect(grain.props).toMatchObject({ grain: 0, speed: 3, active: AppState.currentState === 'active', reduceEffects: false });
+    expect(grain.props).toMatchObject({ grain: 0, speed: 3, active: (AppState.currentState ?? 'active') === 'active', reduceEffects: false });
     expect(grain.props.colors[0]).toBe(splash.props.style.backgroundColor);
     const splashStateListener = mockStateListeners.at(-1);
     expect(splashStateListener).toBeDefined();
@@ -596,7 +607,7 @@ describe('branded startup handoff', () => {
   it('cancels pending frame callbacks on unmount and uses static icon motion when reduced motion is enabled', () => {
     mockReducedMotion = true;
     const splash = renderBrandedSplash(jest.fn());
-    const icon = screen.getByTestId('app-motion-icon');
+    const icon = screen.getByTestId('folivela-splash-mark');
     expect(icon.parent?.props).toBeDefined();
     expect(mockRepeatCalls).toHaveLength(0);
     expect(screen.UNSAFE_getByType(GrainDrift).props).toMatchObject({ grain: 0, speed: 3, reduceEffects: true });
@@ -611,6 +622,7 @@ describe('branded startup handoff', () => {
   it('uses the system motion preference fallback when the preference is unavailable', () => {
     mockReducedMotion = null;
     const splash = renderBrandedSplash(jest.fn());
+    act(() => mockStateListeners.at(-1)?.('active'));
     expect(mockRepeatCalls.length).toBeGreaterThan(0);
     splash.unmount();
   });

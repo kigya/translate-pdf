@@ -1,0 +1,15 @@
+{
+  "repository": "notofonts/noto-fonts",
+  "revision": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+  "source": "hinted/ttf/NotoSans/NotoSans-Condensed.ttf",
+  "bytes": 562276,
+  "sha256": "5c15b8bb0ac1bbd533917b23968c6f0a420f143533e1293cc575f4f9dd543be8",
+  "unmodified": true,
+  "glyphCoverageExact": true,
+  "unicodeCodePoints": 2840,
+  "license": "SIL Open Font License 1.1; LICENSE.txt",
+  "assetName": "NotoSansCondensed-Regular.ttf",
+  "sourceUrl": "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSans/NotoSans-Condensed.ttf",
+  "fontCopyright": "Copyright 2015-2021 Google LLC. All Rights Reserved.",
+  "upstreamLicenseUrl": "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/LICENSE"
+}

@@ -5,8 +5,10 @@
   "libDir": "src/lib/kinetik",
   "installed": {
     "aurora-veil": "1.0.0",
+    "book-pocket": "1.0.0",
     "confetti-burst": "1.0.0",
     "empty-state": "1.0.0",
+    "fold-panel": "1.0.0",
     "grain-drift": "1.0.0",
     "kinetik-clock": "1.4.2",
     "kinetik-count": "1.4.2",
@@ -34,6 +36,7 @@
     "theme-switch": "1.0.0",
     "timeline": "1.0.0",
     "tip-bubble": "1.0.0",
+    "toast-stack": "1.0.0",
     "usage-meter": "1.0.0",
     "word-cascade": "1.0.0"
   }

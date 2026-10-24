@@ -24,10 +24,28 @@ internal object NativeCore {
   external fun exportDocx(source: String, segmentsJson: String, destination: String): String
   external fun readPage(path: String, index: Int): String
   external fun render(path: String, index: Int, width: Int): Bitmap
+  external fun setWeightRepackingAllowed(allowed: Boolean)
   external fun loadModel(path: String, context: Int, threads: Int, profile: String): String
+  external fun loadModelBatch(path: String, totalContext: Int, threads: Int, profile: String, maxSequences: Int): String
   external fun translate(text: String, glossary: String, context: String, sourceLanguage: String, targetLanguage: String): String
+  external fun translateForLayout(text: String, glossary: String, context: String, sourceLanguage: String, targetLanguage: String, layoutOptions: String): String
+  external fun translateBatch(
+    requestsJson: String,
+    glossary: String,
+    background: String,
+    sourceLanguage: String,
+    targetLanguage: String,
+    generation: Long,
+    callback: BatchCompletion,
+  ): String
   external fun releaseModel()
   external fun cancel()
+  external fun inferenceProgress(): String
   external fun exportPage(source: String, index: Int, blocksJson: String, destination: String, fontPath: String, cjkFontPath: String): String
   external fun mergePdf(pagesJson: String, destination: String): String
+}
+
+/** Synchronous worker callback: 1=durably committed/continue, 2=durably committed/stop, 0=reject/stop. */
+internal fun interface BatchCompletion {
+  fun onCompleted(responseJson: String): Int
 }

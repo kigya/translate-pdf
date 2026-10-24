@@ -22,6 +22,7 @@ import { DialogProvider } from '../src/ui/Dialog';
 import { createTranslator } from '../src/i18n/messages';
 import { ux } from '../src/i18n/ux';
 import { palettes } from '../src/ui/theme';
+import { ONLINE_MODEL } from '../src/domain/presentation';
 const native=PdfTranslator as jest.Mocked<typeof PdfTranslator>;
 const t=createTranslator('en'), base={ t, colors:palettes.light, locale:'en' as const };
 const model={ id:'one', label:'Pinned package', revision:'hash', tier:'compact', status:'ready', bytes:1e6, downloadedBytes:1e6, checksumPinned:true, translationEnabled:true, memoryEstimateEligible:true, diskEstimateEligible:true, licenseUrl:'https://example.com/license' } as ModelSnapshot;
@@ -44,37 +45,82 @@ it('finds language autonyms, English names, codes and unaccented text independen
 const models=(items:ModelSnapshot[],extra:object={})=><DialogProvider colors={base.colors}><ModelScreen {...base} snapshot={{...data,models:items}} onSelect={noop} onDownload={noop} onPause={noop} onDelete={noop} {...extra}/></DialogProvider>;
 beforeEach(()=>{jest.clearAllMocks();mockReduced=true;native.renderPage.mockResolvedValue('file:///source.png');native.renderTranslatedPage.mockResolvedValue('file:///translated.png');native.renderDocxPreview.mockResolvedValue({uri:'file:///preview.pdf',pageCount:2} as never);native.exportDocument.mockResolvedValue({id:'saved',uri:'file:///saved.docx',displayName:'saved.docx',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});native.getLicenseNotices.mockResolvedValue([]);native.getLicenseNotice.mockResolvedValue('Apache License');});
 afterEach(()=>jest.restoreAllMocks());
-it('offers one model info action without a score popup and keeps details to its name and license link',async()=>{
+it('hides package details while folded and keeps license access within its expanded panel',async()=>{
  jest.spyOn(Linking,'openURL').mockRejectedValue(new Error('offline'));
  render(models([model]));
  expect(screen.queryByText(t('qualityPending'))).toBeNull();
- expect(screen.getAllByRole('button',{name:/^Details:/})).toHaveLength(1);
- expect(screen.queryByRole('button',{name:/70%/})).toBeNull();
- fireEvent.press(screen.getByRole('button',{name:/Details: Pinned package/}));
+ expect(screen.getByRole('button',{name:/^Compact.*70%/})).toBeOnTheScreen();
+ expect(screen.queryByText('Pinned package')).toBeNull();
+ fireEvent.press(screen.getByRole('button',{name:/^Compact/}));
  expect(screen.getByRole('text',{name:'Pinned package'})).toBeOnTheScreen();
  expect(screen.queryByText('hash')).toBeNull();
  fireEvent.press(screen.getByRole('button',{name:'Licenses'}));
+ await waitFor(()=>expect(screen.getAllByRole('button',{name:'Licenses'})).toHaveLength(2));
+ fireEvent.press(screen.getAllByRole('button',{name:'Licenses'}).at(-1)!);
  expect((await screen.findAllByText(t('unknownError'))).length).toBeGreaterThan(0);
  fireEvent.press(screen.getAllByRole('button',{name:'Back'}).at(-1)!);
  expect(screen.queryByText('Pinned package')).toBeNull();
 });
+it('reveals the full local model name, license and download action only when its FoldPanel opens',()=>{
+ const download=jest.fn();
+ render(models([{...model,status:'paused'}],{onDownload:download}));
+ expect(screen.queryByText('Pinned package')).toBeNull();
+ fireEvent.press(screen.getByRole('button',{name:/^Compact/}));
+ expect(screen.getByRole('text',{name:'Pinned package'})).toBeOnTheScreen();
+ expect(screen.getByText('Apache License 2.0')).toBeOnTheScreen();
+ fireEvent.press(screen.getAllByRole('button',{name:'Resume'}).at(0)!);
+ expect(download).toHaveBeenCalledWith(expect.objectContaining({id:'one'}));
+ fireEvent.press(screen.getByRole('button',{name:/^Compact/}));
+ expect(screen.queryByText('Pinned package')).toBeNull();
+});
+it('keeps the Online panel to its tier label until expanded, then reveals MyMemory terms and one select action',()=>{
+ const select=jest.fn();
+ render(models([],{selected:model,onSelect:select}));
+ expect(screen.queryByText('MyMemory')).toBeNull();
+ fireEvent.press(screen.getByRole('button',{name:/^Online/}));
+ expect(screen.getByRole('text',{name:'MyMemory'})).toBeOnTheScreen();
+ expect(screen.getByText('MyMemory Terms')).toBeOnTheScreen();
+ fireEvent.press(screen.getByRole('button',{name:'Use this model'}));
+ expect(select).toHaveBeenCalledTimes(1);
+ fireEvent.press(screen.getByRole('button',{name:/^Online/}));
+ expect(screen.queryByText('MyMemory')).toBeNull();
+});
+it('opens the Online provider license from the expanded panel',async()=>{
+ const openURL=jest.spyOn(Linking,'openURL').mockResolvedValue(undefined);
+ render(models([]));
+ fireEvent.press(screen.getByRole('button',{name:/^Online/}));
+ fireEvent.press(screen.getByRole('button',{name:'Licenses'}));
+ const licenseActions=await screen.findAllByRole('button',{name:'Licenses'});
+ fireEvent.press(licenseActions.at(-1)!);
+ await waitFor(()=>expect(openURL).toHaveBeenCalledWith(ONLINE_MODEL.licenseUrl));
+});
+it('removes a ready local model from its single expanded model panel',()=>{
+ const remove=jest.fn();
+ render(models([model],{onDelete:remove}));
+ expect(screen.queryByRole('button',{name:'Remove model'})).toBeNull();
+ fireEvent.press(screen.getByRole('button',{name:/^Compact/}));
+ fireEvent.press(screen.getByRole('button',{name:'Remove model'}));
+ expect(remove).toHaveBeenCalledTimes(1);
+ expect(remove).toHaveBeenCalledWith(expect.objectContaining({id:'one'}));
+});
 it('shows advisory memory information, disk failures, verifying progress and zero-byte packages safely',async()=>{
  const view=render(models([{...model,memoryEstimateEligible:false,diskEstimateEligible:false,status:'not_downloaded'}]));
+ fireEvent.press(screen.getByRole('button',{name:/^Compact/}));
  fireEvent.press(screen.getByRole('button',{name:t('modelMemoryWarning')}));
  expect(screen.getByText(t('modelMemoryWarning'))).toBeOnTheScreen();
  fireEvent.press(screen.getAllByRole('button',{name:'Back'}).at(-1)!);
  expect(screen.getByText(t('modelResourceDisk'))).toBeOnTheScreen();
  view.rerender(models([{...model,status:'verifying',bytes:0,downloadedBytes:0}],{busy:true}));
- expect(screen.getByRole('button',{name:'Verifying file…'})).toBeDisabled();
+ expect(screen.getAllByRole('button',{name:/Verifying file/}).some(button=>button.props.accessibilityState?.busy===true && button.props.accessibilityState?.disabled===true)).toBe(true);
  view.rerender(models([{...model,status:'ready'}]));
- expect(screen.getAllByRole('button',{name:'Use this model'})).toHaveLength(2);
+ expect(screen.getAllByRole('button',{name:'Use this model'})).toHaveLength(1);
 });
 it('handles unsupported and unselected choices without promoting unavailable models',()=>{
  const select=jest.fn();
  render(models([{...model,translationEnabled:false},{...model,id:'b',status:'not_downloaded',licenseUrl:undefined,translationEnabled:false}],{onSelect:select}));
  expect(screen.getByText(ux('en','modelsUnavailable'))).toBeOnTheScreen();
- expect(screen.getAllByRole('button',{name:'Use this model'})).toHaveLength(1);
- expect(screen.getByText('MyMemory · Online')).toBeOnTheScreen();
+ expect(screen.queryByRole('button',{name:'Use this model'})).toBeNull();
+ expect(screen.queryByText('MyMemory')).toBeNull();
 });
 it('swaps a language pair and maintains distinct source/target selections from either sheet',()=>{
  const change=jest.fn();const props={...base,source:'en' as const,target:'ru' as const,onChange:change};const view=render(<PairPicker {...props}/>);
@@ -160,11 +206,11 @@ it('previews DOCX pages for the source and prepare flows and reports an unavaila
 it('uses the DOCX segment-count fallback for unindexed imports in the library and prepare flow', async()=>{
  const word={id:'legacy-word',name:'Legacy.docx',format:'docx',pageCount:4,importedAt:0} as DocumentSnapshot;
  const snapshot={...data,documents:[word],jobs:[]};
- render(<LibraryScreen {...base} snapshot={snapshot} onDocument={noop} onJob={noop} onTranslate={noop} onModel={noop} />);
- expect(screen.getByText('4 segments')).toBeOnTheScreen();
+ render(<LibraryScreen {...base} snapshot={snapshot} folder="all" onDocument={noop} onJob={noop} onTranslate={noop} onModel={noop} />);
+ expect(screen.getByText(/4\s+segments/)).toBeOnTheScreen();
  const props={...base,document:word,source:'en' as const,target:'ru' as const,terms:0,useGlossary:false,onUseGlossary:noop,onPair:noop,onDictionary:noop,onPreview:noop,onModel:noop,onStart:noop};
  render(<TranslationOptionsScreen {...props}/>);
- expect(screen.getByText('4 segments')).toBeOnTheScreen();
+ expect(screen.getByText(/4\s+segments/)).toBeOnTheScreen();
  await screen.findByLabelText('Original');
 });
 it('ignores render success and error from a preview that has already been left',async()=>{
@@ -194,9 +240,46 @@ it('routes all compact settings destinations and survives an unknown saved local
  const props={...base,snapshot:{...data,preferences:{...data.preferences,language:'unknown' as never}},onRoute:route,onTheme:theme,onPrivacy:privacy,onReplay:replay};
  render(<SettingsScreen {...props}/>);
  for(const [label,destination] of [['App language','language'],['Storage','storage'],['Dictionary','dictionary'],['Licenses','licenses']]) {fireEvent.press(screen.getByRole('button',{name:label}));expect(route).toHaveBeenLastCalledWith(destination);}
- fireEvent.press(screen.getByRole('radio',{name:'Dark'}));expect(theme).toHaveBeenCalledWith('dark');
+ fireEvent.press(screen.getByRole('switch',{name:'Appearance'}));expect(theme).toHaveBeenCalledWith('dark');
  fireEvent.press(screen.getByRole('button',{name:'Privacy'}));expect(privacy).toHaveBeenCalled();
  fireEvent.press(screen.getByRole('button',{name:'View tutorial'}));expect(replay).toHaveBeenCalled();
+});
+it('switches between follow-system and manual appearance and disables the control while busy',()=>{
+ const theme=jest.fn();
+ const props={...base,snapshot:data,onRoute:noop,onTheme:theme,onPrivacy:noop,onReplay:noop};
+ const view=render(<SettingsScreen {...props}/>);
+ const follow=screen.getByRole('switch',{name:'Use system appearance'});
+ expect(follow).toBeEnabled();
+ fireEvent(follow,'valueChange',false);
+ expect(theme).toHaveBeenCalledWith('light');
+ view.rerender(<SettingsScreen {...props} snapshot={{...data,preferences:{...data.preferences,theme:'light'}}}/>);
+ fireEvent(screen.getByRole('switch',{name:'Use system appearance'}),'valueChange',true);
+ expect(theme).toHaveBeenLastCalledWith('system');
+ view.rerender(<SettingsScreen {...props} busy snapshot={{...data,preferences:{...data.preferences,theme:'system'}}}/>);
+ expect(screen.getByRole('switch',{name:'Use system appearance'})).toBeDisabled();
+});
+it('renders a legacy settings snapshot with no saved theme and permits a manual theme choice',()=>{
+ const theme=jest.fn();
+ const legacy={...data,preferences:{language:'system'}} as unknown as BootstrapSnapshot;
+ render(<SettingsScreen {...base} snapshot={legacy} onRoute={noop} onTheme={theme} onPrivacy={noop} onReplay={noop}/>);
+ expect(screen.getByRole('switch',{name:'Use system appearance'}).props.accessibilityState).toEqual(expect.objectContaining({checked:false}));
+ fireEvent.press(screen.getByRole('switch',{name:'Appearance'}));
+ expect(theme).toHaveBeenCalledWith('dark');
+});
+it('uses the active dark palette when leaving system appearance from a legacy snapshot',()=>{
+ const theme=jest.fn();
+ const legacy={...data,preferences:{language:'system'}} as unknown as BootstrapSnapshot;
+ render(<SettingsScreen {...base} colors={palettes.dark} snapshot={legacy} onRoute={noop} onTheme={theme} onPrivacy={noop} onReplay={noop}/>);
+ fireEvent(screen.getByRole('switch',{name:'Use system appearance'}),'valueChange',false);
+ expect(theme).toHaveBeenCalledWith('dark');
+});
+it('hides Dictionary from translation options and Settings while Online is selected',()=>{
+ const options={...base,document:null,model:ONLINE_MODEL,source:'en' as const,target:'ru' as const,terms:2,useGlossary:true,onUseGlossary:noop,onPair:noop,onDictionary:noop,onPreview:noop,onModel:noop,onStart:noop};
+ render(<TranslationOptionsScreen {...options}/>);
+ expect(screen.queryByText('Dictionary')).toBeNull();
+ const route=jest.fn();
+ render(<SettingsScreen {...base} snapshot={data} selectedModel={ONLINE_MODEL} onRoute={route} onTheme={noop} onPrivacy={noop} onReplay={noop}/>);
+ expect(screen.queryByRole('button',{name:'Dictionary'})).toBeNull();
 });
 it('keeps a dictionary editor open after a failed save and lets the user dismiss it',async()=>{
  const save=jest.fn().mockResolvedValue(undefined);
@@ -212,6 +295,33 @@ it('keeps a dictionary editor open after a failed save and lets the user dismiss
  fireEvent.press(screen.getByRole('button',{name:'Save term'}));await waitFor(()=>expect(save).toHaveBeenCalledWith('pump','насос',undefined));
  expect(screen.getByLabelText('Source term')).toHaveDisplayValue('  pump  ');
  fireEvent.press(screen.getAllByRole('button',{name:'Back'}).at(-1)!);expect(screen.queryByLabelText('Source term')).toBeNull();
+});
+it('filters dictionary entries by pair and search, then edits and deletes the selected entry',()=>{
+ const save=jest.fn().mockResolvedValue(undefined),remove=jest.fn(),change=jest.fn();
+ const entries=[
+  {id:'pump',source:'pump',target:'насос',sourceLanguage:'en',targetLanguage:'ru'},
+  {id:'valve',source:'valve',target:'клапан',sourceLanguage:'en',targetLanguage:'ru'},
+  {id:'bonjour',source:'bonjour',target:'здравствуйте',sourceLanguage:'fr',targetLanguage:'ru'},
+ ] as BootstrapSnapshot['glossary'];
+ const view=render(<DictionaryScreen {...base} entries={entries} source="en" target="ru" onPair={change} onSave={save} onDelete={remove}/>);
+ expect(screen.getByText('pump')).toBeOnTheScreen();
+ expect(screen.getByText('valve')).toBeOnTheScreen();
+ expect(screen.queryByText('bonjour')).toBeNull();
+ fireEvent.changeText(screen.getByLabelText('Search'),'PUMP');
+ expect(screen.getByText('pump')).toBeOnTheScreen();
+ expect(screen.queryByText('valve')).toBeNull();
+ fireEvent.changeText(screen.getByLabelText('Search'),'no match');
+ expect(screen.queryByText('pump')).toBeNull();
+ fireEvent.changeText(screen.getByLabelText('Search'),'');
+ fireEvent.press(screen.getByRole('button',{name:'Edit term: pump'}));
+ expect(screen.getByLabelText('Source term')).toHaveDisplayValue('pump');
+ fireEvent.changeText(screen.getByLabelText('Target term'),'помпа');
+ fireEvent.press(screen.getByRole('button',{name:'Save term'}));
+ expect(save).toHaveBeenCalledWith('pump','помпа','pump');
+ fireEvent.press(screen.getByRole('button',{name:'Remove term: valve'}));
+ expect(remove).toHaveBeenCalledWith('valve');
+ view.rerender(<DictionaryScreen {...base} entries={[]} source="en" target="ru" onPair={change} onSave={save} onDelete={remove}/>);
+ expect(screen.getByText(ux('en','dictionaryEmpty'))).toBeOnTheScreen();
 });
 it('does not apply a stale options thumbnail after the document changes or the screen is left',async()=>{
  let resolve!:(v:string)=>void;native.renderPage.mockReturnValue(new Promise(r=>{resolve=r;}));
@@ -233,9 +343,10 @@ it('keeps cleanup available for a newly started zero-byte transfer and disables 
 it('animates a newly discovered ready model without celebrating an already-ready inventory',()=>{
  mockReduced=false;const view=render(models([model]));
  view.rerender(models([{...model,id:'new-ready'}]));
- expect(screen.getByText('Ready on this device')).toBeOnTheScreen();
+ expect(screen.getByRole('button',{name:/^Compact.*Ready on this device/})).toBeOnTheScreen();
  mockReduced=undefined;
  view.rerender(models([{...model,id:'unknown-reduced'}]));
+ fireEvent.press(screen.getByRole('button',{name:/^Compact/}));
  expect(screen.getAllByRole('button',{name:'Use this model'}).at(-1)).toBeEnabled();
 });
 
@@ -368,8 +479,38 @@ it('ignores a DOCX preview or page raster that resolves after leaving the result
 
 it('opens one MyMemory details action with its name and service terms', async () => {
  render(<ModelScreen {...base} snapshot={data} selected={null} onSelect={noop} onDownload={noop} onPause={noop} onDelete={noop}/>);
- fireEvent.press(screen.getAllByRole('button',{name:'Details'})[0]);
+ expect(screen.queryByText('MyMemory')).toBeNull();
+ fireEvent.press(screen.getByRole('button',{name:/^Online/}));
  expect(await screen.findByRole('text',{name:'MyMemory'})).toBeOnTheScreen();
  expect(screen.getByRole('button',{name:'Licenses'})).toBeOnTheScreen();
  expect(screen.queryByText('0 B')).toBeNull();
+});
+
+it('shows the Gemma license and keeps download, pause and retry actions mutually exclusive', () => {
+ const gemma={...model,label:'Gemma package',licenseUrl:'https://example.com/gemma-terms',status:'not_downloaded' as const,downloadedBytes:0};
+ const download=jest.fn(),pause=jest.fn();
+ const view=render(models([gemma],{onDownload:download,onPause:pause}));
+ fireEvent.press(screen.getByRole('button',{name:/^Compact/}));
+ expect(screen.getByText('Gemma Terms of Use')).toBeOnTheScreen();
+ fireEvent.press(screen.getByRole('button',{name:t('acceptAndDownload')}));
+ expect(download).toHaveBeenCalledWith(expect.objectContaining({id:'one'}));
+ expect(screen.queryByRole('button',{name:t('pause')})).toBeNull();
+
+ view.rerender(models([{...gemma,status:'downloading',downloadedBytes:500_000}],{onDownload:download,onPause:pause}));
+ expect(screen.getByText(/500 KB \/ 1 MB · 50%/)).toBeOnTheScreen();
+ fireEvent.press(screen.getByRole('button',{name:t('pause')}));
+ expect(pause).toHaveBeenCalledWith(expect.objectContaining({id:'one'}));
+ view.rerender(models([{...gemma,status:'error',error:'checksum mismatch'}],{onDownload:download,onPause:pause}));
+ expect(screen.getByText('checksum mismatch')).toBeOnTheScreen();
+ expect(screen.getByRole('button',{name:t('acceptAndDownload')})).toBeOnTheScreen();
+ expect(screen.queryByRole('button',{name:t('pause')})).toBeNull();
+});
+
+it('opens license details without inventing a license link for a model that has no URL', async () => {
+ const unlicensed={...model,label:'Unlicensed test model',licenseUrl:undefined};
+ render(models([unlicensed]));
+ fireEvent.press(screen.getByRole('button',{name:/^Compact/}));
+ fireEvent.press(screen.getByRole('button',{name:'Licenses'}));
+ expect(await screen.findAllByRole('text',{name:'Unlicensed test model'})).toHaveLength(2);
+ expect(screen.getAllByRole('button',{name:'Licenses'})).toHaveLength(1);
 });

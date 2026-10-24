@@ -167,6 +167,9 @@ class NativeSliceQaActivity : Activity() {
   }
 
   private fun runCheck(modelId: String, sourceLanguage: String, targetLanguage: String) {
+    val threads = intent.getIntExtra("threads", 4).coerceIn(1, 4)
+    if (intent.getBooleanExtra("backgroundPriority", true)) android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+    val memo = LocalTranslationMemo(translateNative = NativeCore::translate)
     val outputDirectory = File(filesDir, "qa").apply { mkdirs() }
     val input = File(outputDirectory, "source.pdf")
     val resultFile = File(outputDirectory, "result.json")
@@ -218,6 +221,7 @@ class NativeSliceQaActivity : Activity() {
         .put("pageCount", inspected.getInt("pageCount")).put("processedPages", 1)
 
       val page = JSONObject(NativeCore.readPage(input.absolutePath, 0)).throwOnNativeError("Reading the first page failed.")
+      preserveCoordinateSpaceMetadata(page, metadata)
       val width = page.getDouble("width").toFloat()
       val height = page.getDouble("height").toFloat()
       require(width > 0 && height > 0) { "The test page has invalid geometry." }
@@ -252,6 +256,8 @@ class NativeSliceQaActivity : Activity() {
         .put("externalMemoryMeasurementRequired", true)
         .put("memorySampleLimitation", "Use external dumpsys meminfo for process peak; sampled totalPss under-reported mapped/native model memory in the prior device run.")
       metadata.put("resourceEstimateBlocksTranslation", false)
+      val weightRepackingAllowed = WeightRepackingPolicy.shouldAllow(modelFile.length(), memory.totalMem)
+      metadata.put("weightRepackingAllowed", weightRepackingAllowed)
       sampler = Thread({
         val manager = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
         while (!stopSampler.get()) {
@@ -261,13 +267,16 @@ class NativeSliceQaActivity : Activity() {
               val previous = peakPssKb.get()
               if (current <= previous || peakPssKb.compareAndSet(previous, current)) break
             }
+            writeAtomically(File(outputDirectory, "activity.json"), JSONObject(NativeCore.inferenceProgress())
+              .put("observedAt", System.currentTimeMillis()).put("processPssKb", current).toString())
             Thread.sleep(500)
           } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
           catch (_: Exception) { Thread.sleep(500) }
         }
       }, "native-qa-memory-sampler").apply { isDaemon = true; start() }
       markPhase("model_load")
-      val load = JSONObject(NativeCore.loadModel(modelFile.absolutePath, 2048, 4, model.profile)).throwOnNativeError("Loading the model failed.")
+      NativeCore.setWeightRepackingAllowed(weightRepackingAllowed)
+      val load = JSONObject(NativeCore.loadModel(modelFile.absolutePath, 2048, threads, model.profile)).throwOnNativeError("Loading the model failed.")
       metadata.put("modelLoad", load)
       markPhase("inference")
       metadata.put("currentBlockIndex", 0).put("blockMetrics", JSONArray())
@@ -275,12 +284,14 @@ class NativeSliceQaActivity : Activity() {
 
       var translatedCount = 0
       var failedCount = 0
-      for (index in 0 until blocks.length()) {
+      val controlBlocks = intent.getIntExtra("maxBlocks", blocks.length()).coerceIn(1, blocks.length())
+      metadata.put("controlBlocks", controlBlocks).put("workerNice", android.os.Process.getThreadPriority(android.os.Process.myTid()))
+      for (index in 0 until controlBlocks) {
         val block = blocks.getJSONObject(index)
         val sourceText = block.optString("sourceText").trim()
         if (sourceText.isEmpty()) continue
         try {
-          val translation = JSONObject(NativeCore.translate(sourceText, glossaryText, page.optString("context").take(2_000), sourceLanguage, targetLanguage))
+          val translation = JSONObject(memo.translate(sourceText, glossaryText, page.optString("context").take(2_000), sourceLanguage, targetLanguage))
             .throwOnNativeError("The model did not translate a block.")
           val text = translation.optString("text").trim()
           require(text.isNotEmpty()) { "The model returned an empty translation." }
@@ -288,6 +299,7 @@ class NativeSliceQaActivity : Activity() {
           translatedCount++
           metadata.getJSONArray("blockMetrics").put(JSONObject()
             .put("index", index).put("status", "translated").put("tokens", translation.optInt("tokens"))
+            .put("cacheHit", translation.optBoolean("cacheHit")).put("inputTokens", translation.optInt("inputTokens")).put("cachedInputTokens", translation.optInt("cachedInputTokens"))
             .put("seconds", translation.optDouble("seconds")).put("tokensPerSecond", translation.optDouble("tokensPerSecond")))
         } catch (error: Exception) {
           block.put("translatedText", JSONObject.NULL).put("status", "failed")
@@ -383,21 +395,26 @@ class NativeSliceQaActivity : Activity() {
     val native = page.optJSONArray("blocks") ?: JSONArray()
     for (index in 0 until native.length()) {
       val raw = native.getJSONObject(index)
-      blocks.put(JSONObject().put("id", raw.optString("id", "native-$index"))
+      val block = JSONObject().put("id", raw.optString("id", "native-$index"))
         .put("sourceText", raw.optString("text", raw.optString("sourceText", "")))
         .put("translatedText", JSONObject.NULL).put("left", raw.optDouble("left"))
         .put("top", raw.optDouble("top")).put("right", raw.optDouble("right"))
         .put("bottom", raw.optDouble("bottom")).put("fontSize", raw.optDouble("fontSize", 10.0))
         .put("source", "native").put("objectIndex", if (raw.isNull("objectIndex")) JSONObject.NULL else raw.optInt("objectIndex"))
         .put("objectIndices", raw.optJSONArray("objectIndices") ?: JSONArray().apply { if (!raw.isNull("objectIndex")) put(raw.optInt("objectIndex")) })
-        .put("status", "pending"))
+        .put("status", "pending")
+      if (raw.has("coordinateSpaceVersion")) block.put("coordinateSpaceVersion", raw.get("coordinateSpaceVersion"))
+      if (raw.has("partialCrop")) block.put("partialCrop", raw.get("partialCrop"))
+      blocks.put(block)
     }
     val bitmap = NativeCore.render(path, 0, 1800)
     try {
       val lines = ocr.recognize(bitmap, pageWidth, pageHeight)
+      val nativeCount = blocks.length()
       for (index in 0 until lines.length()) {
         val line = lines.getJSONObject(index)
-        val matched = overlappingNative(blocks, line.optDouble("left").toFloat(), line.optDouble("top").toFloat(),
+        val matched = matchingNative(blocks, nativeCount, line,
+          line.optDouble("left").toFloat(), line.optDouble("top").toFloat(),
           line.optDouble("right").toFloat(), line.optDouble("bottom").toFloat())
         if (matched == null) blocks.put(line)
         else if (OcrOutcome.disagrees(matched.optString("sourceText"), line.optString("sourceText"))) {
@@ -408,23 +425,47 @@ class NativeSliceQaActivity : Activity() {
     return blocks
   }
 
-  private fun overlappingNative(blocks: JSONArray, left: Float, top: Float, right: Float, bottom: Float): JSONObject? {
+  private fun preserveCoordinateSpaceMetadata(page: JSONObject, metadata: JSONObject) {
+    if (page.has("coordinateSpaceVersion")) metadata.put("coordinateSpaceVersion", page.get("coordinateSpaceVersion"))
+  }
+
+  private fun matchingNative(blocks: JSONArray, nativeCount: Int, line: JSONObject,
+                             left: Float, top: Float, right: Float, bottom: Float): JSONObject? {
     var best: JSONObject? = null
     var bestOverlap = 0f
-    for (index in 0 until blocks.length()) {
+    var containedTextMatch: JSONObject? = null
+    var containedArea = Float.POSITIVE_INFINITY
+    val lineText = normalizeComparisonText(line.optString("sourceText"))
+    for (index in 0 until nativeCount) {
       val block = blocks.getJSONObject(index)
-      val overlap = (minOf(right, block.optDouble("right").toFloat()) - maxOf(left, block.optDouble("left").toFloat())).coerceAtLeast(0f) *
-        (minOf(bottom, block.optDouble("bottom").toFloat()) - maxOf(top, block.optDouble("top").toFloat())).coerceAtLeast(0f)
-      val area = maxOf((right - left) * (bottom - top),
-        (block.optDouble("right") - block.optDouble("left")).toFloat() * (block.optDouble("bottom") - block.optDouble("top")).toFloat(), 1f)
-      val overlapRatio = overlap / area
+      val l = block.optDouble("left").toFloat(); val t = block.optDouble("top").toFloat()
+      val r = block.optDouble("right").toFloat(); val b = block.optDouble("bottom").toFloat()
+      val overlap = (minOf(right, r) - maxOf(left, l)).coerceAtLeast(0f) *
+        (minOf(bottom, b) - maxOf(top, t)).coerceAtLeast(0f)
+      val nativeArea = maxOf((r - l) * (b - t), 1f)
+      val lineArea = maxOf((right - left) * (bottom - top), 1f)
+      val overlapRatio = overlap / maxOf(nativeArea, lineArea)
       if (overlapRatio > 0.45f && overlapRatio > bestOverlap) {
         best = block
         bestOverlap = overlapRatio
       }
+      val nativeText = normalizeComparisonText(block.optString("sourceText"))
+      if (left >= l && top >= t && right <= r && bottom <= b && lineText.length >= 4 &&
+        nativeText.contains(lineText) && nativeArea < containedArea) {
+        containedTextMatch = block
+        containedArea = nativeArea
+      }
     }
-    return best
+    return containedTextMatch ?: best
   }
+
+  private fun normalizeComparisonText(text: String): String =
+    java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFC)
+      .lowercase(java.util.Locale.ROOT)
+      .map { if (it.isWhitespace() || Character.isSpaceChar(it) || Character.isISOControl(it)) ' ' else it }
+      .joinToString("")
+      .replace(Regex(" +"), " ")
+      .trim()
 
   private fun JSONObject.throwOnNativeError(fallback: String): JSONObject {
     if (has("error")) throw IllegalStateException(optString("error", fallback))

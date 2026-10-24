@@ -10,6 +10,7 @@ require Pod::Executable.execute_command('node', ['-p',
   )', __dir__]).strip
 
 platform :ios, '17.0'
+raise 'Native resources could not be synchronized' unless system('bash', File.join(__dir__, 'scripts/sync-license-resources.sh'))
 prepare_react_native_project!
 
 linkage = ENV['USE_FRAMEWORKS']
@@ -29,6 +30,10 @@ target 'TranslatePDF' do
     # An absolute path to your application root.
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
+
+  target 'TranslatePDFNativeCoverageTests' do
+    inherit! :search_paths
+  end
 
   post_install do |installer|
     react_native_post_install(

@@ -5,12 +5,35 @@ import SwiftParser
 import SwiftOperators
 import SwiftIfConfig
 
-struct Site: Codable { let id: Int; let kind: String; let startUTF8: Int; let endUTF8: Int; let outcomes: [String] }
+struct Site: Codable {
+  let id: Int; let kind: String; let startUTF8: Int; let endUTF8: Int; let outcomes: [String]
+  var metricRole: String
+  var metricRule: String
+  init(id: Int, kind: String, startUTF8: Int, endUTF8: Int, outcomes: [String]) {
+    self.id=id; self.kind=kind; self.startUTF8=startUTF8; self.endUTF8=endUTF8; self.outcomes=outcomes
+    switch kind {
+    case "condition", "ternary-condition", "logical-left", "logical-right", "for-where", "optional-binding", "implicit-optional-binding", "availability":
+      metricRole="source-condition"; metricRule="atomic-control-or-logical-operand-v1"
+    case "throwing-expression": metricRole="error-diagnostic"; metricRule="throw-is-not-a-boolean-condition-v1"
+    case "iterator-next": metricRole="iteration-diagnostic"; metricRule="for-in-next-observation-v1"
+    case "catch-pattern", "catch-all", "switch-dispatch", "switch-pattern-dispatch":
+      metricRole="dispatch-diagnostic"; metricRule="selected-arm-is-not-a-predicate-pair-v1"
+    case "optional-chain-base", "conditional-cast", "coalescing-left", "type-check":
+      metricRole="operation-diagnostic"; metricRule="operation-distinct-from-control-predicate-v1"
+    default: metricRole="unmapped-blocker"; metricRule="unknown-kind-blocks-attribution-v1"
+    }
+  }
+}
 struct Unsupported: Codable { let kind: String; let startUTF8: Int; let endUTF8: Int; let reason: String; let contextDeclarations: [String] }
 struct Edit { let start: Int; let end: Int; let id: Int; let prefix: String; let suffix: String }
-struct Configuration: Codable { let os: String; let arch: String; let environment: String?; let defines: [String]; let languageVersion: [Int]; let compilerVersion: [Int] }
+struct TypingHint: Codable { let siteStartUTF8: Int; let expressionStartUTF8: Int; let endUTF8: Int; let type: String }
+struct ChainReadHint: Codable { let startUTF8: Int; let endUTF8: Int; let selectedDeclaration: String; let selectedType: String; let receiverType: String; let rule: String }
+struct ChainReadRequest: Codable { let startUTF8: Int; let endUTF8: Int }
+struct Configuration: Codable { let os: String; let arch: String; let environment: String?; let defines: [String]; let languageVersion: [Int]; let compilerVersion: [Int]; let typingHints: [TypingHint]?; let chainReadHints: [ChainReadHint]? }
 struct Replacement { let start: Int; let end: Int; let text: String }
-struct Region: Codable { let startUTF8: Int; let endUTF8: Int; let state: String }
+struct Region: Codable { let startUTF8: Int; let endUTF8: Int; let state: String; let condition: String? }
+struct SourceMapSegment: Codable { let originalStartUTF8: Int; let originalEndUTF8: Int; let transformedStartUTF8: Int; let transformedEndUTF8: Int }
+struct InsertedSegment: Codable { let siteID: Int; let originalPositionUTF8: Int; let transformedStartUTF8: Int; let transformedEndUTF8: Int; let role: String }
 
 final class Inventory: SyntaxAnyVisitor {
   var sites: [Site] = []
@@ -25,6 +48,9 @@ final class Inventory: SyntaxAnyVisitor {
   var syntaxCounts: [String:Int] = [:]
   var regions: ConfiguredRegions?
   var configurationRegions: [Region] = []
+  var typingHints: [TypingHint] = []
+  var chainReadHints: [ChainReadHint] = []
+  var chainReadRequests: [ChainReadRequest] = []
   let namespace: String
   var usedIdentifiers: Set<String>
   init(namespace: String, usedIdentifiers: Set<String>) { self.namespace = namespace; self.usedIdentifiers = usedIdentifiers; super.init(viewMode:.sourceAccurate) }
@@ -68,6 +94,22 @@ final class Inventory: SyntaxAnyVisitor {
           list.parent?.is(WhileStmtSyntax.self) == true else { return false }
     return true
   }
+  // Follow only the direct expression spine. Calls, arguments and closures are
+  // semantic boundaries: a logical expression in contains(where:) does not
+  // replace the enclosing contains predicate.
+  func hasLogicalRoot(_ expr: ExprSyntax) -> Bool {
+    if let infix=expr.as(InfixOperatorExprSyntax.self) {
+      return ["&&","||"].contains(infix.operator.trimmedDescription)
+    }
+    if let prefix=expr.as(PrefixOperatorExprSyntax.self), prefix.operator.text == "!" {
+      return hasLogicalRoot(prefix.expression)
+    }
+    if let tuple=expr.as(TupleExprSyntax.self), tuple.elements.count == 1,
+       let element=tuple.elements.first, element.label == nil {
+      return hasLogicalRoot(element.expression)
+    }
+    return false
+  }
   func wrap(_ expr: ExprSyntax, kind: String, helper: String = "boolean", outcomes: [String] = ["false", "true"]) {
     if kind == "condition", isStructuralTrueLoop(expr) {
       structural.append(Unsupported(kind:"condition",startUTF8:expr.positionAfterSkippingLeadingTrivia.utf8Offset,endUTF8:expr.endPositionBeforeTrailingTrivia.utf8Offset,reason:"Literal while true is a structural unconditional loop. No false owned source continuation exists; break/return/throw decisions remain independently measured.",contextDeclarations:contexts(expr)))
@@ -77,6 +119,10 @@ final class Inventory: SyntaxAnyVisitor {
     let end = expr.endPositionBeforeTrailingTrivia.utf8Offset
     let id = sites.count
     sites.append(Site(id: id, kind: kind, startUTF8: start, endUTF8: end, outcomes: outcomes))
+    if ["condition","logical-left","logical-right","ternary-condition","for-where"].contains(kind), hasLogicalRoot(expr) {
+      sites[id].metricRole="composite-diagnostic"
+      sites[id].metricRule="direct-logical-expression-spine-v1"
+    }
     edits.append(Edit(start:start,end:end,id:id,prefix:"__FBCov.\(helper)(\"\(namespace):\(id)\", ",suffix:")"))
   }
   func catchCondition(_ handler: CatchClauseSyntax, errorName: String) -> (String,String,String)? {
@@ -142,7 +188,10 @@ final class Inventory: SyntaxAnyVisitor {
       else {
         let id = sites.count
         sites.append(Site(id:id,kind:"throwing-expression",startUTF8:node.positionAfterSkippingLeadingTrivia.utf8Offset,endUTF8:node.endPositionBeforeTrailingTrivia.utf8Offset,outcomes:["success","error"]))
-        edits.append(Edit(start:attempt.expression.positionAfterSkippingLeadingTrivia.utf8Offset,end:attempt.expression.endPositionBeforeTrailingTrivia.utf8Offset,id:id,prefix:"__FBCov.attempt(\"\(namespace):\(id)\", try ",suffix:")"))
+        let hints = typingHints.filter { $0.siteStartUTF8 == node.positionAfterSkippingLeadingTrivia.utf8Offset }
+        let typedAny = hints.count == 1 && hints[0].type == "Any" && attempt.questionOrExclamationMark?.text == "?" && hints[0].expressionStartUTF8 == attempt.expression.positionAfterSkippingLeadingTrivia.utf8Offset && hints[0].endUTF8 == attempt.expression.endPositionBeforeTrailingTrivia.utf8Offset
+        if !hints.isEmpty && !typedAny { reject(node,"Typed result hint does not match the exact supported original Any-returning optional try expression") }
+        edits.append(Edit(start:attempt.expression.positionAfterSkippingLeadingTrivia.utf8Offset,end:attempt.expression.endPositionBeforeTrailingTrivia.utf8Offset,id:id,prefix:(typedAny ? "(" : "") + "__FBCov.attempt(\"\(namespace):\(id)\", try ",suffix:typedAny ? ") as Any)" : ")"))
       }
     }
     if let dispatch = node.as(SwitchExprSyntax.self) {
@@ -199,6 +248,8 @@ final class Inventory: SyntaxAnyVisitor {
       }
     }
     if let chain = node.as(OptionalChainingExprSyntax.self) {
+      let request=ChainReadRequest(startUTF8:chain.positionAfterSkippingLeadingTrivia.utf8Offset,endUTF8:chain.endPositionBeforeTrailingTrivia.utf8Offset)
+      chainReadRequests.append(request)
       var parent = node.parent
       var unsafe = false
       while let ancestor = parent {
@@ -211,7 +262,12 @@ final class Inventory: SyntaxAnyVisitor {
         parent = ancestor.parent
       }
       if unsafe { reject(node,"Optional-chain lvalue/inout cannot be changed into a temporary read") }
-      else { wrap(chain.expression,kind:"optional-chain-base",helper:"optional",outcomes:["nil","some"]) }
+      else {
+        let hints=chainReadHints.filter {$0.startUTF8 == request.startUTF8 && $0.endUTF8 == request.endUTF8}
+        if hints.count == 1 && !hints[0].selectedDeclaration.isEmpty && !hints[0].receiverType.contains("inout") && !hints[0].selectedType.contains("inout") {
+          wrap(chain.expression,kind:"optional-chain-base",helper:"optional",outcomes:["nil","some"])
+        } else { reject(node,"Optional-chain receiver needs original typed selected-declaration/read proof; mutating calls/getters must retain writeback") }
+      }
     }
     if let cast = node.as(AsExprSyntax.self) {
       if cast.questionOrExclamationMark?.text == "?" { wrap(ExprSyntax(cast),kind:"conditional-cast",helper:"optional",outcomes:["nil","some"]) }
@@ -249,7 +305,7 @@ final class Inventory: SyntaxAnyVisitor {
     return .visitChildren
   }
 }
-struct Output: Codable { let schemaVersion = 1; let sites: [Site]; let unsupported: [Unsupported]; let reviewRequired: [Unsupported]; let structural: [Unsupported]; let syntaxCounts: [String:Int]; let configurationRegions: [Region]; let semanticStatus = "requires-typed-validation" }
+struct Output: Codable { let schemaVersion = 1; let sites: [Site]; let unsupported: [Unsupported]; let reviewRequired: [Unsupported]; let structural: [Unsupported]; let syntaxCounts: [String:Int]; let configurationRegions: [Region]; let sourceMap: [SourceMapSegment]; let insertedSegments: [InsertedSegment]; let chainReadRequests: [ChainReadRequest]; let semanticStatus = "requires-typed-validation" }
 do {
   guard CommandLine.arguments.count == 6 else { throw NSError(domain:"SwiftBranch",code:1,userInfo:[NSLocalizedDescriptionKey:"usage: instrument INPUT OUTPUT AST_MANIFEST NAMESPACE"]) }
   let input = CommandLine.arguments[1], output = CommandLine.arguments[2], manifest = CommandLine.arguments[3], namespace = CommandLine.arguments[4]
@@ -259,15 +315,19 @@ do {
   guard !parsed.hasError else { throw NSError(domain:"SwiftBranch",code:3,userInfo:[NSLocalizedDescriptionKey:"source parse error"]) }
   let folded = try OperatorTable.standardOperators.foldAll(parsed)
   let identifiers = Set(folded.tokens(viewMode:.sourceAccurate).map { $0.text.trimmingCharacters(in:CharacterSet(charactersIn:"`")) })
+  let reserved: Set<String> = ["__FBCov", "__FBCovImageMarker", "__fbRegistry", "__fbDigest", "__fbDeclaredModule"]
+  guard identifiers.isDisjoint(with:reserved) else { throw NSError(domain:"SwiftBranch",code:7,userInfo:[NSLocalizedDescriptionKey:"Original source uses a reserved recorder identifier"]) }
   let inventory = Inventory(namespace:namespace,usedIdentifiers:identifiers)
   if CommandLine.arguments[5] != "-" {
     let data = try Data(contentsOf:URL(fileURLWithPath:CommandLine.arguments[5]))
     let configuration = try JSONDecoder().decode(Configuration.self,from:data)
+    inventory.typingHints = configuration.typingHints ?? []
+    inventory.chainReadHints = configuration.chainReadHints ?? []
     let config = StaticBuildConfiguration(customConditions:Set(configuration.defines),targetOSs:[configuration.os],targetArchitectures:[configuration.arch],targetEnvironments:Set(configuration.environment.map {[$0]} ?? []),targetObjectFileFormats:["MachO"],targetAtomicBitWidths:[8,16,32,64],languageVersion:VersionTuple(components:configuration.languageVersion),compilerVersion:VersionTuple(components:configuration.compilerVersion))
     let regions = folded.configuredRegions(in:config)
     guard regions.diagnostics.isEmpty else { throw NSError(domain:"SwiftBranch",code:6,userInfo:[NSLocalizedDescriptionKey:"Conditional-compilation diagnostics: \(regions.diagnostics)"]) }
     inventory.regions = regions
-    inventory.configurationRegions = regions.map { Region(startUTF8:$0.ifClause.positionAfterSkippingLeadingTrivia.utf8Offset,endUTF8:$0.ifClause.endPositionBeforeTrailingTrivia.utf8Offset,state:String(describing:$0.state)) }
+    inventory.configurationRegions = regions.map { Region(startUTF8:$0.ifClause.positionAfterSkippingLeadingTrivia.utf8Offset,endUTF8:$0.ifClause.endPositionBeforeTrailingTrivia.utf8Offset,state:String(describing:$0.state),condition:$0.ifClause.condition?.trimmedDescription) }
   }
   inventory.walk(folded)
   let bytes = Array(source.utf8)
@@ -275,19 +335,40 @@ do {
   let starts = Dictionary(grouping:inventory.edits,by:{$0.start})
   let ends = Dictionary(grouping:inventory.edits,by:{$0.end})
   var data = Data()
+  var sourceMap: [SourceMapSegment] = []
+  var insertedSegments: [InsertedSegment] = []
+  var copiedOriginalStart: Int? = nil
+  var copiedTransformedStart = 0
+  func finishCopiedSegment(_ originalEnd: Int) {
+    if let originalStart = copiedOriginalStart {
+      sourceMap.append(SourceMapSegment(originalStartUTF8:originalStart,originalEndUTF8:originalEnd,transformedStartUTF8:copiedTransformedStart,transformedEndUTF8:data.count))
+      copiedOriginalStart = nil
+    }
+  }
+  func insert(_ text: String, _ edit: Edit, _ position: Int, _ role: String) {
+    if text.isEmpty { return }
+    finishCopiedSegment(position)
+    let start = data.count
+    data.append(Data(text.utf8))
+    insertedSegments.append(InsertedSegment(siteID:edit.id,originalPositionUTF8:position,transformedStartUTF8:start,transformedEndUTF8:data.count,role:role))
+  }
   let replacementStarts = Dictionary(uniqueKeysWithValues:inventory.replacements.map { ($0.start,$0) })
   var skipUntil = -1
   for position in 0...bytes.count {
     if position < skipUntil { continue }
-    if let replacement = replacementStarts[position] { data.append(Data(replacement.text.utf8)); skipUntil = replacement.end; continue }
-    for edit in (ends[position] ?? []).sorted(by: { $0.start == $1.start ? $0.id > $1.id : $0.start > $1.start }) { data.append(Data(edit.suffix.utf8)) }
-    for edit in (starts[position] ?? []).sorted(by: { $0.end == $1.end ? $0.id < $1.id : $0.end > $1.end }) { data.append(Data(edit.prefix.utf8)) }
-    if position < bytes.count { data.append(bytes[position]) }
+    if let replacement = replacementStarts[position] { finishCopiedSegment(position); data.append(Data(replacement.text.utf8)); skipUntil = replacement.end; continue }
+    for edit in (ends[position] ?? []).sorted(by: { $0.start == $1.start ? $0.id > $1.id : $0.start > $1.start }) { insert(edit.suffix,edit,position,"suffix") }
+    for edit in (starts[position] ?? []).sorted(by: { $0.end == $1.end ? $0.id < $1.id : $0.end > $1.end }) { insert(edit.prefix,edit,position,"prefix") }
+    if position < bytes.count {
+      if copiedOriginalStart == nil { copiedOriginalStart = position; copiedTransformedStart = data.count }
+      data.append(bytes[position])
+    }
   }
+  finishCopiedSegment(bytes.count)
   guard let decoded = String(data:data,encoding:.utf8) else { throw NSError(domain:"SwiftBranch",code:4) }
   result = decoded
   guard !Parser.parse(source:result).hasError else { throw NSError(domain:"SwiftBranch",code:5,userInfo:[NSLocalizedDescriptionKey:"transformed parse error"]) }
   try result.write(toFile:output,atomically:true,encoding:.utf8)
   let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted,.sortedKeys]
-  try encoder.encode(Output(sites:inventory.sites,unsupported:inventory.unsupported,reviewRequired:inventory.reviewRequired,structural:inventory.structural,syntaxCounts:inventory.syntaxCounts,configurationRegions:inventory.configurationRegions)).write(to:URL(fileURLWithPath:manifest))
+  try encoder.encode(Output(sites:inventory.sites,unsupported:inventory.unsupported,reviewRequired:inventory.reviewRequired,structural:inventory.structural,syntaxCounts:inventory.syntaxCounts,configurationRegions:inventory.configurationRegions,sourceMap:sourceMap,insertedSegments:insertedSegments,chainReadRequests:inventory.chainReadRequests)).write(to:URL(fileURLWithPath:manifest))
 } catch { fputs("\(error)\n",stderr); exit(1) }

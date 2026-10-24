@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import shutil
 import unittest
 
 TOOL = Path(__file__).resolve().parents[1]
@@ -65,7 +66,7 @@ class ToolTests(unittest.TestCase):
         cls.instrumented = cls.root / "instrumented-run"
         cls.commands = []
         def compile_binary(target, extra):
-            command = ["xcrun","swiftc","-swift-version","5","-Onone","-g",*extra,str(cls.source),str(cls.driver),"-o",str(target)]
+            command = ["xcrun","swiftc","-j1","-module-cache-path",str(cls.root / "host-module-cache"),"-swift-version","5","-Onone","-g",*extra,str(cls.source),str(cls.driver),"-o",str(target)]
             coverage.run(command); cls.commands.append(command)
         compile_binary(cls.original, [])
         compile_binary(cls.instrumented, ["-D","BRANCH_COVERAGE","-vfsoverlay",str(cls.output / "overlay.json"),str(cls.output / "BranchRuntime.swift")])
@@ -86,6 +87,77 @@ class ToolTests(unittest.TestCase):
         expressions = [raw[s["startUTF8"]:s["endUTF8"]].decode() for s in self.manifest["sources"][0]["sites"]]
         self.assertIn("a && b",expressions)
         self.assertIn("a || b",expressions)
+
+    def test_two_real_export_runs_share_measurement_and_bind_distinct_drivers_images(self):
+        folder=self.root / "two-runs";folder.mkdir()
+        source=folder / "Source.swift";source.write_text('func probe(_ flag:Bool)->Int { if flag { return 1 };return 0 }\n')
+        driver=folder / "Driver.swift"
+        driver.write_text('import Foundation\n@main struct D { static func main() throws { print(probe(CommandLine.arguments[1]=="true")); /* EXPORT */ } }\n')
+        results=[];manifests={};images={};prepared=[];binary=folder / "run"
+        for run_id,flag in [("A","false"),("B","true")]:
+            driver_copy=folder / (run_id+"-driver.swift");execution={"runIDs":[run_id],"digest":coverage.digest({"runID":run_id,"originalDriver":coverage.sha(driver)})}
+            driver_copy.write_text(driver.read_text().replace('/* EXPORT */','try __FBCov.export(to:CommandLine.arguments[2],runID:'+json.dumps(run_id)+',executionDigest:'+json.dumps(execution['digest'])+')'))
+            output=folder / run_id;manifest=coverage.prepare(output,[source],extra_overlays={driver:driver_copy},execution=execution)
+            coverage.run(["xcrun","swiftc","-j1","-module-cache-path",str(folder / "cache"),"-swift-version","5","-Onone","-vfsoverlay",str(output / "overlay.json"),str(source),str(driver),str(output / "BranchRuntime.swift"),"-o",str(binary)])
+            result=folder / (run_id+".json");coverage.run([str(binary),flag,str(result)])
+            artifact=folder / (run_id+".image");shutil.copy2(binary,artifact)
+            images[coverage.sha(artifact)]=artifact;results.append(result);prepared.append(manifest);manifests[run_id]=output / "manifest.json"
+        self.assertEqual(prepared[0]['registryDigest'],prepared[1]['registryDigest'])
+        self.assertNotEqual(prepared[0]['preparationDigest'],prepared[1]['preparationDigest'])
+        report=coverage.validate(manifests['A'],results,fixture_only=True,binary_artifacts=images,execution_manifests=manifests)
+        self.assertTrue(report['passed'],report)
+        self.assertFalse(coverage.validate(manifests['A'],results,fixture_only=True,binary_artifacts=images)['passed'])
+        self.assertFalse(coverage.validate(manifests['A'],results+[results[0]],fixture_only=True,binary_artifacts=images,execution_manifests=manifests)['passed'])
+        for key in ['sourceSHA256','transformedBodySHA256']:
+            changed=copy.deepcopy(prepared[1])
+            changed['sources'][0][key]='changed'
+            self.assertNotEqual(coverage.digest(coverage.registry_payload(changed)),prepared[0]['registryDigest'])
+        changed_body=Path(prepared[1]['sources'][0]['transformed']);saved_body=changed_body.read_text();changed_body.write_text(saved_body+'// altered second execution copy\n')
+        try:self.assertFalse(coverage.validate(manifests['A'],results,fixture_only=True,binary_artifacts=images,execution_manifests=manifests)['passed'])
+        finally:changed_body.write_text(saved_body)
+        extra=Path(prepared[1]['extraOverlays'][0]['transformed']);old=extra.read_text();extra.write_text(old+'// changed driver\n')
+        try:self.assertFalse(coverage.validate(manifests['A'],results,fixture_only=True,binary_artifacts=images,execution_manifests=manifests)['passed'])
+        finally:extra.write_text(old)
+
+    def test_metric_roles_follow_expression_spines_not_nested_closure_containment(self):
+        manifest,_=self.compare_fixture('metric-roles','''
+func metrics(_ a:Bool,_ b:Bool,_ value:Any)->Bool {
+ if a && b { print("both") }
+ let returned = a && b
+ if ![a].contains(where: { $0 && b }) { print("outer") }
+ if let text = value as? String { print(text) }
+ for n in [1,2] where n > 1 { print(n) }
+ switch a { case true: print("true");case false: print("false") }
+ return returned
+}
+''','for a in [false,true] { for b in [false,true] { print(metrics(a,b,"text"));print(metrics(a,b,1)) } }')
+        record=manifest['sources'][0];raw=Path(record['source']).read_bytes()
+        def entries(kind):return [s for s in record['sites'] if s['kind']==kind]
+        composite=[s for s in entries('condition') if raw[s['startUTF8']:s['endUTF8']]==b'a && b']
+        self.assertEqual([s['metricRole'] for s in composite],['composite-diagnostic'])
+        outer=[s for s in entries('condition') if b'contains' in raw[s['startUTF8']:s['endUTF8']]]
+        self.assertEqual([s['metricRole'] for s in outer],['source-condition'])
+        self.assertTrue(all(s['metricRole']=='source-condition' for s in entries('logical-left')+entries('logical-right')))
+        binding=entries('optional-binding')[0];cast=entries('conditional-cast')[0]
+        self.assertEqual((binding['startUTF8'],binding['endUTF8']),(cast['startUTF8'],cast['endUTF8']))
+        self.assertEqual((binding['metricRole'],cast['metricRole']),('source-condition','operation-diagnostic'))
+        self.assertEqual(entries('iterator-next')[0]['metricRole'],'iteration-diagnostic')
+        self.assertTrue(all(s['metricRole']=='dispatch-diagnostic' for s in entries('switch-dispatch')))
+        self.assertTrue(all(s.get('metricRule') and s.get('metricRole')!='unmapped-blocker' for s in record['sites']))
+
+    def test_mutating_optional_method_and_getter_fail_closed_but_readonly_calls_compile(self):
+        manifest,report=self.compare_fixture('mutating-chain','''
+struct Counter { var n=0; mutating func advance(){n += 1}; var value:Int { mutating get {n += 1;return n} } }
+func mutate()->Int {var counter:Counter?=Counter();counter?.advance();let read=counter?.value ?? 0;return (counter?.n ?? 0)+read}
+''','print(mutate())')
+        self.assertFalse(report['passed'])
+        self.assertTrue(any('writeback' in n['reason'] for n in manifest['sources'][0]['unsupported']))
+        good,_=self.compare_fixture('readonly-chain','''
+struct Value { let n:Int;func read()->Int {n} }
+final class Ref {var n=0;func advance(){n += 1}}
+func read(_ flag:Bool)->Int {let value:Value?=flag ? Value(n:7):nil;let ref:Ref?=flag ? Ref():nil;ref?.advance();return (value?.read() ?? 0)+(ref?.n ?? 0)}
+''','print(read(false));print(read(true))')
+        self.assertEqual(good['sources'][0]['unsupported'],[])
 
     def test_runtime_partial_fails_and_full_measures_all_supported_outcomes(self):
         partial = coverage.validate(self.manifest_path,[self.partial],fixture_only=True)
@@ -164,7 +236,7 @@ func exercise(_ a: Bool, _ optional: Int?, _ fail: Bool) -> String {
         binaries = []
         for transformed in [False,True]:
             binary = self.root / ("effects-transformed" if transformed else "effects-original")
-            command = ["xcrun","swiftc","-swift-version","5","-Onone"]
+            command = ["xcrun","swiftc","-j1","-module-cache-path",str(self.root / "host-module-cache"),"-swift-version","5","-Onone"]
             if transformed: command += ["-vfsoverlay",str(output / "overlay.json"),str(output / "BranchRuntime.swift")]
             coverage.run(command + [str(source),str(driver),"-o",str(binary)])
             binaries.append(coverage.run([str(binary)]))
@@ -201,7 +273,7 @@ import Dispatch
         observed = []
         for instrumented in [False,True]:
             binary = self.root / ("concurrent-transformed" if instrumented else "concurrent-original")
-            command = ["xcrun","swiftc","-swift-version","5","-Onone"]
+            command = ["xcrun","swiftc","-j1","-module-cache-path",str(self.root / "host-module-cache"),"-swift-version","5","-Onone"]
             if instrumented: command += ["-D","BRANCH_COVERAGE","-vfsoverlay",str(output / "overlay.json"),str(output / "BranchRuntime.swift")]
             coverage.run(command + [str(source),str(driver),"-o",str(binary)])
             observed.append(coverage.run([str(binary),str(self.root / "concurrent-results.json")]))
@@ -218,10 +290,24 @@ import Dispatch
         driver = folder / "Driver.swift"
         driver.write_text("import Foundation\n@main struct D { static func main() throws {\n"+body+"\n#if BRANCH_COVERAGE\ntry __FBCov.export(to:CommandLine.arguments[1],runID:"+json.dumps(name)+")\n#endif\n} }\n")
         output = folder / "instrumented"; manifest = coverage.prepare(output,[source],configuration)
+        if manifest["sources"][0].get("chainReadRequests"):
+            from importlib.util import spec_from_file_location, module_from_spec
+            spec=spec_from_file_location("fixture_certification",TOOL / "certification.py")
+            cert=module_from_spec(spec);spec.loader.exec_module(cert)
+            spec=spec_from_file_location("fixture_chain_reads",TOOL / "chain_reads.py")
+            chain_reads=module_from_spec(spec);spec.loader.exec_module(chain_reads)
+            sdk=coverage.run(["xcrun","--sdk","macosx","--show-sdk-path"]).strip()
+            dump=coverage.run(["xcrun","swiftc","-j1","-module-cache-path",str(folder / "typed-cache"),"-sdk",sdk,"-swift-version","5","-dump-ast",str(source)])
+            nodes=cert.typed_nodes(dump);index=folder / "original-typed-index.json";coverage.write(index,nodes)
+            requests=manifest["sources"][0]["chainReadRequests"];reads=chain_reads.derive(source,nodes,requests)
+            config=configuration or {"os":"macOS","arch":"arm64","environment":None,"defines":[],"languageVersion":[5],"compilerVersion":[6,3,3]}
+            proof=cert.any_result_hints(manifest["sources"][0],nodes,index)
+            config={**config,"typingHints":proof["typingHints"],"typingHintsProof":proof,"chainReadHints":reads,"chainReadHintsProof":{"sourceSHA256":coverage.sha(source),"originalTypedAST":cert.artifact(index),"requests":requests}}
+            manifest=coverage.prepare(output,[source],config)
         observed = []
         for transformed in [False,True]:
             binary = folder / ("transformed" if transformed else "original")
-            command = ["xcrun","swiftc","-swift-version","5","-Onone"]
+            command = ["xcrun","swiftc","-j1","-module-cache-path",str(self.root / "host-module-cache"),"-swift-version","5","-Onone"]
             if configuration:
                 for flag in configuration["defines"]: command += ["-D",flag]
             if transformed: command += ["-D","BRANCH_COVERAGE","-vfsoverlay",str(output / "overlay.json"),str(output / "BranchRuntime.swift")]
@@ -451,6 +537,14 @@ func tally(_ limit: Int) -> Int {
         modified["compiler"]["toolSourceSHA256"] = "0"*64
         path = self.root / "instrumenter-source-drift.json"; coverage.write(path,modified)
         self.assertIn("Instrumenter source drift",coverage.validate(path,[self.full],fixture_only=True)["failures"])
+
+    def test_original_reserved_recorder_identifiers_are_rejected(self):
+        source=self.root/'Reserved.swift';source.write_text('enum __FBCov { static func boolean() {} }\n')
+        binary=self.manifest['compiler']['command'][-1]
+        result=subprocess.run([binary,str(source),str(self.root/'reserved-copy.swift'),str(self.root/'reserved-ast.json'),'reserved','-'],capture_output=True,text=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('SwiftBranch',result.stderr)
+        self.assertFalse((self.root/'reserved-copy.swift').exists())
 
     def test_unsupported_grammar_is_explicit(self):
         source = self.root / "Unsupported.swift"

@@ -57,6 +57,7 @@ jest.mock('react-native-reanimated', () => {
     useAnimatedScrollHandler: (callback: (event: { contentOffset: { x: number } }) => void) =>
       (event: { nativeEvent?: { contentOffset: { x: number } }; contentOffset?: { x: number } }) => callback(event.nativeEvent ?? event as { contentOffset: { x: number } }),
     useAnimatedStyle: (factory: () => object) => factory(),
+    useAnimatedProps: (factory: () => object) => factory(),
     useDerivedValue: (factory: () => unknown) => ({ get: factory }),
     useFrameCallback: () => ({ setActive: jest.fn() }),
     useReducedMotion: () => false,
@@ -254,11 +255,11 @@ describe('U034 Grain Drift splash', () => {
     );
     const grain = view.UNSAFE_getByType(GrainDrift);
     const brandSurface = StyleSheet.flatten(screen.getByTestId('custom-splash-screen').props.style).backgroundColor;
-    const logo = screen.getByTestId('splash-mark-probe');
+    const logo = screen.getByTestId('folivela-splash-mark');
 
     expect(grain.props).toMatchObject({ grain: 0, speed: 3, reduceEffects: true });
     expect(brandSurface).toBeTruthy();
-    expect(logo.props.accessibilityHint).toContain(`background=${brandSurface}`);
+    expect(logo.props.accessibilityLabel).toBe('Folivela');
     expect(StyleSheet.flatten(grain.props.style)).toMatchObject({ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 });
 
     act(() => onStateChange?.('background'));

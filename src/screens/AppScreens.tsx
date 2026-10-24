@@ -1,7 +1,10 @@
 import { ScrambleText } from '../components/kinetik/scramble-text';
-import { RingSpinner } from '../components/kinetik/ring-spinner';
+import { StatusButton } from '../components/kinetik/status-button';
+import { FoldPanel } from '../components/kinetik/fold-panel';
+import { ThemeSwitch } from '../components/kinetik/theme-switch';
 import { UsageMeter } from '../components/kinetik/usage-meter';
 import { libraryUx } from '../i18n/libraryUx';
+import { library050Ux } from '../i18n/library050Ux';
 import { DocumentLibrary, DocumentLibraryProps } from '../ui/DocumentLibrary';
 import { MorphSelect } from '../components/kinetik/morph-select';
 import { Profile } from '../components/kinetik/screens/profile';
@@ -31,6 +34,7 @@ import type {
 } from '../native/PdfTranslator';
 import { PdfTranslator } from '../native/PdfTranslator';
 import type { Palette } from '../ui/theme';
+import { palettes } from '../ui/theme';
 import type { Locale, Translator } from '../i18n/messages';
 import { localeOptions, localeSearchNames } from '../i18n/messages';
 import { ux } from '../i18n/ux';
@@ -46,7 +50,7 @@ import {
 } from '../domain/modelEligibility';
 import {
   translationLanguages,
-  translationLanguageShortName,
+  translationLanguageClosedName,
   TranslationLanguage,
 } from '../domain/translationLanguages';
 import { Button, Field, Notice, ProgressBar, Row } from '../ui/components';
@@ -100,6 +104,7 @@ export function ModelScreen({
 } & Base) {
   const info = useInfo(t('back'));
   const [details, setDetails] = useState<ModelSnapshot | null>(null);
+  const [openPanel, setOpenPanel] = useState<string | null>(null);
   const [licenseError, setLicenseError] = useState('');
   const [celebrate, setCelebrate] = useState(false);
   const previous = useRef(new Map(snapshot.models.map(m => [m.id, m.status])));
@@ -133,14 +138,14 @@ export function ModelScreen({
   return (
     <>
       <ScrollView contentContainerStyle={content}>
-        <View style={{ paddingVertical: 22, gap: 14, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-          <Row style={{ justifyContent: 'space-between' }}><Title colors={colors}>{ux(locale, 'modelOnline')}</Title><Icon name="globe" color={colors.accent} /></Row>
-          <Text style={{ color: colors.success }}>{ux(locale, 'onlineAvailable')}</Text>
-          <Text style={{ color: colors.muted }}>{ux(locale, 'onlineQuota')}</Text>
-          <View style={{ gap: 4 }}><AnimatedNumber value={70} suffix="%" color={colors.accent} /><Text style={{ color: colors.muted, fontSize: 12 }}>{ux(locale, 'approximateRating')}</Text></View>
-          <Button colors={colors} variant="quiet" label={ux(locale, 'details')} onPress={() => { setLicenseError(''); setDetails(ONLINE_MODEL); }} />
-          <Button colors={colors} label={t('useThisModel')} disabled={busy || selected?.id === 'mymemory'} onPress={() => onSelect(ONLINE_MODEL)} />
-        </View>
+        <FoldPanel title={library050Ux(locale, 'online')} subtitle={ux(locale, 'onlineAvailable')} open={openPanel === 'mymemory'} onOpenChange={open => setOpenPanel(open ? 'mymemory' : null)} leading={<Icon name="globe" color={colors.accent} />}>
+          <View style={{ gap: 12, paddingBottom: 14 }}>
+            <ScrambleText text={ONLINE_MODEL.label} duration={420} style={{ color: colors.text, fontSize: 18, fontWeight: '700' }} />
+            <Text style={{ color: colors.muted }}>{ux(locale, 'onlineQuota')}</Text>
+            <SettingsRow icon="license" label={t('licenses')} value={library050Ux(locale, 'onlineLicense')} onPress={() => { setLicenseError(''); setDetails(ONLINE_MODEL); }} colors={colors} />
+            <Button colors={colors} label={t('useThisModel')} disabled={busy || selected?.id === 'mymemory'} onPress={() => onSelect(ONLINE_MODEL)} />
+          </View>
+        </FoldPanel>
         {!snapshot.models.some(m => m.translationEnabled) ? (
           <View style={{ gap: 12 }}>
             <Title colors={colors}>{ux(locale, 'modelsUnavailable')}</Title>
@@ -153,9 +158,11 @@ export function ModelScreen({
           .filter(m => m.translationEnabled)
           .map(model => {
             const p = modelPresentation(model),
-              downloading =
-                model.status === 'downloading' || model.status === 'verifying',
-              isSelected = selected?.id === model.id;
+              downloading = model.status === 'downloading' || model.status === 'verifying',
+              isSelected = selected?.id === model.id,
+              progress = model.bytes > 0 ? Math.min(100, Math.round(model.downloadedBytes / model.bytes * 100)) : 0,
+              selectedStatus = isSelected && model.status === 'ready' ? t('selectedModel') : status(model),
+              subtitle = `${formatBytes(model.bytes)} · ${p.score}% · ${downloading ? `${progress}% · ` : ''}${selectedStatus}`;
             return (
               <Animated.View
                 key={model.id}
@@ -167,143 +174,24 @@ export function ModelScreen({
                   borderBottomColor: colors.border,
                 }}
               >
-                <Row style={{ justifyContent: 'space-between' }}>
-                  <Text
-                    style={{
-                      color: colors.text,
-                      fontSize: 26,
-                      fontWeight: '800',
-                      letterSpacing: -0.7,
-                    }}
-                  >
-                    {ux(locale, p.title)}
-                  </Text>
-
-                </Row>
-                <Row style={{ gap: 28, alignItems: 'flex-end' }}>
-                  <View style={{ flex: 1, gap: 4 }}>
-                    <Text
-                      style={{
-                        fontSize: 30,
-                        color: colors.text,
-                        fontWeight: '700',
-                      }}
-                    >
-                      {formatBytes(model.bytes)}
-                    </Text>
-                    <Text style={{ color: colors.muted, fontSize: 12 }}>
-                      {t('fileSize')}
-                    </Text>
+                <FoldPanel title={ux(locale, p.title)} subtitle={subtitle} open={openPanel === model.id} onOpenChange={open => setOpenPanel(open ? model.id : null)} leading={<Icon name="book" color={colors.accent} />}>
+                  <View style={{ gap: 12, paddingBottom: 14 }}>
+                    <ScrambleText text={model.label} duration={420} style={{ color: colors.text, fontSize: 18, fontWeight: '700' }} />
+                    <SettingsRow icon="license" label={t('licenses')} value={library050Ux(locale, model.licenseUrl?.includes('gemma') ? 'gemmaLicense' : 'localLicense')} onPress={() => { setLicenseError(''); setDetails(model); }} colors={colors} />
+                    {licenseError ? <Notice colors={colors} text={licenseError} /> : null}
+                    <Text style={{ color: model.status === 'ready' ? colors.success : colors.muted }}>{selectedStatus}</Text>
+                    {downloading ? <>
+                      <StatusButton status="loading" loadingLabel={model.status === 'verifying' ? t('verifying') : t('modelDownloading')} accessibilityLabel={model.status === 'verifying' ? t('verifying') : t('modelDownloading')} haptics={false}>{t('download')}</StatusButton>
+                      <ProgressBar colors={colors} value={progress / 100} label={t('downloaded')} />
+                      <Text style={{ color: colors.muted, fontSize: 13 }}>{formatBytes(model.downloadedBytes)} / {formatBytes(model.bytes)} · {progress}%</Text>
+                      {model.status === 'downloading' ? <Button label={t('pause')} colors={colors} disabled={busy} onPress={() => onPause(model)} /> : null}
+                    </> : model.status === 'ready' ? <Button label={t('useThisModel')} colors={colors} disabled={busy || isSelected || !modelCanTranslate(model, snapshot.device)} onPress={() => onSelect(model)} /> : <Button label={model.status === 'paused' ? t('resume') : model.licenseUrl?.includes('gemma') ? t('acceptAndDownload') : t('download')} colors={colors} disabled={busy || !modelCanBeInstalled(model, snapshot.device)} onPress={() => onDownload(model)} />}
+                    {model.status === 'ready' || model.status === 'paused' ? <Pressable accessibilityRole="button" accessibilityLabel={ux(locale, 'removeModel')} disabled={busy} onPress={() => onDelete(model)} style={{ alignSelf: 'center', padding: 12 }}><Text style={{ color: colors.muted }}>{ux(locale, 'removeModel')}</Text></Pressable> : null}
+                    {modelHasMemoryWarning(model, snapshot.device) ? <Pressable accessibilityRole="button" accessibilityLabel={t('modelMemoryWarning')} onPress={() => info(t('freeMemory'), t('modelMemoryWarning'))} style={{ minHeight: 48, justifyContent: 'center' }}><Text style={{ color: colors.warning, fontSize: 13 }}>{t('freeMemory')}: {formatBytes(snapshot.device.availableMemoryBytes)} ⓘ</Text></Pressable> : null}
+                    {model.status !== 'ready' && !downloading && !modelCanBeInstalled(model, snapshot.device) ? <Notice colors={colors} text={t('modelResourceDisk')} /> : null}
+                    {model.error ? <Notice colors={colors} text={model.error} /> : null}
                   </View>
-                  <View style={{ flex: 1, gap: 4, alignItems: 'flex-end' }}>
-                    <AnimatedNumber value={p.score} suffix="%" color={colors.accent} />
-                    <Text style={{ color: colors.muted, fontSize: 12, textAlign: 'right' }}>{ux(locale, 'approximateRating')}</Text>
-                  </View>
-                </Row>
-                <Button colors={colors} variant="quiet" label={ux(locale, 'details')} accessibilityLabel={`${ux(locale, 'details')}: ${model.label}`} onPress={() => { setLicenseError(''); setDetails(model); }} />
-                {downloading ? (
-                  <>
-                    <View
-                      style={{
-                        height: 130,
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      <RingSpinner progress={model.bytes > 0 ? model.downloadedBytes / model.bytes : undefined} size={88} color={colors.accent} accessibilityLabel={t('downloaded')} />
-                    </View>
-                    <ProgressBar
-                      colors={colors}
-                      value={model.downloadedBytes / model.bytes}
-                      label={t('downloaded')}
-                    />
-                    <Text style={{ color: colors.muted, fontSize: 13 }}>
-                      {formatBytes(model.downloadedBytes)} /{' '}
-                      {formatBytes(model.bytes)}
-                    </Text>
-                  </>
-                ) : null}
-                <Text
-                  style={{
-                    color:
-                      model.status === 'ready' ? colors.success : colors.muted,
-                    fontSize: 13,
-                  }}
-                >
-                  {isSelected && model.status === 'ready'
-                    ? t('selectedModel')
-                    : status(model)}
-                </Text>
-                {model.status === 'ready' ? (
-                  <Button
-                    label={t('useThisModel')}
-                    colors={colors}
-                    disabled={
-                      busy ||
-                      isSelected ||
-                      !modelCanTranslate(model, snapshot.device)
-                    }
-                    onPress={() => onSelect(model)}
-                  />
-                ) : (
-                  <Button
-                    label={
-                      downloading
-                        ? model.status === 'verifying'
-                          ? t('verifying')
-                          : t('pause')
-                        : model.status === 'paused'
-                        ? t('resume')
-                        : model.licenseUrl?.includes('gemma')
-                        ? t('acceptAndDownload')
-                        : t('download')
-                    }
-                    colors={colors}
-                    disabled={
-                      busy ||
-                      model.status === 'verifying' ||
-                      (!downloading &&
-                        !modelCanBeInstalled(model, snapshot.device))
-                    }
-                    onPress={() =>
-                      downloading ? onPause(model) : onDownload(model)
-                    }
-                  />
-                )}
-                {model.status === 'ready' || model.status === 'paused' ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => onDelete(model)}
-                    style={{ alignSelf: 'center', padding: 12 }}
-                  >
-                    <Text style={{ color: colors.muted }}>
-                      {ux(locale, 'removeModel')}
-                    </Text>
-                  </Pressable>
-                ) : null}
-                {modelHasMemoryWarning(model, snapshot.device) ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={t('modelMemoryWarning')}
-                    onPress={() =>
-                      info(t('freeMemory'), t('modelMemoryWarning'))
-                    }
-                    style={{ minHeight: 48, justifyContent: 'center' }}
-                  >
-                    <Text style={{ color: colors.warning, fontSize: 13 }}>
-                      {t('freeMemory')}:{' '}
-                      {formatBytes(snapshot.device.availableMemoryBytes)} ⓘ
-                    </Text>
-                  </Pressable>
-                ) : null}
-                {!downloading &&
-                model.status !== 'ready' &&
-                !modelCanBeInstalled(model, snapshot.device) ? (
-                  <Notice colors={colors} text={t('modelResourceDisk')} />
-                ) : null}
-                {model.error ? (
-                  <Notice colors={colors} text={model.error} />
-                ) : null}
+                </FoldPanel>
               </Animated.View>
             );
           })}
@@ -428,7 +316,8 @@ export function PairPicker({
 } & Base) {
   const { width, fontScale } = useWindowDimensions();
   const stacked = width / fontScale < 340;
-  const options = translationLanguages.map(([value, name]) => ({ value, label: `${localeFlags[value]} ${name}`, compactLabel: `${localeFlags[value]} ${translationLanguageShortName(value)}` }));
+  const fieldWidth = Math.max(0, (width - 96) / 2);
+  const options = translationLanguages.map(([value, name]) => ({ value, label: `${localeFlags[value]} ${name}`, compactLabel: `${localeFlags[value]} ${translationLanguageClosedName(value, fieldWidth, fontScale)}` }));
   return <Row style={{ flexDirection: stacked ? 'column' : 'row', alignItems: stacked ? 'stretch' : 'flex-start' }}>
     <View style={stacked ? undefined : { flex: 1 }}><MorphSelect closeLabel={t('back')} minMenuWidth={280} label={t('sourceLanguage')} value={source} options={options} disabled={busy} onValueChange={value => onChange(value as TranslationLanguage, value === target ? source : target)} /></View>
     <IconButton name="swap" label={t('swapLanguages')} colors={colors} disabled={busy} onPress={() => onChange(target, source)} />
@@ -538,7 +427,7 @@ export function TranslationOptionsScreen({
             <Icon name="chevron" color={colors.muted} />
           </Pressable>
         ) : null}
-        <View>
+        {model?.supportsGlossary !== false ? <View>
           <SettingsRow
             icon="book"
             label={ux(locale, 'glossary')}
@@ -552,17 +441,12 @@ export function TranslationOptionsScreen({
             </Text>
             <PulseToggle
               accessibilityLabel={ux(locale, 'useDictionary')}
-              value={useGlossary && model?.supportsGlossary !== false}
-              disabled={!terms || model?.supportsGlossary === false || busy}
+              value={useGlossary}
+              disabled={!terms || busy}
               onValueChange={onUseGlossary}
             />
           </Row>
-          {model?.supportsGlossary === false ? (
-            <Text style={{ color: colors.muted, fontSize: 13 }}>
-              {ux(locale, 'glossaryOff')}
-            </Text>
-          ) : null}
-        </View>
+        </View> : null}
         <SettingsRow
           icon="storage"
           label={t('model')}
@@ -611,6 +495,7 @@ export function SettingsScreen({
   t,
   locale,
   snapshot,
+  selectedModel,
   onRoute,
   onTheme,
   busy,
@@ -618,6 +503,7 @@ export function SettingsScreen({
   onReplay,
 }: {
   snapshot: BootstrapSnapshot;
+  selectedModel?: ModelSnapshot | null;
   onRoute: (r: 'language' | 'storage' | 'dictionary' | 'licenses') => void;
   onTheme: (theme: ThemePreference) => void;
   onPrivacy: () => void;
@@ -627,16 +513,13 @@ export function SettingsScreen({
     { rows: [
       { key: 'language', label: t('language'), icon: <Icon name="globe" color={colors.accent} />, detail: `${localeFlags[snapshot.preferences.language] ?? '🌐'} ${snapshot.preferences.language === 'system' ? ux(locale, 'systemDefault') : localeOptions.find(([id]) => id === snapshot.preferences.language)?.[1] ?? ''}`, onPress: () => onRoute('language') },
     ] },
-    { title: t('appearance'), rows: [], content: <View accessibilityRole="radiogroup" accessibilityLabel={t('appearance')}>
-      {(['system', 'dark', 'light'] as const).map((theme, index) => <Pressable key={theme} accessibilityRole="radio" accessibilityLabel={theme === 'system' ? ux(locale, 'systemDefault') : t(theme)} accessibilityState={{ checked: snapshot.preferences.theme === theme, disabled: !!busy }} disabled={busy} onPress={() => onTheme(theme)} style={{ flexDirection: 'row', alignItems: 'center', gap: 14, minHeight: 56, paddingHorizontal: 16, paddingVertical: 10, borderTopWidth: index ? 0.5 : 0, borderTopColor: colors.border }}>
-        <Icon name={theme === 'system' ? 'monitor' : theme === 'dark' ? 'moon' : 'sun'} color={snapshot.preferences.theme === theme ? colors.accent : colors.muted} />
-        <Text style={{ flex: 1, color: colors.text, fontSize: 16 }}>{theme === 'system' ? ux(locale, 'systemDefault') : t(theme)}</Text>
-        {snapshot.preferences.theme === theme ? <Icon name="check" color={colors.accent} /> : null}
-      </Pressable>)}
+    { title: t('appearance'), rows: [], content: <View style={{ paddingHorizontal: 16, gap: 10 }}>
+      <Row style={{ justifyContent: 'space-between', minHeight: 54 }}><Text style={{ color: colors.text }}>{library050Ux(locale, 'followSystem')}</Text><PulseToggle accessibilityLabel={library050Ux(locale, 'followSystem')} value={snapshot.preferences.theme === 'system'} disabled={busy} onValueChange={value => onTheme(value ? 'system' : (colors.background === palettes.dark.background ? 'dark' : 'light'))} /></Row>
+      <Row style={{ justifyContent: 'space-between', minHeight: 54 }}><Text style={{ color: colors.text }}>{library050Ux(locale, 'lightMode')} / {library050Ux(locale, 'darkMode')}</Text><ThemeSwitch value={snapshot.preferences.theme === 'system' ? (colors.background === palettes.dark.background ? 'dark' : 'light') : snapshot.preferences.theme} label={t('appearance')} stateLabel={snapshot.preferences.theme === 'dark' ? library050Ux(locale, 'darkMode') : library050Ux(locale, 'lightMode')} accessibilityLabel={t('appearance')} haptics={!busy} onValueChange={value => onTheme(value)} /></Row>
     </View> },
     { rows: [
       { key: 'storage', label: ux(locale, 'storage'), icon: <Icon name="storage" color={colors.accent} />, detail: formatBytes(snapshot.device.storage?.installedModelBytes ?? snapshot.models.reduce((sum, m) => sum + (m.status === 'ready' ? m.bytes : 0), 0)), onPress: () => onRoute('storage') },
-      { key: 'dictionary', label: ux(locale, 'glossary'), icon: <Icon name="book" color={colors.accent} />, onPress: () => onRoute('dictionary') },
+      ...(selectedModel?.supportsGlossary === false ? [] : [{ key: 'dictionary', label: ux(locale, 'glossary'), icon: <Icon name="book" color={colors.accent} />, onPress: () => onRoute('dictionary') }]),
     ] },
     { rows: [
       { key: 'privacy', label: t('privacy'), icon: <Icon name="shield" color={colors.accent} />, onPress: onPrivacy },

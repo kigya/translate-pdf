@@ -47,6 +47,8 @@ export type ScanProgressProps = {
   imageLabel?: string;
   /** Stops decorative work while paused or off-screen. Defaults to true. */
   active?: boolean;
+  /** Keep the media still while compute-heavy processing competes for the UI thread. */
+  reduceEffects?: boolean;
   style?: StyleProp<ViewStyle>;
 };
 
@@ -55,6 +57,9 @@ const PITCH = 9;
 const DOT = 6;
 const PILL = 60;
 const RING = 2.5;
+
+const clampProgress = (value: number): number | undefined =>
+  Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : undefined;
 
 /** A repeatable 0–1 hash for a grid cell. */
 const hash = (x: number, y: number) => {
@@ -80,6 +85,7 @@ export function ScanProgress({
   tint,
   imageLabel,
   active = true,
+  reduceEffects = false,
   style,
 }: ScanProgressProps) {
   const { colors, radius, space, font } = useKinetikTheme();
@@ -93,6 +99,8 @@ export function ScanProgress({
   }, []);
   const running = active && appActive && !done;
   const color = tint ?? colors.success;
+  const measuredProgress = progress === undefined ? undefined : clampProgress(progress);
+  const fillProgress = done ? 1 : measuredProgress;
   const [media, setMedia] = useState({ width: 0, height: 0 });
   const [pill, setPill] = useState(0);
 
@@ -105,21 +113,22 @@ export function ScanProgress({
 
   return (
     <View style={[{ gap: space[5] }, style]}>
-      {/* The glow sits on its own layer behind the card, so the pixel field
-          redrawing every frame never makes the blurred shadow redraw too. */}
-      <View
-        pointerEvents="none"
-        style={[
-          styles.glow,
-          {
-            height,
-            borderRadius: radius.xl,
-            backgroundColor: colors.surface,
-            boxShadow: glow(color),
-            opacity: done ? 0 : 1,
-          },
-        ]}
-      />
+      {/* The blurred backing layer is decorative and costly during inference. */}
+      {!reduceEffects ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.glow,
+            {
+              height,
+              borderRadius: radius.xl,
+              backgroundColor: colors.surface,
+              boxShadow: glow(color),
+              opacity: done ? 0 : 1,
+            },
+          ]}
+        />
+      ) : null}
       <View
         style={[styles.card, { height, borderRadius: radius.xl, backgroundColor: colors.surface }]}
         accessible={!!imageLabel}
@@ -137,7 +146,7 @@ export function ScanProgress({
           pointerEvents="none"
           style={[StyleSheet.absoluteFill, { backgroundColor: withAlpha(color, 0.3) }, wash]}
         />
-        {media.width > 0 && !reduced ? (
+        {media.width > 0 && !reduced && !reduceEffects ? (
           <Pixels width={media.width} height={media.height} running={running} live={live} />
         ) : null}
       </View>
@@ -149,29 +158,62 @@ export function ScanProgress({
         accessibilityValue={
           done
             ? { min: 0, max: 100, now: 100 }
-            : progress === undefined
+            : measuredProgress === undefined
               ? undefined
-              : { min: 0, max: 100, now: Math.round(progress * 100) }
+              : { min: 0, max: 100, now: Math.round(measuredProgress * 100) }
         }
         accessibilityLiveRegion="polite"
         onLayout={(e) => setPill(e.nativeEvent.layout.width)}
         style={[styles.pill, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}
       >
-        {pill > 0 && (progress !== undefined || done) ? (
-          <Ring width={pill} progress={progress ?? 1} done={done} color={color} />
+        {reduceEffects ? (
+          <View
+            pointerEvents="none"
+            testID="low-effects-progress-track"
+            accessibilityElementsHidden
+            style={[StyleSheet.absoluteFill, { backgroundColor: colors.surfaceRaised }]}
+          >
+            {fillProgress !== undefined ? (
+              <View
+                testID="low-effects-progress-fill"
+                style={[
+                  styles.lowEffectsFill,
+                  {
+                    width: `${fillProgress * 100}%`,
+                    backgroundColor: withAlpha(color, 0.2),
+                  },
+                ]}
+              />
+            ) : null}
+          </View>
+        ) : pill > 0 && (measuredProgress !== undefined || done) ? (
+          <Ring width={pill} progress={measuredProgress ?? 1} done={done} color={color} />
         ) : null}
         <View
           style={[
             styles.inner,
-            { backgroundColor: colors.surfaceSunken, gap: space[3], paddingHorizontal: space[5] },
+            {
+              backgroundColor: reduceEffects ? 'transparent' : colors.surfaceSunken,
+              gap: space[3],
+              paddingHorizontal: space[5],
+            },
           ]}
         >
           {done ? (
             <Check color={color} />
+          ) : reduceEffects ? (
+            <View
+              testID="low-effects-progress-indicator"
+              accessibilityElementsHidden
+              style={[
+                styles.lowEffectsIndicator,
+                { borderColor: color, backgroundColor: withAlpha(color, 0.1) },
+              ]}
+            />
           ) : (
             <RingSpinner
               size={22}
-              progress={progress}
+              progress={measuredProgress}
               active={running}
               accessibilityHidden
               accessibilityLabel={label}
@@ -386,11 +428,14 @@ function Check({ color }: { color: string }) {
 const styles = StyleSheet.create({
   glow: { position: 'absolute', top: 0, left: 0, right: 0 },
   card: { overflow: 'hidden' },
+  lowEffectsFill: { position: 'absolute', top: 0, bottom: 0, left: 0, borderRadius: PILL / 2 },
+  lowEffectsIndicator: { width: 22, height: 22, borderRadius: 11, borderWidth: 2 },
   pill: {
     height: PILL,
     borderRadius: PILL / 2,
     borderWidth: StyleSheet.hairlineWidth,
     padding: 6,
+    overflow: 'hidden',
   },
   inner: {
     flex: 1,

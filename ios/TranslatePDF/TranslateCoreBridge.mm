@@ -52,6 +52,7 @@ static NSString *TPString(const std::string &value) {
 }
 + (void)releaseModel { translatepdf::releaseModel(); }
 + (void)cancel { translatepdf::cancel(); }
++ (NSString *)inferenceProgress { return TPString(translatepdf::inferenceProgress()); }
 + (NSString *)exportPage:(NSString *)source index:(NSInteger)index blocksJSON:(NSString *)blocksJSON destination:(NSString *)destination fontPath:(NSString *)fontPath cjkFontPath:(NSString *)cjkFontPath {
   return TPString(translatepdf::exportPage(source.UTF8String ?: "", (int)index, blocksJSON.UTF8String ?: "[]", destination.UTF8String ?: "", fontPath.UTF8String ?: "", cjkFontPath.UTF8String ?: ""));
 }

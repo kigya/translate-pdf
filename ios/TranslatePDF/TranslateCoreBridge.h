@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)translate:(NSString *)text glossary:(NSString *)glossary context:(NSString *)context sourceLanguage:(NSString *)sourceLanguage targetLanguage:(NSString *)targetLanguage;
 + (void)releaseModel;
 + (void)cancel;
++ (NSString *)inferenceProgress;
 + (NSString *)exportPage:(NSString *)source index:(NSInteger)index blocksJSON:(NSString *)blocksJSON destination:(NSString *)destination fontPath:(NSString *)fontPath cjkFontPath:(NSString *)cjkFontPath;
 + (NSString *)mergePDF:(NSString *)pagesJSON destination:(NSString *)destination;
 @end

@@ -149,6 +149,40 @@ internal class PdfTranslatorModule(
       .toString()
   }
 
+  /** Small polling payload: no device metrics, documents, glossaries or preferences. */
+  @ReactMethod
+  fun getActivitySnapshot(promise: Promise) = runAsync(promise, "ACTIVITY_SNAPSHOT_FAILED") {
+    val models = effectiveModelSnapshot(database.modelsJson(), ModelCatalog.models, downloader)
+    val manager = context.getSystemService(Activity.ACTIVITY_SERVICE) as android.app.ActivityManager
+    val info = android.app.ActivityManager.MemoryInfo().also(manager::getMemoryInfo)
+    val stat = StatFs(context.filesDir.absolutePath)
+    val availableDisk = stat.availableBlocksLong * stat.blockSizeLong
+    val downloaded = (0 until models.length()).associate { index ->
+      val row = models.getJSONObject(index)
+      row.getString("id") to if (row.getString("status") == "ready") row.getLong("bytes") else row.getLong("partialBytes")
+    }
+    val recommendation = MemoryPolicy.recommend(info.totalMem, info.availMem, info.threshold, info.lowMemory, availableDisk, downloaded)
+    for (index in 0 until models.length()) {
+      val row = models.getJSONObject(index)
+      val model = ModelCatalog.get(row.getString("id"))
+      val installed = downloader.installedLength(model.id)
+      val partial = downloader.partialLength(model.id)
+      row.put("storedBytes", installed + partial).put("partialBytes", partial)
+      MemoryPolicy.resources(model, info.totalMem, info.availMem, info.threshold, info.lowMemory, availableDisk, downloaded[model.id] ?: 0).applyTo(row)
+    }
+    val jobs = database.activityJobsJson()
+    for (index in 0 until jobs.length()) {
+      val job = jobs.getJSONObject(index)
+      if (job.optString("stage") == "translating" && job.optString("status") == "running") {
+        runCatching { JSONObject(NativeCore.inferenceProgress()) }.onSuccess { progress ->
+          job.put("processedTokens", progress.optLong("processedTokens"))
+            .put("generatedTokens", progress.optLong("generatedTokens"))
+        }
+      }
+    }
+    JSONObject().put("jobs", jobs).put("models", models).put("notifications", notificationPermissionSnapshot()).toString()
+  }
+
   @ReactMethod
   fun pickPdf(promise: Promise) {
     pickDocument(promise)
@@ -355,7 +389,7 @@ internal class PdfTranslatorModule(
 
   @ReactMethod
   fun startJob(inputJson: String, promise: Promise) = runAsync(promise, "JOB_START_FAILED") { synchronized(jobStartLock) {
-    if (PdfTranslationService.isActive) throw IllegalStateException("Wait until the current background operation finishes before starting translation.")
+    if (PdfTranslationService.isActive || PdfTranslationService.activeJobId != null) throw IllegalStateException("Wait until the current background operation finishes before starting translation.")
     if (database.hasActiveJob()) throw IllegalStateException("Finish, pause, or cancel the current translation before starting another one.")
     if (context.currentActivity == null || context.currentActivity?.isFinishing == true) {
       throw IllegalStateException("Return to the open app before starting a translation.")
@@ -399,15 +433,21 @@ internal class PdfTranslatorModule(
   @ReactMethod
   fun pauseJob(jobId: String, promise: Promise) = runAsync(promise, "JOB_PAUSE_FAILED") {
     requireJob(jobId)
+    val workerOwnsJob = PdfTranslationService.activeJobId == jobId
     context.startService(Intent(context, PdfTranslationService::class.java).setAction(PdfTranslationService.ACTION_PAUSE)
       .putExtra(PdfTranslationService.EXTRA_JOB_ID, jobId))
-    database.updateJob(jobId, status = "paused")
+    // The owning worker commits paused only after its in-flight native/OCR call
+    // has returned and the latest block/page checkpoint is durable.
+    if (workerOwnsJob) PdfTranslationService.markWorkerStopping(jobId, canceled = false)
+    else database.updateJob(jobId, status = "paused")
     database.jobJson(jobId)?.toString() ?: throw IllegalArgumentException("Translation job was not found.")
   }
 
   @ReactMethod
   fun resumeJob(jobId: String, promise: Promise) = runAsync(promise, "JOB_RESUME_FAILED") { synchronized(jobStartLock) {
-    if (PdfTranslationService.isActive) throw IllegalStateException("Wait until the current background operation finishes before resuming translation.")
+    if (PdfTranslationService.isActive || PdfTranslationService.activeJobId != null) {
+      throw IllegalStateException("Wait until the current background operation finishes before resuming translation.")
+    }
     val job = requireJob(jobId)
     database.requireCurrentPipeline(jobId)
     require(job.optString("status") in setOf("paused", "queued", "failed")) { "This translation job cannot be resumed in its current state." }
@@ -424,8 +464,10 @@ internal class PdfTranslatorModule(
   @ReactMethod
   fun cancelJob(jobId: String, promise: Promise) = runAsync(promise, "JOB_CANCEL_FAILED") {
     requireJob(jobId)
+    val workerOwnsJob = PdfTranslationService.activeJobId == jobId
     context.startService(Intent(context, PdfTranslationService::class.java).setAction(PdfTranslationService.ACTION_CANCEL)
       .putExtra(PdfTranslationService.EXTRA_JOB_ID, jobId))
+    if (workerOwnsJob) PdfTranslationService.markWorkerStopping(jobId, canceled = true)
     database.updateJob(jobId, status = "canceled", error = "Canceled by the user.")
     database.jobJson(jobId)?.toString() ?: throw IllegalArgumentException("Translation job was not found.")
   }
@@ -439,65 +481,99 @@ internal class PdfTranslatorModule(
   @ReactMethod
   fun deleteJob(jobId: String, promise: Promise) = runAsync(promise, "JOB_DELETE_FAILED") {
     val job = requireJob(jobId)
-    require(job.optString("status") !in setOf("running", "queued")) { "Pause or cancel the active translation before deleting it." }
+    require(job.optString("status") !in setOf("running", "queued") && !job.optBoolean("workerStopping")) {
+      "Pause or cancel the active translation and wait for it to stop before deleting it."
+    }
+    val documentId = job.getString("documentId")
     JobPdfExporter(context, database).delete(jobId)
+    // These IDs are generated exclusively for this job: the PDF result, the
+    // translated DOCX, and the two private DOCX-to-PDF preview routes.
+    listOf(jobId, "pdf-export-$jobId", "preview-pdf-$jobId")
+      .forEach(database::deleteExport)
+    deletePrivateFile(File(context.filesDir, "translated-docx"), "$jobId.docx")
+    deletePrivateFile(File(context.cacheDir, "docx-preview-pdf"), "renderer-v5-translated-$jobId.pdf")
+    removeThumbnailPrefix("docx_translated_v5_${jobId}_")
+    removeThumbnailPrefix("translated_${jobId}_")
+    removeThumbnailPrefix("translated_v2_${jobId}_")
+    val hasOtherJobs = database.hasOtherJobsForDocument(documentId, jobId)
     database.deleteJob(jobId)
+    if (!hasOtherJobs) removeImportedDocument(documentId)
+    null
+  }
+
+  @ReactMethod
+  fun deleteDocument(documentId: String, promise: Promise) = runAsync(promise, "DOCUMENT_DELETE_FAILED") {
+    require(database.documentInfo(documentId) != null) { "The document was not found." }
+    require(!database.hasJobsForDocument(documentId)) { "Remove its translation jobs before removing this document." }
+    removeImportedDocument(documentId)
     null
   }
 
   @ReactMethod
   fun getJob(jobId: String, pageIndex: Int, promise: Promise) = runAsync(promise, "JOB_READ_FAILED") {
-    val job = requireJob(jobId)
+    var job = requireJob(jobId)
+    val layout = if (job.optString("format") != "docx" && job.optString("status") in setOf("completed", "partial")) {
+      val exporter = JobPdfExporter(context, database)
+      exporter.cachedReceipt(jobId) ?: exporter.getOrBuild(jobId).receipt
+    } else null
     val pages = database.pageRows(jobId)
-    val selected = if (pageIndex in 0 until job.getInt("totalPages")) database.page(jobId, pageIndex) else null
-    JSONObject().put("job", job).put("pages", pages).put("selectedPage", selected ?: JSONObject.NULL).toString()
+    if (layout != null && (0 until pages.length()).any { pages.getJSONObject(it).optString("status") == "partial" }) {
+      database.markCompletedJobNeedsReview(jobId)
+      job = requireJob(jobId)
+    }
+    val sourcePageIndex = if (layout != null) layout.pages.getOrNull(pageIndex)?.sourcePageIndex ?: -1 else pageIndex
+    val selected = if (sourcePageIndex in 0 until job.getInt("totalPages")) database.page(jobId, sourcePageIndex) else null
+    JSONObject().put("job", job).put("pages", pages).put("selectedPage", selected ?: JSONObject.NULL)
+      .put("pdfLayout", layout?.toJson() ?: JSONObject.NULL).toString()
   }
 
   @ReactMethod
   fun renderPage(documentId: String, pageIndex: Int, width: Int, promise: Promise) = runAsync(promise, "THUMBNAIL_FAILED") {
-    val path = database.documentPath(documentId) ?: throw IllegalArgumentException("The document is no longer available.")
-    if (database.documentFormat(documentId) == "docx") {
-      val pdf = getDocxPreviewPdf(documentId, null, false)
-      renderCachedPage("docx_original_v5_$documentId", pdf.absolutePath, pageIndex, width)
-    } else renderCachedPage("original_$documentId", path, pageIndex, width)
+    withPhaseTiming("preview") {
+      val path = database.documentPath(documentId) ?: throw IllegalArgumentException("The document is no longer available.")
+      if (database.documentFormat(documentId) == "docx") {
+        val pdf = getDocxPreviewPdf(documentId, null, false)
+        renderCachedPage("docx_original_v5_$documentId", pdf.absolutePath, pageIndex, width)
+      } else renderCachedPage("original_$documentId", path, pageIndex, width)
+    }
   }
 
   @ReactMethod
   fun renderDocxPreview(documentId: String, jobId: String?, translated: Boolean, promise: Promise) = runAsync(promise, "DOCX_PREVIEW_FAILED") {
-    require(database.documentFormat(documentId) == "docx") { "The selected document is not a Word .docx file." }
-    val pdf = getDocxPreviewPdf(documentId, jobId, translated)
-    val count = android.os.ParcelFileDescriptor.open(pdf, android.os.ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
-      android.graphics.pdf.PdfRenderer(descriptor).use { it.pageCount }
+    withPhaseTiming("preview") {
+      require(database.documentFormat(documentId) == "docx") { "The selected document is not a Word .docx file." }
+      val pdf = getDocxPreviewPdf(documentId, jobId, translated)
+      val count = android.os.ParcelFileDescriptor.open(pdf, android.os.ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+        android.graphics.pdf.PdfRenderer(descriptor).use { it.pageCount }
+      }
+      JSONObject().put("format", "pdf").put("pageCount", count).toString()
     }
-    JSONObject().put("format", "pdf").put("pageCount", count).toString()
   }
 
   @ReactMethod
   fun renderTranslatedPage(jobId: String, pageIndex: Int, width: Int, promise: Promise) = runAsync(promise, "TRANSLATED_THUMBNAIL_FAILED") {
-    val job = requireJob(jobId)
-    require(job.optString("status") in setOf("completed", "partial")) { "Wait until translation has finished before previewing translated pages." }
-    if (job.optString("format") == "docx") {
-      val pdf = getDocxPreviewPdf(job.getString("documentId"), jobId, true)
-      val count = android.os.ParcelFileDescriptor.open(pdf, android.os.ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
-        android.graphics.pdf.PdfRenderer(descriptor).use { it.pageCount }
+    val timing = ProcessingTiming()
+    try {
+      timing.measure("preview") {
+        val job = requireJob(jobId)
+        require(job.optString("status") in setOf("completed", "partial")) { "Wait until translation has finished before previewing translated pages." }
+        if (job.optString("format") == "docx") {
+          val pdf = getDocxPreviewPdf(job.getString("documentId"), jobId, true)
+          val count = android.os.ParcelFileDescriptor.open(pdf, android.os.ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+            android.graphics.pdf.PdfRenderer(descriptor).use { it.pageCount }
+          }
+          require(pageIndex in 0 until count) { "The requested preview page is outside the rendered Word document." }
+          return@measure renderCachedPage("docx_translated_v5_$jobId", pdf.absolutePath, pageIndex, width)
+        }
+        val pdf = JobPdfExporter(context, database, timing = timing).getOrBuild(jobId)
+        if (pdf.partial) database.markCompletedJobNeedsReview(jobId)
+        require(pageIndex in 0 until pdf.pageCount) { "The requested page is outside this translated PDF." }
+        // The receipt maps output pages to source checkpoints. Include the PDF
+        // digest so a previous annotation-only preview cannot survive reflow.
+        renderCachedPage("translated_v2_${jobId}_${pdf.receipt.outputSha256}", pdf.file.absolutePath, pageIndex, width)
       }
-      require(pageIndex in 0 until count) { "The requested preview page is outside the rendered Word document." }
-      return@runAsync renderCachedPage("docx_translated_v5_$jobId", pdf.absolutePath, pageIndex, width)
-    }
-    require(pageIndex in 0 until job.getInt("totalPages")) { "The requested page is outside this document." }
-    val page = database.page(jobId, pageIndex) ?: throw IllegalStateException("This page has not been checkpointed yet.")
-    require(page.optString("status") in setOf("completed", "partial")) { "This page has not finished translation yet." }
-    val source = database.jobDocumentPath(jobId) ?: throw IllegalStateException("The source document is unavailable.")
-    existingThumbnail("translated_$jobId", pageIndex, width) ?: run {
-      val temporaryPdf = File(translatedPageDirectory, "$jobId-$pageIndex-${UUID.randomUUID()}.pdf")
-      try {
-        val targetLanguage = job.getString("targetLanguage")
-        LanguagePair.requireValid(job.getString("sourceLanguage"), targetLanguage)
-        val result = JSONObject(NativeCore.exportPage(source, pageIndex, page.getJSONArray("blocks").toString(), temporaryPdf.absolutePath, fontPath(), cjkFontPath(targetLanguage)))
-        if (result.has("error")) throw IllegalStateException(result.optString("error", "The translated page could not be rendered."))
-        require(temporaryPdf.isFile && temporaryPdf.length() > 0) { "The PDF core did not create a translated page preview." }
-        renderCachedPage("translated_$jobId", temporaryPdf.absolutePath, 0, width, pageIndex)
-      } finally { temporaryPdf.delete() }
+    } finally {
+      timing.flush()
     }
   }
 
@@ -506,14 +582,15 @@ internal class PdfTranslatorModule(
     val job = database.jobJson(jobId) ?: return promise.reject("JOB_NOT_FOUND", "Translation job was not found.")
     if (job.optString("status") !in setOf("completed", "partial")) return promise.reject("JOB_NOT_READY", "Wait until translation has finished before previewing.")
     io.execute {
+      val timing = ProcessingTiming()
       try {
-        val (file, id, name) = if (job.optString("format") == "docx") {
+        val (file, id, name) = timing.measure("preview") { if (job.optString("format") == "docx") {
           val pdf = getDocxPreviewPdf(job.getString("documentId"), jobId, true)
           val exportId = "preview-pdf-$jobId"
           val name = "${File(job.optString("documentName", "document.docx")).nameWithoutExtension}-translated.pdf"
           database.saveExport(exportId, pdf.absolutePath, name, "application/pdf")
           Triple(pdf, exportId, name)
-        } else buildTranslatedPdf(jobId)
+        } else buildTranslatedPdf(jobId, timing) }
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         context.runOnUiQueueThread {
           try {
@@ -528,6 +605,8 @@ internal class PdfTranslatorModule(
         }
       } catch (error: Exception) {
         promise.reject("PREVIEW_FAILED", error.message ?: "The translated PDF could not be prepared.", error)
+      } finally {
+        timing.flush()
       }
     }
   }
@@ -553,7 +632,7 @@ internal class PdfTranslatorModule(
             ExportArtifact(file, jobId, name, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
           }
           job.optString("format") == "docx" -> {
-            val file = getDocxPreviewPdf(job.getString("documentId"), jobId, true)
+            val file = withPhaseTiming("preview") { getDocxPreviewPdf(job.getString("documentId"), jobId, true) }
             val id = "pdf-export-$jobId"
             val name = "${File(job.optString("documentName", "document.docx")).nameWithoutExtension}-translated.pdf"
             database.saveExport(id, file.absolutePath, name, "application/pdf")
@@ -802,13 +881,16 @@ internal class PdfTranslatorModule(
       inspection.optInt("segmentCount", 0), inspection.optJSONArray("warnings") ?: JSONArray())
   }
 
-  private fun buildTranslatedPdf(jobId: String): Triple<File, String, String> {
+  private fun buildTranslatedPdf(jobId: String, timing: ProcessingTiming? = null): Triple<File, String, String> {
     val job = requireJob(jobId)
     require(job.optString("status") in setOf("completed", "partial")) { "Wait until translation has finished before exporting." }
     val previousStage = job.optString("stage", "complete")
+    val phaseTiming = timing ?: ProcessingTiming()
     database.updateJob(jobId, stage = "exporting")
     try {
-      val result = JobPdfExporter(context, database).getOrBuild(jobId)
+      val result = phaseTiming.measure("pdf_finalization") {
+        JobPdfExporter(context, database, timing = phaseTiming).getOrBuild(jobId)
+      }
       database.updateJob(jobId, status = if (result.partial) "partial" else "completed", stage = "complete", clearError = true)
       return Triple(result.file, result.exportId, result.displayName)
     } catch (error: Exception) {
@@ -816,8 +898,12 @@ internal class PdfTranslatorModule(
         error = error.message ?: "The saved translated PDF could not be verified.")
       throw error
     } finally {
-      if (database.jobJson(jobId)?.optString("status") in setOf("completed", "partial")) {
-        database.updateJob(jobId, stage = previousStage)
+      try {
+        if (database.jobJson(jobId)?.optString("status") in setOf("completed", "partial")) {
+          database.updateJob(jobId, stage = previousStage)
+        }
+      } finally {
+        if (timing == null) phaseTiming.flush()
       }
     }
   }
@@ -885,7 +971,7 @@ internal class PdfTranslatorModule(
   }
 
   private fun fontPath(): String {
-    val target = File(context.cacheDir, "NotoSans-Regular.ttf")
+    val target = File(context.cacheDir, FontAsset.DEFAULT_CACHE_FILENAME)
     return FontAsset.ensure(context, target).absolutePath
   }
 
@@ -932,14 +1018,6 @@ internal class PdfTranslatorModule(
     return Uri.fromFile(file).toString()
   }
 
-  private fun existingThumbnail(cacheKey: String, pageIndex: Int, width: Int): String? {
-    require(pageIndex >= 0 && width in 64..2048) { "The page or preview size is invalid." }
-    val file = File(thumbnailDirectory, "${cacheKey}_${pageIndex}_$width.png")
-    return synchronized(thumbnailDirectory) {
-      if (isPng(file)) Uri.fromFile(file).toString() else { file.delete(); null }
-    }
-  }
-
   private fun isPng(file: File): Boolean {
     if (!file.isFile || file.length() < PNG_SIGNATURE.size) return false
     return FileInputStream(file).use { input -> PNG_SIGNATURE.indices.all { input.read() == (PNG_SIGNATURE[it].toInt() and 0xff) } }
@@ -947,6 +1025,35 @@ internal class PdfTranslatorModule(
 
   private fun requireJob(id: String): JSONObject = database.jobJson(id)
     ?: throw IllegalArgumentException("Translation job was not found.")
+
+  private fun privateJobExportId(jobId: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(jobId.toByteArray(Charsets.UTF_8))
+    return "job-" + digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+  }
+
+  /** Delete only a copied source whose canonical parent is the private import directory. */
+  private fun removeImportedDocument(documentId: String) {
+    val info = database.documentInfo(documentId)
+    if (info != null) {
+      val documentDirectory = File(context.filesDir, "documents").canonicalFile
+      val source = File(info.first).canonicalFile
+      if (source.parentFile == documentDirectory) source.delete()
+      database.deleteDocument(documentId)
+    }
+    removeThumbnailPrefix("original_${documentId}_")
+    removeThumbnailPrefix("docx_original_v5_${documentId}_")
+    deletePrivateFile(File(context.cacheDir, "docx-preview-pdf"), "renderer-v5-original-$documentId.pdf")
+  }
+
+  private fun deletePrivateFile(directory: File, name: String) {
+    val privateDirectory = directory.canonicalFile
+    val target = File(privateDirectory, name).canonicalFile
+    if (target.parentFile == privateDirectory) target.delete()
+  }
+
+  private fun removeThumbnailPrefix(prefix: String) {
+    thumbnailDirectory.listFiles()?.filter { it.name.startsWith(prefix) }?.forEach(File::delete)
+  }
 
   private fun safePdfName(raw: String): String {
     val base = raw.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[^A-Za-z0-9._ -]"), "_").trim().take(100)
@@ -966,6 +1073,11 @@ internal class PdfTranslatorModule(
         promise.reject("NATIVE_CORE_UNAVAILABLE", "The local PDF and translation engine is unavailable in this build.", error)
       }
     }
+  }
+
+  private fun <T> withPhaseTiming(phase: String, action: () -> T): T {
+    val timing = ProcessingTiming()
+    return try { timing.measure(phase, action) } finally { timing.flush() }
   }
 
   companion object {

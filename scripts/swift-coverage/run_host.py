@@ -28,6 +28,7 @@ def main() -> int:
     output = (args.output or coverage.ROOT / ".local-private/swift-coverage-host" / str(uuid.uuid4())).resolve()
     output.mkdir(parents=True, exist_ok=False)
     environment = {**os.environ, "DEVELOPER_DIR": coverage.DEVELOPER}
+    environment.pop("SDKROOT",None)
     sources = [coverage.ROOT / "ios/TranslatePDF" / f"{name}.swift" for name in (
         "ModelCatalog", "ModelDownloadCoordinator", "TranslatorStore")]
     driver_source = coverage.ROOT / "ios/tests/TranslatorStorePipelineTest.swift"
@@ -56,6 +57,7 @@ def main() -> int:
         name = "transformed" if transformed else "original"
         binary = output / f"{name}-run"
         command = ["xcrun","swiftc","-j","1","-swift-version","5","-Onone","-g","-target",triple,
+                   "-module-cache-path",str(output / "host-module-cache"),
                    "-profile-generate","-profile-coverage-mapping"]
         if transformed: command += ["-D","BRANCH_COVERAGE","-vfsoverlay",str(output / "instrumented/overlay.json"),str(output / "instrumented/BranchRuntime.swift")]
         command += [str(path) for path in sources] + [str(output / "Driver.swift"),"-o",str(binary)]

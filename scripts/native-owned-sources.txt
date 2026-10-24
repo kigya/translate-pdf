@@ -2,6 +2,8 @@
 # downloaded vendor code and public framework headers are intentionally outside
 # the owned application-code coverage denominator.
 native/core.cpp
+native/source_layout.cpp
+native/source_layout.hpp
 native/core_detail.hpp
 native/core_operations.hpp
 native/translation_guard.hpp
@@ -9,17 +11,23 @@ native/android_bridge.cpp
 android/app/src/main/java/com/translatepdf/MainActivity.kt
 android/app/src/main/java/com/translatepdf/MainApplication.kt
 android/app/src/main/java/dev/kigya/translatepdf/FontAsset.kt
+android/app/src/main/java/dev/kigya/translatepdf/GemmaTranslationContext.kt
 android/app/src/main/java/dev/kigya/translatepdf/JobPdfExporter.kt
+android/app/src/main/java/dev/kigya/translatepdf/LayoutRetryPolicy.kt
 android/app/src/main/java/dev/kigya/translatepdf/LanguagePair.kt
+android/app/src/main/java/dev/kigya/translatepdf/LocalTranslationMemo.kt
 android/app/src/main/java/dev/kigya/translatepdf/ModelCatalog.kt
 android/app/src/main/java/dev/kigya/translatepdf/ModelDownloader.kt
 android/app/src/main/java/dev/kigya/translatepdf/NativeCore.kt
 android/app/src/main/java/dev/kigya/translatepdf/OcrEngine.kt
 android/app/src/main/java/dev/kigya/translatepdf/OcrOutcome.kt
 android/app/src/main/java/dev/kigya/translatepdf/PageExportIssues.kt
+android/app/src/main/java/dev/kigya/translatepdf/PdfLayoutReceipt.kt
 android/app/src/main/java/dev/kigya/translatepdf/PdfTranslationService.kt
 android/app/src/main/java/dev/kigya/translatepdf/PdfTranslatorModule.kt
 android/app/src/main/java/dev/kigya/translatepdf/ProtectedValueGuard.kt
+android/app/src/main/java/dev/kigya/translatepdf/ProcessingTiming.kt
+android/app/src/main/java/dev/kigya/translatepdf/WeightRepackingPolicy.kt
 android/app/src/main/java/dev/kigya/translatepdf/TranslatorDatabase.kt
 ios/TranslatePDF/AppDelegate.swift
 ios/TranslatePDF/ModelCatalog.swift

@@ -301,7 +301,7 @@ class TranslatorDatabaseTest {
   }
 
   @Test
-  fun jobLabelsAreWhitelistedTerminalOnlyAndDoNotRewriteJobTimestamps() {
+  fun jobLabelsAreWhitelistedForEveryNonCanceledStatusAndDoNotRewriteJobTimestamps() {
     createJob("label-completed")
     database.updateJob("label-completed", status = "completed")
     val before = database.jobJson("label-completed")!!
@@ -324,7 +324,140 @@ class TranslatorDatabaseTest {
 
     createJob("label-running")
     database.updateJob("label-running", status = "running")
-    assertTrue(runCatching { database.setJobColor("label-running", "blue") }.isFailure)
+    database.setJobColor("label-running", "blue")
+    assertEquals("blue", database.jobJson("label-running")!!.getString("labelColor"))
+    createJob("label-canceled")
+    database.updateJob("label-canceled", status = "canceled")
+    assertTrue(runCatching { database.setJobColor("label-canceled", "blue") }.isFailure)
+  }
+
+  @Test
+  fun savedBlockCountersAndStageMetadataAreDenormalizedForFastProgressSnapshots() {
+    database.upsertDocument("activity-doc", "sample.pdf", "/private/sample.pdf", 2, "e".repeat(64))
+    database.addJob("activity-job", JSONObject().put("documentId", "activity-doc")
+      .put("sourceLanguage", "en").put("targetLanguage", "ru")
+      .put("modelId", ModelCatalog.RECOMMENDED_ID), 2)
+    val translated = JSONObject().put("status", "translated")
+    val pending = JSONObject().put("status", "pending")
+    database.savePage("activity-job", 0, "running", JSONArray().put(translated).put(pending).toString(), expectedBlocks = 2)
+    database.updateJob("activity-job", status = "running", stage = "translating", currentPage = 0, currentBlock = 1)
+
+    val firstSnapshot = database.jobJson("activity-job", includePageWarnings = false)!!
+    assertEquals(1, firstSnapshot.getInt("completedBlocks"))
+    assertEquals(2, firstSnapshot.getInt("discoveredBlocks"))
+    assertEquals(2, firstSnapshot.getInt("pageBlocks"))
+    assertEquals(1, firstSnapshot.getInt("completedPageBlocks"))
+    assertEquals(1, firstSnapshot.getInt("currentBlock"))
+    assertEquals("translating", firstSnapshot.getString("stage"))
+    assertTrue(firstSnapshot.getLong("stageStartedAt") > 0L)
+
+    database.savePage("activity-job", 1, "partial", JSONArray().put(JSONObject().put("status", "partial")).toString(), expectedBlocks = 1)
+    val allPages = database.jobJson("activity-job", includePageWarnings = false)!!
+    assertEquals(2, allPages.getInt("completedBlocks"))
+    assertEquals(3, allPages.getInt("discoveredBlocks"))
+    assertEquals(3, allPages.getInt("totalBlocks"))
+  }
+
+  @Test
+  fun legacyPageCountersRemainUnknownUntilBackfilledFromSavedStatuses() {
+    createJob("legacy-progress")
+    val legacyBlocks = JSONArray()
+      .put(JSONObject().put("status", "translated"))
+      .put(JSONObject().put("status", "partial"))
+      .put(JSONObject().put("status", "failed"))
+      .put(JSONObject().put("status", "skipped"))
+      .put(JSONObject().put("status", "pending"))
+      .put(JSONObject())
+    database.savePage("legacy-progress", 0, "running", legacyBlocks.toString())
+    database.writableDatabase.execSQL(
+      "UPDATE pages SET completed_blocks=NULL, discovered_blocks=NULL, expected_blocks=NULL WHERE job_id=? AND page_index=0",
+      arrayOf("legacy-progress"),
+    )
+
+    assertTrue(database.jobJson("legacy-progress")!!.isNull("completedBlocks"))
+    assertTrue(database.jobJson("legacy-progress")!!.isNull("discoveredBlocks"))
+
+    database.backfillPageBlockProgress("legacy-progress", 0)
+
+    val recovered = database.jobJson("legacy-progress")!!
+    assertEquals(4, recovered.getInt("completedBlocks"))
+    assertEquals(6, recovered.getInt("discoveredBlocks"))
+    assertTrue(recovered.isNull("totalBlocks"))
+    // A second call is a no-op after the additive migration fields are populated.
+    database.backfillPageBlockProgress("legacy-progress", 0)
+    assertEquals(4, database.jobJson("legacy-progress")!!.getInt("completedBlocks"))
+  }
+
+  @Test
+  fun documentJobAndCompletedPageQueriesHandleEmptyAndMixedRows() {
+    database.upsertDocument("query-doc", "query.pdf", "/private/query.pdf", 4, "f".repeat(64))
+    assertFalse(database.hasJobsForDocument("query-doc"))
+    assertFalse(database.hasOtherJobsForDocument("query-doc", "missing-job"))
+    assertEquals(emptySet<Int>(), database.completedPageIndexes("missing-job"))
+
+    database.addJob("query-job-a", JSONObject().put("documentId", "query-doc")
+      .put("sourceLanguage", "en").put("targetLanguage", "ru").put("modelId", ModelCatalog.RECOMMENDED_ID), 4)
+    database.addJob("query-job-b", JSONObject().put("documentId", "query-doc")
+      .put("sourceLanguage", "en").put("targetLanguage", "ru").put("modelId", ModelCatalog.RECOMMENDED_ID), 4)
+    assertTrue(database.hasJobsForDocument("query-doc"))
+    assertTrue(database.hasOtherJobsForDocument("query-doc", "query-job-a"))
+    assertTrue(database.hasOtherJobsForDocument("query-doc", "query-job-b"))
+
+    database.savePage("query-job-a", 0, "completed", "[]")
+    database.savePage("query-job-a", 1, "partial", "[]")
+    database.savePage("query-job-a", 2, "failed", "[]")
+    database.savePage("query-job-a", 3, "running", "[]")
+    assertEquals(setOf(0, 1), database.completedPageIndexes("query-job-a"))
+    assertEquals(0, database.completedPageCount("query-job-b"))
+    database.deleteJob("query-job-a")
+    assertFalse(database.hasOtherJobsForDocument("query-doc", "query-job-b"))
+  }
+
+  @Test
+  fun deletingOneSharedDocumentJobPreservesSiblingAndItsCheckpointUntilSourceDeletion() {
+    database.upsertDocument("shared-doc", "shared.pdf", "/private/shared.pdf", 2, "c".repeat(64))
+    fun addSharedJob(id: String) = database.addJob(id, JSONObject()
+      .put("documentId", "shared-doc").put("sourceLanguage", "en").put("targetLanguage", "ru")
+      .put("modelId", ModelCatalog.RECOMMENDED_ID), 2)
+    addSharedJob("shared-first")
+    addSharedJob("shared-second")
+    database.savePage("shared-first", 0, "completed", "[]")
+    database.savePage("shared-second", 1, "partial", JSONArray()
+      .put(JSONObject().put("id", "sibling-checkpoint").put("status", "partial")).toString())
+
+    database.deleteJob("shared-first")
+
+    assertNull(database.jobJson("shared-first"))
+    assertNull(database.page("shared-first", 0))
+    assertEquals("/private/shared.pdf", database.documentPath("shared-doc"))
+    assertTrue(database.hasJobsForDocument("shared-doc"))
+    assertEquals("sibling-checkpoint", database.pageBlockArray("shared-second", 1).getJSONObject(0).getString("id"))
+
+    database.deleteJob("shared-second")
+    assertFalse(database.hasJobsForDocument("shared-doc"))
+    assertEquals("/private/shared.pdf", database.documentPath("shared-doc"))
+
+    database.deleteDocument("shared-doc")
+    assertNull(database.documentPath("shared-doc"))
+    assertNull(database.jobJson("shared-second"))
+    assertNull(database.page("shared-second", 1))
+  }
+
+  @Test
+  fun pageCheckpointRetainsMalformedLegacyJsonAndHonorsExplicitCounterHints() {
+    createJob("legacy-malformed-page")
+    database.savePage("legacy-malformed-page", 0, "running", "legacy-checkpoint")
+    assertTrue(database.jobJson("legacy-malformed-page")!!.isNull("completedBlocks"))
+    assertTrue(database.jobJson("legacy-malformed-page")!!.isNull("discoveredBlocks"))
+    assertEquals("legacy-checkpoint", database.writableDatabase.rawQuery(
+      "SELECT blocks_json FROM pages WHERE job_id='legacy-malformed-page' AND page_index=0", null,
+    ).use { assertTrue(it.moveToFirst()); it.getString(0) })
+
+    database.savePage("legacy-malformed-page", 0, "running", "not-json", expectedBlocks = 9, knownCompletedBlocks = 3)
+    val snapshot = database.jobJson("legacy-malformed-page")!!
+    assertEquals(3, snapshot.getInt("completedBlocks"))
+    assertEquals(9, snapshot.getInt("discoveredBlocks"))
+    assertTrue(snapshot.isNull("totalBlocks"))
   }
 
   @Test
@@ -381,6 +514,52 @@ class TranslatorDatabaseTest {
       assertEquals(before, database.jobJson(id)!!.toString())
     }
     assertFalse(database.transitionActiveJob("missing-transition-job", "canceled"))
+  }
+
+  @Test
+  fun lateStageUpdateForDeletedJobIsHarmless() {
+    createJob("deleted-before-stage-update")
+    database.deleteJob("deleted-before-stage-update")
+
+    database.updateJob("deleted-before-stage-update", status = "running", stage = "translating", currentBlock = 4)
+
+    assertNull(database.jobJson("deleted-before-stage-update"))
+  }
+
+  @Test
+  fun rebuildingCompletedPdfMarksOnlyCompletedJobsForReview() {
+    createJob("review-transition-completed")
+    database.updateJob("review-transition-completed", status = "completed")
+    database.writableDatabase.execSQL("UPDATE jobs SET updated_at=100 WHERE id=?", arrayOf("review-transition-completed"))
+
+    database.markCompletedJobNeedsReview("review-transition-completed")
+
+    val reviewed = database.jobJson("review-transition-completed")!!
+    assertEquals("partial", reviewed.getString("status"))
+    assertTrue("the completed-to-partial transition records a new update time", reviewed.getLong("updatedAt") > 100L)
+
+    database.writableDatabase.execSQL("UPDATE jobs SET updated_at=200 WHERE id=?", arrayOf("review-transition-completed"))
+    database.markCompletedJobNeedsReview("review-transition-completed")
+    val repeated = database.jobJson("review-transition-completed")!!
+    assertEquals("partial", repeated.getString("status"))
+    assertEquals("an already partial job must not be rewritten", 200L, repeated.getLong("updatedAt"))
+
+    for (status in listOf("paused", "canceled", "running")) {
+      val id = "review-transition-$status"
+      createJob(id)
+      database.updateJob(id, status = status, stage = "before-review")
+      database.writableDatabase.execSQL("UPDATE jobs SET updated_at=300 WHERE id=?", arrayOf(id))
+      val before = database.jobJson(id)!!.toString()
+
+      database.markCompletedJobNeedsReview(id)
+
+      assertEquals("review discovery must preserve a $status job", before, database.jobJson(id)!!.toString())
+    }
+
+    createJob("review-transition-deleted")
+    database.deleteJob("review-transition-deleted")
+    database.markCompletedJobNeedsReview("review-transition-deleted")
+    assertNull(database.jobJson("review-transition-deleted"))
   }
 
   @Test
@@ -454,6 +633,53 @@ class TranslatorDatabaseTest {
   }
 
   @Test
+  fun schemaSevenEightAndNineUpgradesPreserveAlreadyAddedColumnsAndSavedRows() {
+    for (version in 7..9) {
+      database.close()
+      context.deleteDatabase("translator-private.db")
+      val legacy = SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath("translator-private.db"), null)
+      legacy.execSQL("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+      legacy.execSQL("CREATE TABLE jobs (id TEXT PRIMARY KEY, status TEXT NOT NULL, updated_at INTEGER NOT NULL, label_color TEXT)")
+      legacy.execSQL("CREATE TABLE pages (job_id TEXT NOT NULL, page_index INTEGER NOT NULL, blocks_json TEXT NOT NULL, PRIMARY KEY(job_id,page_index))")
+      if (version >= 8) {
+        legacy.execSQL("ALTER TABLE pages ADD COLUMN completed_blocks INTEGER")
+        legacy.execSQL("ALTER TABLE pages ADD COLUMN discovered_blocks INTEGER")
+      }
+      if (version >= 9) legacy.execSQL("ALTER TABLE jobs ADD COLUMN stage_started_at INTEGER")
+      legacy.execSQL("INSERT INTO settings(key,value) VALUES('theme','dark')")
+      legacy.execSQL("INSERT INTO jobs(id,status,updated_at,label_color) VALUES('upgrade-job','paused',12345,'blue')")
+      legacy.execSQL("INSERT INTO pages(job_id,page_index,blocks_json) VALUES('upgrade-job',0,'saved checkpoint')")
+      if (version >= 8) legacy.execSQL("UPDATE pages SET completed_blocks=2,discovered_blocks=3")
+      if (version >= 9) legacy.execSQL("UPDATE jobs SET stage_started_at=456")
+      legacy.version = version
+      legacy.close()
+
+      database = TranslatorDatabase(context)
+      val upgraded = database.writableDatabase
+      assertEquals(10, upgraded.version)
+      upgraded.rawQuery("SELECT status,label_color,stage_started_at,current_block FROM jobs WHERE id='upgrade-job'", null).use {
+        assertTrue(it.moveToFirst())
+        assertEquals("paused", it.getString(0))
+        assertEquals("blue", it.getString(1))
+        assertEquals(if (version >= 9) 456L else 12345L, it.getLong(2))
+        assertTrue(it.isNull(3))
+      }
+      upgraded.rawQuery("SELECT blocks_json,completed_blocks,discovered_blocks FROM pages WHERE job_id='upgrade-job'", null).use {
+        assertTrue(it.moveToFirst())
+        assertEquals("saved checkpoint", it.getString(0))
+        if (version >= 8) {
+          assertEquals(2, it.getInt(1))
+          assertEquals(3, it.getInt(2))
+        } else {
+          assertTrue(it.isNull(1))
+          assertTrue(it.isNull(2))
+        }
+      }
+      assertEquals("dark", database.setting("theme", "system"))
+    }
+  }
+
+  @Test
   fun schemaSixUpgradePreservesDocumentJobSettingsAndCheckpointRows() {
     database.close()
     context.deleteDatabase("translator-private.db")
@@ -484,7 +710,69 @@ class TranslatorDatabaseTest {
     upgraded.rawQuery("SELECT blocks_json FROM pages WHERE job_id='upgrade-job' AND page_index=0", null).use {
       assertTrue(it.moveToFirst()); assertEquals("checkpoint", it.getString(0))
     }
-    assertEquals(7, upgraded.version)
+    assertEquals(10, upgraded.version)
+  }
+
+  @Test
+  fun schemaOneUpgradeAddsEveryNewerFieldWithoutDroppingSavedJobAndCheckpointData() {
+    database.close()
+    context.deleteDatabase("translator-private.db")
+    val legacy = SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath("translator-private.db"), null)
+    legacy.execSQL("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    legacy.execSQL("CREATE TABLE documents (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, pages INTEGER NOT NULL, source_sha256 TEXT NOT NULL, imported_at INTEGER NOT NULL)")
+    legacy.execSQL("CREATE TABLE jobs (id TEXT PRIMARY KEY, document_id TEXT NOT NULL, model_id TEXT NOT NULL, model_revision TEXT NOT NULL, source_sha256 TEXT NOT NULL, glossary_snapshot TEXT NOT NULL, pipeline_version INTEGER NOT NULL, source_lang TEXT NOT NULL, target_lang TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL, completed_pages INTEGER NOT NULL, total_pages INTEGER NOT NULL, current_page INTEGER, glossary_id TEXT, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+    legacy.execSQL("CREATE TABLE pages (job_id TEXT NOT NULL, page_index INTEGER NOT NULL, status TEXT NOT NULL, blocks_json TEXT NOT NULL, width REAL NOT NULL DEFAULT 0, height REAL NOT NULL DEFAULT 0, error TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY(job_id,page_index))")
+    legacy.execSQL("CREATE TABLE glossary (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL, created_at INTEGER NOT NULL)")
+    legacy.execSQL("CREATE TABLE exports (id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL)")
+    legacy.execSQL("INSERT INTO settings(key,value) VALUES('theme','dark')")
+    legacy.execSQL("INSERT INTO documents(id,name,path,pages,source_sha256,imported_at) VALUES('v1-doc','old.pdf','/private/old.pdf',1,'${"a".repeat(64)}',123)")
+    legacy.execSQL("INSERT INTO jobs(id,document_id,model_id,model_revision,source_sha256,glossary_snapshot,pipeline_version,source_lang,target_lang,status,stage,completed_pages,total_pages,current_page,glossary_id,error,created_at,updated_at) VALUES('v1-job','v1-doc','hy-mt2-q4','old-revision','${"a".repeat(64)}','saved glossary',1,'en','ru','paused','translating',0,1,0,NULL,'saved error',456,789)")
+    legacy.execSQL("INSERT INTO pages(job_id,page_index,status,blocks_json,width,height,error,updated_at) VALUES('v1-job',0,'running','saved checkpoint',612,792,NULL,789)")
+    legacy.version = 1
+    legacy.close()
+
+    database = TranslatorDatabase(context)
+    val upgraded = database.writableDatabase
+    assertEquals(10, upgraded.version)
+    upgraded.rawQuery("SELECT value FROM settings WHERE key='theme'", null).use {
+      assertTrue(it.moveToFirst()); assertEquals("dark", it.getString(0))
+    }
+    upgraded.rawQuery("SELECT status,stage,updated_at,model_profile,stage_started_at,current_block FROM jobs WHERE id='v1-job'", null).use {
+      assertTrue(it.moveToFirst())
+      assertEquals("paused", it.getString(0)); assertEquals("translating", it.getString(1))
+      assertEquals(789L, it.getLong(2)); assertEquals("hy-mt2", it.getString(3))
+      assertEquals(789L, it.getLong(4)); assertTrue(it.isNull(5))
+    }
+    upgraded.rawQuery("SELECT blocks_json,expected_blocks,completed_blocks,discovered_blocks FROM pages WHERE job_id='v1-job' AND page_index=0", null).use {
+      assertTrue(it.moveToFirst()); assertEquals("saved checkpoint", it.getString(0))
+      assertEquals(0, it.getInt(1)); assertTrue(it.isNull(2)); assertTrue(it.isNull(3))
+    }
+    upgraded.rawQuery("SELECT engine_type,engine_id,online_consent,progress_unit FROM jobs WHERE id='v1-job'", null).use {
+      assertTrue(it.moveToFirst()); assertEquals("local", it.getString(0)); assertEquals("hy-mt2-q4", it.getString(1))
+      assertEquals(0, it.getInt(2)); assertEquals("page", it.getString(3))
+    }
+  }
+
+  @Test
+  fun activitySnapshotOmitsPageWarningScanButReturnsJobsWithAndWithoutPages() {
+    createJob("activity-empty")
+    createJob("activity-with-page")
+    database.savePage("activity-with-page", 0, "partial", "[]", error = "Review the clipped line")
+
+    val ordinary = database.jobsJson()
+    val activity = database.activityJobsJson()
+    assertEquals(2, ordinary.length())
+    assertEquals(2, activity.length())
+    val ordinaryPageJob = (0 until ordinary.length()).map { ordinary.getJSONObject(it) }
+      .single { it.getString("id") == "activity-with-page" }
+    val activityPageJob = (0 until activity.length()).map { activity.getJSONObject(it) }
+      .single { it.getString("id") == "activity-with-page" }
+    assertEquals("Review the clipped line", ordinaryPageJob.getJSONArray("warnings").getString(0))
+    assertEquals(0, activityPageJob.getJSONArray("warnings").length())
+    val emptyJob = (0 until activity.length()).map { activity.getJSONObject(it) }
+      .single { it.getString("id") == "activity-empty" }
+    assertEquals(0, emptyJob.getInt("completedBlocks"))
+    assertTrue(emptyJob.isNull("totalBlocks"))
   }
 
   @Test
@@ -1462,6 +1750,176 @@ class TranslatorDatabaseTest {
   }
 
   @Test
+  fun supportedJobLabelColorsMatchThePersistedFolderPalette() {
+    assertEquals(setOf("red", "orange", "yellow", "green", "blue", "purple"), TranslatorDatabase.JOB_LABEL_COLORS)
+    createJob("palette-job")
+    for (color in TranslatorDatabase.JOB_LABEL_COLORS) {
+      database.setJobColor("palette-job", color)
+      assertEquals(color, database.jobJson("palette-job")!!.getString("labelColor"))
+    }
+  }
+
+  @Test
+  fun unchangedActiveStagePreservesStartTimeAndMissingJobCannotBeTransitioned() {
+    createJob("unchanged-stage")
+    database.updateJob("unchanged-stage", status = "running", stage = "translating")
+    database.writableDatabase.execSQL("UPDATE jobs SET stage_started_at=123 WHERE id=?", arrayOf("unchanged-stage"))
+
+    assertTrue(database.transitionActiveJob("unchanged-stage", "paused", stage = "translating"))
+    assertEquals(123L, database.jobJson("unchanged-stage")!!.getLong("stageStartedAt"))
+    assertFalse(database.transitionActiveJob("deleted-stage-job", "paused", stage = "translating"))
+    assertNull(database.jobJson("deleted-stage-job"))
+  }
+
+  @Test
+  fun knownLegacyBlockTotalsDoNotProduceEtaUntilCompletedCountersAreRecovered() {
+    createJob("legacy-known-total")
+    for (page in 0..1) {
+      database.savePage("legacy-known-total", page, "running",
+        JSONArray().put(JSONObject().put("status", "translated")).put(JSONObject().put("status", "pending")).toString(),
+        expectedBlocks = 2)
+    }
+    database.updateJob("legacy-known-total", status = "running", stage = "translating")
+    database.writableDatabase.execSQL("UPDATE jobs SET observed_block_ms=20000,observed_block_count=10 WHERE id=?", arrayOf("legacy-known-total"))
+    database.writableDatabase.execSQL("UPDATE pages SET completed_blocks=NULL,discovered_blocks=NULL WHERE job_id=?", arrayOf("legacy-known-total"))
+
+    val unknown = database.jobJson("legacy-known-total")!!
+    assertEquals(4, unknown.getInt("totalBlocks"))
+    assertTrue(unknown.isNull("completedBlocks"))
+    assertTrue(unknown.isNull("etaSeconds"))
+    assertTrue(unknown.isNull("etaRangeSeconds"))
+
+    for (page in 0..1) database.backfillPageBlockProgress("legacy-known-total", page)
+    val recovered = database.jobJson("legacy-known-total")!!
+    assertEquals(2, recovered.getInt("completedBlocks"))
+    assertEquals(4L, recovered.getLong("etaSeconds"))
+  }
+
+  @Test
+  fun legacyBackfillCountsOnlyObjectTerminalStatusesAndRetainsUnknownElements() {
+    createJob("legacy-mixed-blocks")
+    val blocks = JSONArray().put(JSONObject().put("status", "translated"))
+      .put(JSONObject.NULL).put("unrecognized historical block").put(JSONObject().put("status", "pending"))
+    database.savePage("legacy-mixed-blocks", 0, "running", blocks.toString(), expectedBlocks = 4)
+    database.writableDatabase.execSQL("UPDATE pages SET completed_blocks=NULL,discovered_blocks=NULL WHERE job_id=?", arrayOf("legacy-mixed-blocks"))
+
+    database.backfillPageBlockProgress("legacy-mixed-blocks", 0)
+
+    val snapshot = database.jobJson("legacy-mixed-blocks")!!
+    assertEquals(1, snapshot.getInt("completedBlocks"))
+    assertEquals(4, snapshot.getInt("discoveredBlocks"))
+    assertEquals(blocks.toString(), database.pageBlockArray("legacy-mixed-blocks", 0).toString())
+  }
+
+  @Test
+  fun activityPollingSkipsAJobDeletedAfterItsIdWasListed() {
+    createJob("activity-retained")
+    createJob("activity-deleted")
+    database.close()
+    var removed = false
+    val racingDatabase = TranslatorDatabase(context, queryForRead = { db, sql, args ->
+      if (!removed && sql.startsWith("SELECT j.id,j.document_id") && args?.firstOrNull() == "activity-deleted") {
+        db.delete("jobs", "id=?", arrayOf("activity-deleted"))
+        removed = true
+      }
+      db.rawQuery(sql, args)
+    })
+    try {
+      val jobs = racingDatabase.activityJobsJson()
+      assertTrue("the deletion must occur during the nested snapshot read", removed)
+      assertEquals(1, jobs.length())
+      assertEquals("activity-retained", jobs.getJSONObject(0).getString("id"))
+      assertNull(racingDatabase.jobJson("activity-deleted"))
+      assertTrue(racingDatabase.hasJobsForDocument("doc-activity-retained"))
+    } finally {
+      racingDatabase.close()
+    }
+  }
+
+  @Test
+  fun onlineValidationRejectsDurableEngineCorruptionBetweenSnapshotReadsBeforeOpeningSource() {
+    val source = File(context.filesDir, "online-snapshot-source.pdf").apply { writeText("private source bytes") }
+    val hash = MessageDigest.getInstance("SHA-256").digest(source.readBytes())
+      .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    database.upsertDocument("online-race-doc", "source.pdf", source.absolutePath, 1, hash)
+    database.addJob("online-race-job", JSONObject().put("documentId", "online-race-doc")
+      .put("sourceLanguage", "en").put("targetLanguage", "ru").put("modelId", "mymemory")
+      .put("engine", JSONObject().put("kind", "online").put("id", "mymemory"))
+      .put("onlineConsent", true), 1)
+    database.close()
+    var corrupted = false
+    var sourceOpened = false
+    val compatibilityCursors = mutableListOf<PlannedCursor>()
+    val racingDatabase = TranslatorDatabase(context, queryForRead = { db, sql, args ->
+      val cursor = db.rawQuery(sql, args)
+      if (sql.startsWith("SELECT j.engine_type,d.format FROM jobs")) {
+        val tracked = PlannedCursor(cursor).also(compatibilityCursors::add)
+        object : CursorWrapper(tracked) {
+          override fun close() {
+            super.close()
+            // Model selection used the earlier valid online row; simulate a durable
+            // storage change only after the compatibility read has finished.
+            db.execSQL("UPDATE jobs SET engine_type='corrupt-engine' WHERE id=?", arrayOf("online-race-job"))
+            corrupted = true
+          }
+        }
+      } else cursor
+    }, openSource = {
+      sourceOpened = true
+      it.inputStream()
+    })
+    try {
+      val failure = runCatching { racingDatabase.validateJobSnapshot("online-race-job") }.exceptionOrNull()
+      assertTrue("the durable mutation must occur between the two snapshots", corrupted)
+      assertEquals("This online job no longer has a valid provider consent snapshot. Start a new job after reviewing the privacy notice.", failure?.message)
+      assertFalse("an invalid durable engine must be rejected before reading private source bytes", sourceOpened)
+      assertEquals("corrupt-engine", racingDatabase.jobJson("online-race-job")!!.getJSONObject("engine").getString("kind"))
+      assertEquals("queued", racingDatabase.jobJson("online-race-job")!!.getString("status"))
+      assertTrue("the compatibility cursor must be closed before the mutation", compatibilityCursors.single().closed)
+    } finally {
+      racingDatabase.close()
+      source.delete()
+    }
+  }
+
+  @Test
+  fun absentAggregateRowFromReadAdapterProducesUnknownProgressWithoutChangingCheckpoints() {
+    createJob("aggregate-adapter-fault")
+    val blocks = JSONArray().put(JSONObject().put("status", "translated"))
+      .put(JSONObject().put("status", "pending"))
+    for (page in 0..1) database.savePage("aggregate-adapter-fault", page, "running", blocks.toString(), expectedBlocks = 2)
+    database.updateJob("aggregate-adapter-fault", status = "running", stage = "translating", currentPage = 0)
+    database.writableDatabase.execSQL("UPDATE jobs SET observed_block_ms=20000,observed_block_count=10 WHERE id=?", arrayOf("aggregate-adapter-fault"))
+    database.close()
+    val aggregateCursors = mutableListOf<PlannedCursor>()
+    val faultingDatabase = TranslatorDatabase(context, queryForRead = { db, sql, args ->
+      val cursor = db.rawQuery(sql, args)
+      // SQLite itself always returns an aggregate row here. This deliberately
+      // injects an adapter fault and tests the defensive unknown-state contract.
+      if (sql.startsWith("SELECT SUM(completed_blocks),SUM(discovered_blocks),COUNT(*)")) {
+        PlannedCursor(cursor, empty = true).also(aggregateCursors::add)
+      } else cursor
+    })
+    try {
+      val snapshot = faultingDatabase.jobJson("aggregate-adapter-fault")!!
+      for (field in listOf("completedBlocks", "discoveredBlocks", "totalBlocks", "completedPageBlocks", "pageBlocks", "etaSeconds", "etaRangeSeconds")) {
+        assertTrue("an unavailable aggregate must leave $field unknown", snapshot.has(field) && snapshot.isNull(field))
+      }
+      assertEquals("running", snapshot.getString("status"))
+      assertTrue(aggregateCursors.single().closed)
+      for (page in 0..1) assertEquals(blocks.toString(), faultingDatabase.pageBlockArray("aggregate-adapter-fault", page).toString())
+      faultingDatabase.readableDatabase.rawQuery("SELECT SUM(completed_blocks),SUM(discovered_blocks),SUM(expected_blocks) FROM pages WHERE job_id=?", arrayOf("aggregate-adapter-fault")).use {
+        assertTrue("the underlying SQLite aggregate still returns a real row", it.moveToFirst())
+        assertEquals(2, it.getInt(0))
+        assertEquals(4, it.getInt(1))
+        assertEquals(4, it.getInt(2))
+      }
+    } finally {
+      faultingDatabase.close()
+    }
+  }
+
+  @Test
   fun queryBodyFailuresCloseCursorsAndPreserveCloseFailuresAsSuppressed() {
     val cursorPlans = mutableListOf<PlannedCursor>()
     val failingDatabase = TranslatorDatabase(context, queryForRead = { db, sql, args ->
@@ -1481,6 +1939,13 @@ class TranslatorDatabaseTest {
       { failingDatabase.addJob("job", jobInput, 1) },
       { failingDatabase.jobJson("job") },
       { failingDatabase.jobsJson() },
+      { failingDatabase.activityJobsJson() },
+      { failingDatabase.completedPageIndexes("job") },
+      { failingDatabase.backfillPageBlockProgress("job", 0) },
+      { failingDatabase.updateJob("job", stage = "translating") },
+      { failingDatabase.transitionActiveJob("job", "paused", stage = "translating") },
+      { failingDatabase.hasJobsForDocument("document") },
+      { failingDatabase.hasOtherJobsForDocument("document", "job") },
       { failingDatabase.jobDocumentPath("job") },
       { failingDatabase.requireCurrentPipeline("job") },
       { failingDatabase.validateJobSnapshot("job", model) },
@@ -1516,29 +1981,37 @@ class TranslatorDatabaseTest {
   @Test
   fun successfulCursorReadsStillPropagateCloseFailuresInNestedJobQueries() {
     createJob("close-failure-job")
+    database.savePage("close-failure-job", 0, "running", "[]")
+    database.writableDatabase.execSQL("UPDATE jobs SET pipeline_version=5 WHERE id=?", arrayOf("close-failure-job"))
+    database.writableDatabase.execSQL("UPDATE documents SET format='docx' WHERE id=?", arrayOf("doc-close-failure-job"))
     database.close()
     val closeFailureQueries = listOf(
-      "SELECT blocks_json FROM pages WHERE job_id=?",
-      "SELECT expected_blocks FROM pages WHERE job_id=?",
-      "SELECT observed_block_ms,observed_block_count,status,stage FROM jobs WHERE id=?",
+      "SELECT error FROM pages WHERE job_id=?" to { store: TranslatorDatabase -> store.jobJson("close-failure-job") },
+      "SELECT SUM(completed_blocks),SUM(discovered_blocks),COUNT(*)" to { store: TranslatorDatabase -> store.jobJson("close-failure-job") },
+      "SELECT observed_block_ms,observed_block_count,status,stage FROM jobs WHERE id=?" to { store: TranslatorDatabase -> store.jobJson("close-failure-job") },
+      "SELECT blocks_json FROM pages WHERE job_id=?" to { store: TranslatorDatabase -> store.pageBlockArray("close-failure-job", 0) },
+      "SELECT blocks_json FROM pages WHERE job_id=?" to { store: TranslatorDatabase -> store.backfillPageBlockProgress("close-failure-job", 0) },
+      "SELECT j.engine_type,d.format FROM jobs" to { store: TranslatorDatabase -> store.requireCurrentPipeline("close-failure-job") },
+      "SELECT stage FROM jobs WHERE id=?" to { store: TranslatorDatabase -> store.updateJob("close-failure-job", stage = "translating") },
+      "SELECT stage FROM jobs WHERE id=?" to { store: TranslatorDatabase -> store.transitionActiveJob("close-failure-job", "paused", stage = "translating") },
     )
 
-    for (failingSql in closeFailureQueries) {
+    for ((failingSqlPrefix, operation) in closeFailureQueries) {
       val closeFailingDatabase = TranslatorDatabase(context, queryForRead = { db, sql, args ->
-        PlannedCursor(db.rawQuery(sql, args), failClose = sql == failingSql)
+        PlannedCursor(db.rawQuery(sql, args), failClose = sql.startsWith(failingSqlPrefix))
       })
       try {
-        val failure = runCatching { closeFailingDatabase.jobJson("close-failure-job") }.exceptionOrNull()
+        val failure = runCatching { operation(closeFailingDatabase) }.exceptionOrNull()
         assertEquals("cursor close failed", failure?.message)
       } finally {
         closeFailingDatabase.close()
       }
 
       val readFailingDatabase = TranslatorDatabase(context, queryForRead = { db, sql, args ->
-        PlannedCursor(db.rawQuery(sql, args), failRead = sql == failingSql)
+        PlannedCursor(db.rawQuery(sql, args), failRead = sql.startsWith(failingSqlPrefix))
       })
       try {
-        val failure = runCatching { readFailingDatabase.jobJson("close-failure-job") }.exceptionOrNull()
+        val failure = runCatching { operation(readFailingDatabase) }.exceptionOrNull()
         assertEquals("cursor read failed", failure?.message)
         assertTrue("a body error remains primary when cursor.close succeeds", failure?.suppressed.isNullOrEmpty())
       } finally {
@@ -1638,21 +2111,22 @@ class TranslatorDatabaseTest {
       .put(JSONObject().put("status", "failed"))
       .put(JSONObject().put("status", "skipped"))
       .put(JSONObject().put("status", "translating"))
+      .put(JSONObject().put("status", "translating"))
       .put(JSONObject.NULL)
     database.updateJob("snapshot-job", status = "running", stage = "translating", currentPage = 0, error = "temporary")
     database.savePage("snapshot-job", 0, "partial", blocks.toString(), width = 612.0, height = 792.0,
       error = "page warning", expectedBlocks = 7)
-    database.savePage("snapshot-job", 1, "completed", "not-json", expectedBlocks = 0)
+    database.savePage("snapshot-job", 1, "completed", "not-json", expectedBlocks = 0, knownCompletedBlocks = 0)
     assertEquals(2, database.pageRows("snapshot-job").length())
     assertNull(database.page("snapshot-job", 7))
-    assertEquals(6, database.pageBlockArray("snapshot-job", 0).length())
+    assertEquals(7, database.pageBlockArray("snapshot-job", 0).length())
     assertEquals(0, database.pageBlockArray("snapshot-job", 7).length())
     assertEquals(2, database.completedPageCount("snapshot-job"))
 
     repeat(10) { database.recordBlockDuration("snapshot-job", if (it == 0) -1 else 1) }
     val running = database.jobJson("snapshot-job")!!
     assertEquals(4, running.getInt("completedBlocks"))
-    assertEquals(6, running.getInt("discoveredBlocks"))
+    assertEquals(7, running.getInt("discoveredBlocks"))
     assertEquals(7, running.getInt("totalBlocks"))
     assertEquals(1, running.getInt("etaSeconds"))
     assertEquals(1, running.getJSONObject("etaRangeSeconds").getInt("min"))
@@ -1882,7 +2356,7 @@ class TranslatorDatabaseTest {
     legacy.close()
 
     database = TranslatorDatabase(context)
-    assertEquals(7, database.readableDatabase.version)
+    assertEquals(10, database.readableDatabase.version)
     assertEquals(0L, database.readableDatabase.rawQuery("SELECT observed_block_ms FROM jobs WHERE id='legacy-job'", null).use { it.moveToFirst(); it.getLong(0) })
     assertEquals("hy-mt2", database.readableDatabase.rawQuery("SELECT model_profile FROM jobs WHERE id='legacy-job'", null).use { it.moveToFirst(); it.getString(0) })
     assertEquals(0, database.readableDatabase.rawQuery("SELECT expected_blocks FROM pages WHERE job_id='legacy-job'", null).use { it.moveToFirst(); it.getInt(0) })
@@ -1952,6 +2426,37 @@ class TranslatorDatabaseTest {
     assertEquals("running", database.jobJson("active-job")!!.getString("status"))
     assertTrue(database.hasActiveJob())
     assertTrue(database.modelInUse(ModelCatalog.RECOMMENDED_ID))
+  }
+
+  @Test
+  fun reopeningCurrentSchemaPreservesProgressSettingsAndModelRowsWithoutReapplyingMigrations() {
+    val id = "current-schema-reopen"
+    createJob(id)
+    database.setSetting("theme", "dark")
+    database.setSetting("selectedModelId", ModelCatalog.RECOMMENDED_ID)
+    database.modelStatus(ModelCatalog.RECOMMENDED_ID, "paused", 17)
+    val blocks = JSONArray().put(JSONObject().put("id", "saved-block")
+      .put("sourceText", "Wheel 42").put("translatedText", "Saved 42").put("status", "translated"))
+    database.savePage(id, 0, "running", blocks.toString(), 400.0, 300.0, expectedBlocks = 2)
+    database.updateJob(id, status = "paused", stage = "translating", currentPage = 0, currentBlock = 1)
+    val savedPage = database.page(id, 0)!!.toString()
+    val savedJob = database.jobJson(id)!!
+    val savedModel = database.modelState(ModelCatalog.RECOMMENDED_ID)!!.toString()
+
+    repeat(2) {
+      database.close()
+      database = TranslatorDatabase(context)
+      assertEquals(10, database.readableDatabase.version)
+      assertEquals("dark", database.setting("theme", ""))
+      assertEquals(ModelCatalog.RECOMMENDED_ID, database.setting("selectedModelId", ""))
+      assertEquals(savedModel, database.modelState(ModelCatalog.RECOMMENDED_ID)!!.toString())
+      assertEquals(savedPage, database.page(id, 0)!!.toString())
+      val restored = database.jobJson(id)!!
+      for (field in listOf("modelId", "modelRevision", "sourceSHA256", "sourceLanguage", "targetLanguage",
+        "status", "stage", "stageStartedAt", "currentPage", "currentBlock", "completedBlocks")) {
+        assertEquals("persisted $field must survive a current-schema reopen", savedJob.opt(field), restored.opt(field))
+      }
+    }
   }
 
   private fun createJob(id: String): JSONObject {

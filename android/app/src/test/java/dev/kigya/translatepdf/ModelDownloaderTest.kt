@@ -61,6 +61,46 @@ class ModelDownloaderTest {
   }
 
   @Test
+  fun pauseDuringInitialFileValidationKeepsPartialAndNeverOpensNetwork() {
+    val partial = downloader.fileFor(model.id).resolveSibling("${model.id}.part")
+    val retained = byteArrayOf(4, 9, 2)
+    partial.writeBytes(retained)
+    val pauseIssued = java.util.concurrent.atomic.AtomicBoolean()
+    val networkOpens = java.util.concurrent.atomic.AtomicInteger()
+    lateinit var pausingDownloader: ModelDownloader
+    pausingDownloader = ModelDownloader(context, database, definitionLookup = {
+      if (Thread.currentThread().name == "model-download-${model.id}" && pauseIssued.compareAndSet(false, true)) {
+        pausingDownloader.pause(model.id)
+      }
+      model
+    }, urlForDefinition = {
+      URL(null, "http://fixture.invalid/model", object : URLStreamHandler() {
+        override fun openConnection(url: URL): URLConnection {
+          networkOpens.incrementAndGet()
+          throw IOException("a paused transfer must not open the network")
+        }
+      })
+    })
+    val outcome = AtomicReference<Result<File>>()
+    val finished = CountDownLatch(1)
+    try {
+      pausingDownloader.start(model.id, onProgress = {}, onFinished = {
+        outcome.set(it)
+        finished.countDown()
+      })
+      assertTrue("the paused worker must report its completion", finished.await(5, TimeUnit.SECONDS))
+      assertTrue(pauseIssued.get())
+      assertTrue(outcome.get().exceptionOrNull() is ModelDownloadCanceled)
+      assertEquals(0, networkOpens.get())
+      assertEquals(Triple("paused", retained.size.toLong(), null), database.modelState(model.id))
+      assertEquals(retained.toList(), partial.readBytes().toList())
+      assertFalse(pausingDownloader.fileFor(model.id).exists())
+    } finally {
+      pausingDownloader.cancel(model.id)
+    }
+  }
+
+  @Test
   fun verifiesAndAtomicallyInstallsACompletePinnedResponse() {
     val bytes = byteArrayOf(4, 9, 2, 6, 5, 3, 5, 8)
     val server = LocalResponse(200, bytes)
@@ -117,6 +157,21 @@ class ModelDownloaderTest {
     } finally {
       server.close()
     }
+  }
+
+  @Test
+  fun constructorDefaultResolverUsesThePinnedDefinitionUrl() {
+    val defaultResolverDownloader = ModelDownloader(context, database, definitionLookup = { model })
+    // Exercise the real default resolver without making a network request.
+    // Successful transfer, digest verification and resolver overrides are
+    // covered separately with the local HTTP fixture.
+    val field = ModelDownloader::class.java.getDeclaredField("urlForDefinition").apply { isAccessible = true }
+    @Suppress("UNCHECKED_CAST")
+    val resolve = field.get(defaultResolverDownloader) as (ModelDefinition) -> URL
+    val resolved = resolve(model)
+    assertEquals("https://huggingface.co/local/test/resolve/test-revision/fixture.gguf", resolved.toExternalForm())
+    assertEquals("https", resolved.protocol)
+    assertEquals("huggingface.co", resolved.host)
   }
 
   @Test
@@ -292,6 +347,182 @@ class ModelDownloaderTest {
   }
 
   @Test
+  fun verifiedLegacyCatalogIdFileRestoresReadyRowWithoutRenamingOrNetworkAccess() {
+    val bytes = byteArrayOf(4, 9, 2, 6, 5, 3, 5, 8)
+    model = model.copy(
+      id = "translategemma-4b-q4",
+      fileName = "translategemma-4b-it-Q4_K_M.gguf",
+      bytes = bytes.size.toLong(),
+      sha256 = sha256(bytes),
+    )
+    downloader = ModelDownloader(context, database, definitionLookup = { model })
+    val legacyPath = File(context.filesDir, "models/translategemma-4b-q4.gguf").apply {
+      parentFile?.mkdirs()
+      writeBytes(bytes)
+    }
+
+    assertNull("the older app-managed file has no registry entry", database.modelState(model.id))
+    assertEquals("the established catalog-ID path is retained", legacyPath, downloader.fileFor(model.id))
+    assertTrue("readiness migration requires the exact pinned digest", downloader.isReady(model.id))
+    assertEquals(Triple("ready", bytes.size.toLong(), null), database.modelState(model.id))
+    assertTrue("verification must not rename or remove the existing model", legacyPath.isFile)
+    assertFalse("verification must not create a replacement partial", legacyPath.resolveSibling("${model.id}.part").exists())
+  }
+
+  @Test
+  fun validAtomicRenameWithInterruptedVerifyingRowIsReconciledToReady() {
+    val bytes = byteArrayOf(4, 9, 2, 6, 5, 3, 5, 8)
+    downloader.fileFor(model.id).writeBytes(bytes)
+    database.modelStatus(model.id, "verifying", bytes.size.toLong())
+
+    assertTrue("the already-renamed file still needs its full pinned digest checked", downloader.isReady(model.id))
+    assertEquals(Triple("ready", bytes.size.toLong(), null), database.modelState(model.id))
+  }
+
+  @Test
+  fun exactPinnedFileRepairsStaleReadyMetadataWithoutReplacingTheFile() {
+    val bytes = byteArrayOf(4, 9, 2, 6, 5, 3, 5, 8)
+    val installed = downloader.fileFor(model.id).apply { writeBytes(bytes) }
+    database.modelStatus(model.id, "ready", bytes.size.toLong() - 1, "interrupted registry update")
+
+    assertTrue("the full digest, rather than stale registry metadata, decides readiness", downloader.isReady(model.id))
+    assertEquals(Triple("ready", bytes.size.toLong(), null), database.modelState(model.id))
+    assertEquals("recovery keeps the app-managed file in place", installed, downloader.fileFor(model.id))
+    assertEquals(bytes.toList(), installed.readBytes().toList())
+  }
+
+  @Test
+  fun exactPinnedFileWithCurrentReadyMetadataDoesNotRewriteRegistry() {
+    val bytes = byteArrayOf(4, 9, 2, 6, 5, 3, 5, 8)
+    downloader.fileFor(model.id).writeBytes(bytes)
+    database.modelStatus(model.id, "ready", model.bytes)
+    val originalState = database.modelState(model.id)
+
+    assertTrue(downloader.isReady(model.id))
+    assertEquals("an already-current registry row stays stable", originalState, database.modelState(model.id))
+  }
+
+  @Test
+  fun exactPinnedFileClearsAStaleErrorEvenWhenStatusAndSizeLookReady() {
+    val bytes = byteArrayOf(4, 9, 2, 6, 5, 3, 5, 8)
+    downloader.fileFor(model.id).writeBytes(bytes)
+    database.modelStatus(model.id, "ready", model.bytes, "verification was interrupted")
+
+    assertTrue(downloader.isReady(model.id))
+    assertEquals("verified bytes reconcile the stale error field", Triple("ready", model.bytes, null), database.modelState(model.id))
+  }
+
+  @Test
+  fun incompleteLegacyFileDoesNotPromoteOrRewriteItsRegistryState() {
+    val installed = downloader.fileFor(model.id).apply { writeBytes(byteArrayOf(4, 9, 2, 6)) }
+    database.modelStatus(model.id, "verifying", model.bytes)
+    val stateBeforeVerification = database.modelState(model.id)
+
+    assertFalse("an interrupted short file is not a complete installed model", downloader.isReady(model.id))
+    assertEquals("failed length validation leaves durable state available for diagnosis",
+      stateBeforeVerification, database.modelState(model.id))
+    assertTrue("readiness checks must not delete legacy bytes", installed.isFile)
+    assertEquals(listOf<Byte>(4, 9, 2, 6), installed.readBytes().toList())
+  }
+
+  @Test
+  fun verifiedFileDoesNotRewriteModelRegistryWhileAnotherTransferOwnsTheId() {
+    val bytes = byteArrayOf(4, 9, 2, 6, 5, 3, 5, 8)
+    downloader.fileFor(model.id).writeBytes(bytes)
+    database.modelStatus(model.id, "downloading", 3)
+    val token = downloader.reserve(model.id)
+
+    try {
+      assertTrue(downloader.isReady(model.id))
+      assertEquals("readiness must not overwrite the live transfer's durable state",
+        Triple("downloading", 3L, null), database.modelState(model.id))
+    } finally {
+      assertTrue(downloader.releaseReservation(model.id, token))
+    }
+
+    assertTrue(downloader.isReady(model.id))
+    assertEquals(Triple("ready", bytes.size.toLong(), null), database.modelState(model.id))
+  }
+
+  @Test
+  fun readinessReconciliationRacingWithStartOfVerifiedFileDoesNotOpenNetworkOrLoseReadyState() {
+    val bytes = byteArrayOf(4, 9, 2, 6, 5, 3, 5, 8)
+    val installed = downloader.fileFor(model.id).apply { writeBytes(bytes) }
+    database.modelStatus(model.id, "downloading", 3)
+    database.close()
+
+    val reachedRegistryRead = CountDownLatch(1)
+    val continueRegistryRead = CountDownLatch(1)
+    val blockFirstModelRead = java.util.concurrent.atomic.AtomicBoolean(true)
+    database = TranslatorDatabase(context, queryForRead = { db, sql, arguments ->
+      if (sql.startsWith("SELECT status,downloaded_bytes,error") && blockFirstModelRead.compareAndSet(true, false)) {
+        reachedRegistryRead.countDown()
+        check(continueRegistryRead.await(5, TimeUnit.SECONDS)) { "registry read should be released" }
+      }
+      db.rawQuery(sql, arguments)
+    })
+    downloader = ModelDownloader(context, database, definitionLookup = { model })
+
+    val readiness = AtomicReference<Boolean>()
+    val readyCheckFinished = CountDownLatch(1)
+    val networkOpens = java.util.concurrent.atomic.AtomicInteger()
+    val finished = CountDownLatch(1)
+    val outcome = AtomicReference<Result<File>>()
+    val readyCheck = Thread({
+      try {
+        readiness.set(downloader.isReady(model.id))
+      } finally {
+        readyCheckFinished.countDown()
+      }
+    }, "coverage-ready-check-${model.id}")
+
+    try {
+      readyCheck.start()
+      assertTrue("readiness should reach the registry after verifying the installed bytes",
+        reachedRegistryRead.await(5, TimeUnit.SECONDS))
+
+      downloader.start(model.id, onProgress = {}, onFinished = {
+        outcome.set(it)
+        finished.countDown()
+      }, downloadUrl = URL(null, "coverage://verified-model", object : URLStreamHandler() {
+        override fun openConnection(url: URL): URLConnection {
+          networkOpens.incrementAndGet()
+          throw IOException("a verified installed file must not open a download")
+        }
+      }))
+
+      assertTrue("the queued start should short-circuit from the exact installed bytes",
+        finished.await(5, TimeUnit.SECONDS))
+      assertTrue(outcome.get().isSuccess)
+      assertEquals(installed, outcome.get().getOrThrow())
+      assertEquals(0, networkOpens.get())
+    } finally {
+      continueRegistryRead.countDown()
+      assertTrue("the concurrent readiness check should finish", readyCheckFinished.await(5, TimeUnit.SECONDS))
+      readyCheck.join(1_000)
+    }
+
+    assertEquals(true, readiness.get())
+    assertEquals("ready bytes and the persisted registry stay consistent across the reservation race",
+      Triple("ready", model.bytes, null), database.modelState(model.id))
+    assertEquals(bytes.toList(), installed.readBytes().toList())
+    assertFalse(downloader.hasActiveTransfer(model.id))
+  }
+
+  @Test
+  fun invalidLegacyBytesNeverPromoteInterruptedVerificationToReady() {
+    val installed = downloader.fileFor(model.id).apply {
+      writeBytes(byteArrayOf(4, 9, 2, 6, 5, 3, 5, 7))
+    }
+    database.modelStatus(model.id, "verifying", model.bytes)
+
+    assertFalse("same-sized bytes with the wrong pinned SHA are not ready", downloader.isReady(model.id))
+    assertEquals("failed verification must leave the interrupted state for diagnosis",
+      Triple("verifying", model.bytes, null), database.modelState(model.id))
+    assertTrue("verification must not delete a pre-existing model file", installed.isFile)
+  }
+
+  @Test
   fun claimedAndPausedServiceHandoffRemainsBusyUntilItsClaimIsReleased() {
     val first = downloader.reserve(model.id)
     assertTrue(downloader.claimServiceStart(model.id, first))
@@ -451,6 +682,49 @@ class ModelDownloaderTest {
   }
 
   @Test
+  fun lifecyclePauseCannotStopAReplacementTransferWithTheSameModelId() {
+    downloader.pauseIfOwned(model.id, "missing")
+    val previous = downloader.reserve(model.id)
+    assertTrue(downloader.releaseReservation(model.id, previous))
+    val replacement = downloader.reserve(model.id)
+    downloader.pauseIfOwned(model.id, previous)
+    assertTrue("stale cleanup must leave the replacement claimable", downloader.hasActiveTransfer(model.id))
+    assertTrue(downloader.claimServiceStart(model.id, replacement))
+    downloader.pauseIfOwned(model.id, replacement)
+    assertFalse(downloader.hasActiveTransfer(model.id))
+    downloader.releaseServiceStart(model.id, replacement)
+    assertFalse(downloader.claimServiceStart(model.id, replacement))
+    val queued = downloader.reserve(model.id)
+    downloader.pauseIfOwned(model.id, queued)
+    assertFalse(downloader.hasActiveTransfer(model.id))
+    assertTrue(downloader.releaseReservation(model.id, queued))
+  }
+
+  @Test
+  fun lifecyclePauseClosesOnlyItsCapturedWorkersConnectionBeforeNetworkConnect() {
+    val token = downloader.reserve(model.id)
+    val disconnected = java.util.concurrent.atomic.AtomicBoolean()
+    val url = URL(null, "coverage://owned-pause", object : URLStreamHandler() {
+      override fun openConnection(url: URL): URLConnection = object : HttpURLConnection(url) {
+        override fun connect() { throw AssertionError("the paused worker cannot connect") }
+        override fun disconnect() { disconnected.set(true) }
+        override fun usingProxy() = false
+        override fun setRequestProperty(key: String, value: String) {
+          super.setRequestProperty(key, value)
+          downloader.pauseIfOwned(model.id, token)
+        }
+      }
+    })
+    val finished = CountDownLatch(1)
+    val result = AtomicReference<Result<File>>()
+    downloader.start(model.id, {}, { result.set(it); finished.countDown() }, downloadUrl = url, transferToken = token)
+    assertTrue(finished.await(5, TimeUnit.SECONDS))
+    assertTrue(result.get().exceptionOrNull() is ModelDownloadCanceled)
+    assertTrue(disconnected.get())
+    assertEquals(Triple("paused", 0L, null), database.modelState(model.id))
+  }
+
+  @Test
   fun duplicateStartCannotCreateASecondWorkerOrReleaseTheRunningReservation() {
     val server = ServerSocket(0)
     val requestReceived = CountDownLatch(1)
@@ -497,7 +771,12 @@ class ModelDownloaderTest {
       assertTrue("the original worker should finish after the response is released", firstFinished.await(5, TimeUnit.SECONDS))
       assertEquals(1, callbackCount.get())
       assertTrue(firstResult.get().isFailure)
-      assertFalse(downloader.hasActiveTransfer(model.id))
+      // The callback publishes the result before the worker's finally block
+      // disconnects its socket and releases the reservation. Wait for that
+      // separate cleanup boundary instead of racing the callback latch.
+      val cleanupDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+      while (downloader.hasActiveTransfer(model.id) && System.nanoTime() < cleanupDeadline) Thread.sleep(1)
+      assertFalse("the finished worker must release its reservation", downloader.hasActiveTransfer(model.id))
     } finally {
       sendResponse.countDown()
       server.close()

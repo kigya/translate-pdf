@@ -39,7 +39,7 @@ enum __FBCov {
   }
   static func sequence<S:Sequence>(_ id: String, _ sequence: S) -> ObservedSequence<S> { ObservedSequence(id:id,base:sequence) }
   // Only export is called by a test driver. There is no public mark-covered API.
-  static func export(to path: String, runID: String) throws {
+  static func export(to path: String, runID: String, executionDigest: String = "") throws {
     lock.lock(); let snapshot = hits; let failure = invalid; lock.unlock()
     let actualModule = String(reflecting:__FBCov.self).components(separatedBy:".")[0]
     guard __fbDeclaredModule.isEmpty || __fbDeclaredModule == actualModule else { throw NSError(domain:"SwiftBranch",code:15) }
@@ -68,7 +68,7 @@ enum __FBCov {
     var hasher = SHA256()
     while let chunk = try handle.read(upToCount:1024*1024), !chunk.isEmpty { hasher.update(data:chunk) }
     let executableSHA = hasher.finalize().map { String(format:"%02x",$0) }.joined()
-    let record: [String:Any] = ["schemaVersion":1,"registryDigest":__fbDigest,"runID":runID,"hits":snapshot,"invalid":failure,"binarySHA256":executableSHA,"binaryUUID":binaryUUID,"binaryPath":executable.path,"processID":ProcessInfo.processInfo.processIdentifier,"runtimeOS":ProcessInfo.processInfo.operatingSystemVersionString,"recorderModule":actualModule,"declaredModule":__fbDeclaredModule,"binaryRole":"loaded-instrumented-image","processExecutablePath":CommandLine.arguments[0],"recordedAtEpoch":Date().timeIntervalSince1970]
+    let record: [String:Any] = ["schemaVersion":1,"registryDigest":__fbDigest,"runID":runID,"executionDigest":executionDigest,"hits":snapshot,"invalid":failure,"binarySHA256":executableSHA,"binaryUUID":binaryUUID,"binaryPath":executable.path,"processID":ProcessInfo.processInfo.processIdentifier,"runtimeOS":ProcessInfo.processInfo.operatingSystemVersionString,"recorderModule":actualModule,"declaredModule":__fbDeclaredModule,"binaryRole":"loaded-instrumented-image","processExecutablePath":CommandLine.arguments[0],"recordedAtEpoch":Date().timeIntervalSince1970]
     let data = try JSONSerialization.data(withJSONObject:record,options:[.prettyPrinted,.sortedKeys])
     try data.write(to:URL(fileURLWithPath:path),options:.atomic)
   }

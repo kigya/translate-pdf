@@ -29,13 +29,64 @@ EXCLUDED_NATIVE_SOURCES = {
 }
 EXCLUDED_NATIVE_SOURCES.update({'native/docx.hpp': 'DOCX API declarations only; implementations remain measured in native/docx.cpp', 'native/tests/docx_core_test.cpp': 'DOCX host regression/adversarial test harness, not shipped application code', 'native/vendor/miniz_zip.h': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.', 'native/vendor/pugiconfig.hpp': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.', 'native/vendor/miniz.c': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.', 'native/vendor/miniz_tinfl.h': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.', 'native/vendor/miniz_tdef.c': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.', 'native/vendor/miniz_export.h': 'Generated static-link export annotation header, no executable code; exact bytes audited in native/vendor/manifest.json.', 'native/vendor/pugixml.hpp': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.', 'native/vendor/miniz.h': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.', 'native/vendor/miniz_zip.c': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.', 'native/vendor/pugixml.cpp': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.', 'native/vendor/miniz_tinfl.c': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.', 'native/vendor/miniz_tdef.h': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.', 'native/vendor/miniz_common.h': 'Unmodified pinned third-party dependency; SHA-256 and license are audited in native/vendor/manifest.json.'})
 DECLARATION_ONLY_NATIVE_SOURCES = {
-    "native/core_detail.hpp": {
-        "sha256": "3f61b6154c426817f3a5944c8eaa34fe8a8dbb02cb1924019e9663c6c889d537",
-        "reason": "Reviewed declarations and type contracts only, with FontCoverage defaults initialized in the measured core.cpp constructor; no executable definitions remain in this header.",
+    'native/core_detail.hpp': {
+        "sha256": "d1f93c10855efcbb420a78cf07873911aa4864cfb836250817731d513d78e30e",
+        "reason": "Reviewed internal type and function declarations only; default state is initialized by measured constructors in core.cpp.",
+    },
+    'native/source_layout.hpp': {
+        "sha256": "2c4c00fa3643dd1b4cd947f1a1da19ee48608f8067e6547eccf73ff20eda3838",
+        "reason": "Reviewed source-layout types and function declarations only; default fit state is initialized by the measured constructor in source_layout.cpp.",
     },
     "native/core_operations.hpp": {
-        "sha256": "bc348d411d8939d13ac92e7fdf2c59064ded45215caae8a0c963d4af321677e7",
+        "sha256": "0c0ad739dfb70217b55025d99738f41d30638e1365acd1ee80176b02b2cfa76f",
         "reason": "Reviewed vendor-operation pointer declarations only; executable bindings remain measured in core.cpp.",
+    },
+}
+GENERATED_NATIVE_ADAPTER_SOURCES = {
+    "ios/TranslatePDF/PdfTranslatorBridge.m": {
+        "sha256": "922c228fb636f0a154f32c493ab31df6ba9892ff9066c5ea91263561b3899c53",
+        "classification": "vendor_macro_generated_objc_registration_adapter",
+        "dependencies": [{
+            "path": "node_modules/react-native/React/Base/RCTBridgeModule.h",
+            "sha256": "c06bddc821d27359440dd48820ee9a164ee24e706a4aded4a83b016bde7533ba",
+            "required_markers": [
+                "#define RCT_EXTERN_REMAP_MODULE(js_name, objc_name, objc_supername)",
+                "+(NSString *)moduleName",
+                "RCTRegisterModule([objc_name class]);",
+                "#define _RCT_EXTERN_REMAP_METHOD(js_name, method, is_blocking_synchronous_method)",
+                "static RCTMethodInfo config = {#js_name, #method, is_blocking_synchronous_method};",
+            ],
+        }],
+        "contract": {
+            "path": "ios/tests/NativeCoverageTests.swift",
+            "sha256": "6e72290745b5de587a55f58393a5cbc356db79e141b808475720ed0827e6bd58",
+            "test": "testObjectiveCExportMetadataMatchesPublicBridgeContract",
+            "expected_export_count": 30,
+        },
+        "reason": "The app-owned file is only an exact RN extern-macro registration and method-signature adapter; the pinned React Native macros emit the executable Objective-C getters, moduleName implementation, and registration constructor. The XCTest contract is source-bound and statically audited; this policy does not claim runtime execution or coverage counters.",
+    },
+    "ios/TranslatePDF/SceneDelegate.swift": {
+        "sha256": "e801fc71b2f9e352811dd8b080f6fb08a7a0cb078c1015fc18b5d0f359dfd92e",
+        "classification": "compiler_synthesized_empty_expo_scene_adapter",
+        "dependencies": [{
+            "path": "node_modules/expo/ios/Expo/ExpoAppSceneDelegate.swift",
+            "sha256": "a39cfa10500282124e09a96e1ef9c61dfd8c2ac9ef69f3e2bbde959e75074eb6",
+            "required_markers": [
+                "open class ExpoAppSceneDelegate: UIResponder, UIWindowSceneDelegate {",
+                "open func scene(",
+                "connectionOptions.url",
+                "forwarder.open(url:",
+            ],
+        }],
+        "integration": {
+            "path": "ios/TranslatePDF/Info.plist",
+            "sha256": "1e41b6658663a6df392cf2ae72a89142fcdd8a5d786c58aae0545a7b48dd9e53",
+            "required_markers": [
+                "<key>UISceneDelegateClassName</key>",
+                "<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>",
+            ],
+        },
+        "reason": "The app-owned Swift source is an empty Expo superclass adapter; lifecycle and deep-link implementation stays in the hash-pinned Expo superclass. UIKit class resolution remains app-owned and is bound to the exact Info.plist wiring. The adapter's synthesized initialization/destruction is not reported as measured app coverage.",
     },
 }
 CPP_FUNCTION_BODY = re.compile(r"\)\s*(?:const\b\s*)?(?:noexcept\b(?:\s*\([^)]*\))?\s*)?(?:->[^;{}]+)?\s*\{")
@@ -79,6 +130,120 @@ def declaration_only_evidence(root: Path, source: str) -> dict[str, Any]:
         "source_sha256": actual_hash,
         "function_body_count": function_bodies,
         "reason": spec["reason"],
+    }
+
+
+def _verified_file_text(root: Path, relative_path: str, expected_hash: str, purpose: str) -> str:
+    path = root / relative_path
+    if not path.is_file():
+        raise ValueError(f"Required {purpose} file is missing: {relative_path}")
+    actual_hash = sha256_file(path)
+    if actual_hash != expected_hash:
+        raise ValueError(f"Required {purpose} file changed and needs coverage review: {relative_path}")
+    return path.read_text(encoding="utf-8")
+
+
+def _verify_objc_bridge_contract(root: Path, contract: dict[str, Any]) -> dict[str, Any]:
+    text = _verified_file_text(root, contract["path"], contract["sha256"], "Objective-C metadata contract")
+    method_name = contract["test"]
+    start = text.find(f"func {method_name}() throws {{")
+    if start < 0:
+        raise ValueError(f"Bound metadata contract test is missing: {method_name}")
+    end = text.find("\n  func ", start + 1)
+    body = text[start:] if end < 0 else text[start:end]
+    list_start = body.find("let expectedSignatures: Set<String> = [")
+    list_end = body.find("\n    ]", list_start)
+    if list_start < 0 or list_end < 0:
+        raise ValueError(f"Bound metadata contract has no exact signature list: {method_name}")
+    signature_block = body[list_start:list_end]
+    signatures = re.findall(r'^\s+"[^"\n]+",?$', signature_block, flags=re.MULTILINE)
+    expected = int(contract["expected_export_count"])
+    if len(signatures) != expected:
+        raise ValueError(f"Bound metadata contract must enumerate exactly {expected} signatures: {method_name}")
+    required = (
+        "class_copyMethodList(metaclass, &methodCount)",
+        "getter(nativeClass as AnyObject, selector)",
+        "XCTAssertEqual(observedSignatures, expectedSignatures)",
+        'XCTAssertEqual(moduleName as? String, "PdfTranslator")',
+    )
+    if any(marker not in body for marker in required):
+        raise ValueError(f"Bound metadata contract lost a required runtime assertion: {method_name}")
+    return {
+        "path": contract["path"],
+        "sha256": contract["sha256"],
+        "test": method_name,
+        "expected_export_count": expected,
+        "statically_verified_signature_count": len(signatures),
+        "runtime_status": "not_claimed_by_static_classification",
+    }
+
+
+def generated_adapter_evidence(root: Path, source: str) -> dict[str, Any]:
+    """Verify exact source/dependency/contract provenance for reviewed generated adapters."""
+    spec = GENERATED_NATIVE_ADAPTER_SOURCES.get(source)
+    if spec is None:
+        raise ValueError(f"No generated-adapter source audit exists for {source}")
+    source_text = _verified_file_text(root, source, spec["sha256"], "generated adapter source")
+    if source == "ios/TranslatePDF/PdfTranslatorBridge.m":
+        lines = [line.strip() for line in source_text.splitlines() if line.strip()]
+        if (len(lines) != 33 or lines[0] != "#import <React/RCTBridgeModule.h>"
+                or lines[1] != "@interface RCT_EXTERN_REMAP_MODULE(PdfTranslator, PdfTranslatorModule, NSObject)"
+                or lines[-1] != "@end"
+                or any(not re.fullmatch(r"RCT_EXTERN_METHOD\([^{};]+\)", line) for line in lines[2:-1])):
+            raise ValueError(f"Objective-C generated adapter contains syntax outside the pinned macro contract: {source}")
+        if any(token in source_text for token in ("@implementation", "{", "}", "#define")):
+            raise ValueError(f"Objective-C generated adapter contains handwritten executable syntax: {source}")
+        if len(lines[2:-1]) != int(spec["contract"]["expected_export_count"]):
+            raise ValueError(f"Objective-C generated adapter export count changed: {source}")
+        signatures = [re.match(r"RCT_EXTERN_METHOD\((\w+):", line).group(1) for line in lines[2:-1]]
+        if len(signatures) != len(set(signatures)):
+            raise ValueError(f"Objective-C generated adapter contains duplicate exports: {source}")
+        contract = _verify_objc_bridge_contract(root, spec["contract"])
+    elif source == "ios/TranslatePDF/SceneDelegate.swift":
+        lines = [line.strip() for line in source_text.splitlines()
+                 if line.strip() and not line.strip().startswith("///")]
+        if lines != ["internal import Expo", "class SceneDelegate: ExpoAppSceneDelegate {}"]:
+            raise ValueError(f"Scene adapter contains handwritten executable syntax: {source}")
+        contract = None
+    else:
+        raise ValueError(f"Generated-adapter allowlist has no syntax validator for {source}")
+
+    dependencies = []
+    for dependency in spec["dependencies"]:
+        dependency_text = _verified_file_text(root, dependency["path"], dependency["sha256"], "generated-code dependency")
+        if any(marker not in dependency_text for marker in dependency["required_markers"]):
+            raise ValueError(f"Pinned generated-code dependency contract changed: {dependency['path']}")
+        dependencies.append({"path": dependency["path"], "sha256": dependency["sha256"],
+                             "verified_markers": len(dependency["required_markers"])})
+
+    integration = None
+    if "integration" in spec:
+        integration_spec = spec["integration"]
+        integration_text = _verified_file_text(root, integration_spec["path"], integration_spec["sha256"],
+                                                "scene adapter integration contract")
+        if any(marker not in integration_text for marker in integration_spec["required_markers"]):
+            raise ValueError(f"Scene adapter integration contract changed: {integration_spec['path']}")
+        integration = {"path": integration_spec["path"], "sha256": integration_spec["sha256"],
+                       "verified_markers": len(integration_spec["required_markers"])}
+
+    return {
+        "source": source,
+        "classification": spec["classification"],
+        "source_sha256": spec["sha256"],
+        "allowed_syntax_verified": True,
+        "dependencies": dependencies,
+        "metadata_contract": contract,
+        "integration_contract": integration,
+        "reason": spec["reason"],
+    }
+
+
+def verify_generated_adapter_inventory(root: Path, owned: list[str]) -> dict[str, dict[str, Any]]:
+    """Keep generated adapters inventoried while excluding only their generated bodies."""
+    return {
+        source: generated_adapter_evidence(root, source)
+        for source in sorted(GENERATED_NATIVE_ADAPTER_SOURCES)
+        if source in owned
     }
 
 
@@ -223,15 +388,27 @@ def find_coverage(source: str, files: dict[str, dict[str, Any]]) -> dict[str, An
 def analyze(sources: list[str], files: dict[str, dict[str, Any]],
             jacoco_files: dict[str, dict[str, Any]] | None = None,
             xccov_files: dict[str, dict[str, Any]] | None = None,
-            declaration_only_sources: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+            declaration_only_sources: dict[str, dict[str, Any]] | None = None,
+            generated_adapter_sources: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     jacoco_files = jacoco_files or {}
     xccov_files = xccov_files or {}
     declaration_only_sources = declaration_only_sources or {}
+    generated_adapter_sources = generated_adapter_sources or {}
     results = []
     for source in sources:
         summary = find_coverage(source, files)
         jacoco_summary = find_coverage(source, jacoco_files)
         xccov_summary = find_coverage(source, xccov_files)
+        if source in generated_adapter_sources:
+            results.append({
+                "source": source,
+                "status": "excluded_generated",
+                "metrics": {},
+                "required_metrics": [],
+                "errors": [],
+                "generated_source_audit": generated_adapter_sources[source],
+            })
+            continue
         if source in declaration_only_sources:
             observed = summary or {}
             executable_counts = {
@@ -300,9 +477,12 @@ def analyze(sources: list[str], files: dict[str, dict[str, Any]],
         "metrics": list(METRICS) + ["instructions"],
         "metric_policies": {"LLVM": list(LLVM_REQUIRED_METRICS), "JaCoCo JVM": list(JVM_REQUIRED_METRICS)},
         "owned_source_count": len(sources),
-        "measured_source_count": sum(result["status"] != "unmeasured" for result in results),
+        "owned_executable_source_count": len(sources) - len(generated_adapter_sources),
+        "excluded_generated_source_count": len(generated_adapter_sources),
+        "measured_source_count": sum(result["status"] not in {"unmeasured", "excluded_generated"} for result in results),
         "passed_source_count": sum(result["status"] == "passed" for result in results),
         "unmeasured_sources": [result["source"] for result in results if result["status"] == "unmeasured"],
+        "excluded_generated_sources": [result["source"] for result in results if result["status"] == "excluded_generated"],
         "failed_sources": [result["source"] for result in results if result["status"] == "failed"],
         "results": results,
     }
@@ -331,6 +511,7 @@ def main() -> int:
     try:
         sources = load_owned_sources(args.owned_sources)
         declaration_only = verify_source_inventory(args.repo_root.resolve(), sources)
+        generated_adapters = verify_generated_adapter_inventory(args.repo_root.resolve(), sources)
         llvm_files: dict[str, dict[str, Any]] = {}
         for llvm_path in args.llvm_json:
             duplicate_sources = set(llvm_files).intersection(load_llvm_files(llvm_path))
@@ -347,7 +528,7 @@ def main() -> int:
             xccov_files.update(load_xccov_files(xccov_path))
         result = analyze(sources, llvm_files,
                          load_jacoco_files(args.jacoco_xml) if args.jacoco_xml else None,
-                         xccov_files, declaration_only)
+                         xccov_files, declaration_only, generated_adapters)
         result["tool_inputs"] = {
             "llvm_json": [{"path": str(path), "sha256": sha256_file(path)} for path in args.llvm_json],
             "jacoco_xml": ({"path": str(args.jacoco_xml), "sha256": sha256_file(args.jacoco_xml)}
@@ -361,6 +542,7 @@ def main() -> int:
             for source, reason in sorted(EXCLUDED_NATIVE_SOURCES.items())
         ]
         result["declaration_only_sources"] = list(declaration_only.values())
+        result["generated_adapter_sources"] = list(generated_adapters.values())
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"Native coverage gate could not read its inputs: {exc}", file=sys.stderr)
         return 2
@@ -370,6 +552,8 @@ def main() -> int:
     for item in result["results"]:
         if item["status"] == "unmeasured":
             print(f"UNMEASURED {item['source']}")
+        elif item["status"] == "excluded_generated":
+            print(f"EXCLUDED GENERATED {item['source']}: {item['generated_source_audit']['classification']}")
         elif item["status"] == "failed":
             print(f"FAILED {item['source']}: {'; '.join(item['errors'])}")
         else:
@@ -377,7 +561,7 @@ def main() -> int:
     print("Native owned coverage: %d/%d files passed; %d unmeasured; %d below 100%%" % (
         result["passed_source_count"], result["owned_source_count"],
         len(result["unmeasured_sources"]), len(result["failed_sources"])))
-    return 0 if result["passed_source_count"] == result["owned_source_count"] else 1
+    return 0 if result["passed_source_count"] == result["owned_executable_source_count"] else 1
 
 
 if __name__ == "__main__":

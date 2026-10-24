@@ -15,8 +15,8 @@ internal class TranslatorDatabase(
   context: Context,
   private val queryForRead: ((SQLiteDatabase, String, Array<String>?) -> Cursor)? = null,
   private val openSource: (File) -> InputStream = { it.inputStream() },
-) :
-  SQLiteOpenHelper(context, "translator-private.db", null, 7) {
+):
+  SQLiteOpenHelper(context, "translator-private.db", null, 10) {
 
   companion object {
     const val PIPELINE_VERSION = 4
@@ -32,9 +32,9 @@ internal class TranslatorDatabase(
     db.execSQL("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     db.execSQL("CREATE TABLE documents (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL, pages INTEGER NOT NULL, source_sha256 TEXT NOT NULL, imported_at INTEGER NOT NULL, format TEXT NOT NULL DEFAULT 'pdf', segment_count INTEGER NOT NULL DEFAULT 0, warnings_json TEXT NOT NULL DEFAULT '[]')")
     db.execSQL("CREATE TABLE models (id TEXT PRIMARY KEY, status TEXT NOT NULL, downloaded_bytes INTEGER NOT NULL DEFAULT 0, error TEXT)")
-    db.execSQL("CREATE TABLE jobs (id TEXT PRIMARY KEY, document_id TEXT NOT NULL, model_id TEXT NOT NULL, model_revision TEXT NOT NULL, model_profile TEXT NOT NULL, source_sha256 TEXT NOT NULL, glossary_snapshot TEXT NOT NULL, pipeline_version INTEGER NOT NULL, source_lang TEXT NOT NULL, target_lang TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL, completed_pages INTEGER NOT NULL DEFAULT 0, total_pages INTEGER NOT NULL, current_page INTEGER, glossary_id TEXT, error TEXT, observed_block_ms INTEGER NOT NULL DEFAULT 0, observed_block_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, engine_type TEXT NOT NULL DEFAULT 'local', engine_id TEXT NOT NULL DEFAULT '', online_consent INTEGER NOT NULL DEFAULT 0, progress_unit TEXT NOT NULL DEFAULT 'page', label_color TEXT, FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE)")
+    db.execSQL("CREATE TABLE jobs (id TEXT PRIMARY KEY, document_id TEXT NOT NULL, model_id TEXT NOT NULL, model_revision TEXT NOT NULL, model_profile TEXT NOT NULL, source_sha256 TEXT NOT NULL, glossary_snapshot TEXT NOT NULL, pipeline_version INTEGER NOT NULL, source_lang TEXT NOT NULL, target_lang TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL, completed_pages INTEGER NOT NULL DEFAULT 0, total_pages INTEGER NOT NULL, current_page INTEGER, glossary_id TEXT, error TEXT, observed_block_ms INTEGER NOT NULL DEFAULT 0, observed_block_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, stage_started_at INTEGER NOT NULL DEFAULT 0, current_block INTEGER, engine_type TEXT NOT NULL DEFAULT 'local', engine_id TEXT NOT NULL DEFAULT '', online_consent INTEGER NOT NULL DEFAULT 0, progress_unit TEXT NOT NULL DEFAULT 'page', label_color TEXT, FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE)")
     db.execSQL("CREATE INDEX jobs_document_id ON jobs(document_id)")
-    db.execSQL("CREATE TABLE pages (job_id TEXT NOT NULL, page_index INTEGER NOT NULL, status TEXT NOT NULL, blocks_json TEXT NOT NULL, width REAL NOT NULL DEFAULT 0, height REAL NOT NULL DEFAULT 0, expected_blocks INTEGER, error TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY(job_id, page_index), FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)")
+    db.execSQL("CREATE TABLE pages (job_id TEXT NOT NULL, page_index INTEGER NOT NULL, status TEXT NOT NULL, blocks_json TEXT NOT NULL, width REAL NOT NULL DEFAULT 0, height REAL NOT NULL DEFAULT 0, expected_blocks INTEGER, completed_blocks INTEGER, discovered_blocks INTEGER, error TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY(job_id, page_index), FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)")
     db.execSQL("CREATE TABLE glossary (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL, source_lang TEXT NOT NULL DEFAULT 'en', target_lang TEXT NOT NULL DEFAULT 'ru', created_at INTEGER NOT NULL)")
     db.execSQL("CREATE TABLE exports (id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL, mime_type TEXT NOT NULL DEFAULT 'application/pdf')")
   }
@@ -62,6 +62,17 @@ internal class TranslatorDatabase(
     }
     if (oldVersion < 6) db.execSQL("ALTER TABLE documents ADD COLUMN warnings_json TEXT NOT NULL DEFAULT '[]'")
     if (oldVersion < 7) db.execSQL("ALTER TABLE jobs ADD COLUMN label_color TEXT")
+    if (oldVersion < 8) {
+      db.execSQL("ALTER TABLE pages ADD COLUMN completed_blocks INTEGER")
+      db.execSQL("ALTER TABLE pages ADD COLUMN discovered_blocks INTEGER")
+    }
+    if (oldVersion < 9) {
+      db.execSQL("ALTER TABLE jobs ADD COLUMN stage_started_at INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("UPDATE jobs SET stage_started_at=updated_at WHERE stage_started_at=0")
+    }
+    // This helper targets version 10, so every onUpgrade call starts below 10.
+    // When introducing a newer schema, guard this v10 step before its new step.
+    db.execSQL("ALTER TABLE jobs ADD COLUMN current_block INTEGER")
   }
 
   private fun readQuery(sql: String, arguments: Array<String>?): Cursor {
@@ -102,9 +113,9 @@ internal class TranslatorDatabase(
       val status = db.rawQuery("SELECT status FROM jobs WHERE id=?", arrayOf(id)).use {
         if (it.moveToFirst()) it.getString(0) else null
       } ?: throw IllegalArgumentException("Translation job was not found.")
-      require(status == "completed" || status == "partial") { "Only completed or partially translated documents can be labeled." }
+      require(status != "canceled") { "Canceled documents cannot be labeled." }
       val values = ContentValues().apply { if (color == null) putNull("label_color") else put("label_color", color) }
-      check(db.update("jobs", values, "id=? AND status IN ('completed','partial')", arrayOf(id)) == 1) {
+      check(db.update("jobs", values, "id=? AND status!='canceled'", arrayOf(id)) == 1) {
         "The translation job changed before its label could be saved."
       }
       db.setTransactionSuccessful()
@@ -229,14 +240,15 @@ internal class TranslatorDatabase(
       putNull("error"); put("observed_block_ms", 0); put("observed_block_count", 0)
       put("created_at", now); put("updated_at", now)
       put("engine_type", engineType); put("engine_id", engineId)
-      put("online_consent", if (engineType == "online" && input.optBoolean("onlineConsent")) 1 else 0)
+      // Online consent was validated before insertion; persist that accepted snapshot.
+      put("online_consent", if (engineType == "online") 1 else 0)
       put("progress_unit", if (documentFormat(documentId) == "docx") "segment" else "page")
     })
     return jobJson(id) ?: error("New job could not be read.")
   }
 
-  fun jobJson(id: String): JSONObject? = readQuery(
-    "SELECT j.id,j.document_id,d.name,j.model_id,j.source_lang,j.target_lang,j.status,j.stage,j.completed_pages,j.total_pages,j.current_page,j.error,j.created_at,j.updated_at,j.model_revision,j.source_sha256,j.pipeline_version,j.model_profile,j.engine_type,j.engine_id,j.online_consent,j.progress_unit,d.format,d.segment_count,d.warnings_json,j.label_color FROM jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=?",
+  fun jobJson(id: String, includePageWarnings: Boolean = true): JSONObject? = readQuery(
+    "SELECT j.id,j.document_id,d.name,j.model_id,j.source_lang,j.target_lang,j.status,j.stage,j.completed_pages,j.total_pages,j.current_page,j.error,j.created_at,j.updated_at,j.model_revision,j.source_sha256,j.pipeline_version,j.model_profile,j.engine_type,j.engine_id,j.online_consent,j.progress_unit,d.format,d.segment_count,d.warnings_json,j.label_color,j.stage_started_at,j.current_block FROM jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=?",
     arrayOf(id),
   ).use { c ->
     if (!c.moveToFirst()) null else {
@@ -259,21 +271,26 @@ internal class TranslatorDatabase(
       documentWarnings?.let {
         for (wi in 0 until documentWarnings.length()) documentWarnings.optString(wi).takeIf { it.isNotBlank() && it != "null" }?.let(warningSet::add)
       }
-      readQuery("SELECT error FROM pages WHERE job_id=? AND error IS NOT NULL", arrayOf(id)).use { rows ->
-        while (rows.moveToNext()) rows.getString(0).takeIf { it.isNotBlank() && it != "null" }?.let { warningSet.add(it) }
+      if (includePageWarnings) readQuery("SELECT error FROM pages WHERE job_id=? AND error IS NOT NULL", arrayOf(id)).use { rows ->
+        while (rows.moveToNext()) rows.getString(0).takeIf { it.isNotBlank() && it != "null" }?.let(warningSet::add)
       }
       warningSet.forEach { warnings.put(it) }
       job.put("warnings", warnings)
       job.put("documentFormat", c.getString(22))
-      val stats = blockProgress(id)
-      job.put("completedBlocks", stats.first).put("discoveredBlocks", stats.second)
-      val knownTotal = knownBlockTotal(id, c.getInt(9))
-      job.put("totalBlocks", knownTotal ?: JSONObject.NULL)
+      val progress = savedBlockProgress(id, c.getInt(9), if (c.isNull(10)) null else c.getInt(10))
+      job.put("completedBlocks", progress.completed ?: JSONObject.NULL)
+        .put("discoveredBlocks", progress.discovered ?: JSONObject.NULL)
+        .put("pageBlocks", progress.currentDiscovered ?: JSONObject.NULL)
+        .put("completedPageBlocks", progress.currentCompleted ?: JSONObject.NULL)
+      job.put("totalBlocks", progress.total ?: JSONObject.NULL)
+      job.put("stageStartedAt", c.getLong(26))
+        .put("workerStopping", PdfTranslationService.stopRequestedJobId == id)
+      job.put("currentBlock", if (c.isNull(27)) JSONObject.NULL else c.getInt(27))
       val timing = readQuery("SELECT observed_block_ms,observed_block_count,status,stage FROM jobs WHERE id=?", arrayOf(id)).use { row ->
         if (row.moveToFirst()) longArrayOf(row.getLong(0), row.getLong(1), if (row.getString(2) == "running") 1 else 0, if (row.getString(3) == "translating") 1 else 0) else longArrayOf(0, 0, 0, 0)
       }
-      val remaining = knownTotal?.minus(stats.first)?.coerceAtLeast(0)
-      if (timing[1] >= 10 && timing[2] == 1L && timing[3] == 1L && remaining != null && remaining > 0) {
+      val remaining = progress.total?.minus(progress.completed ?: -1)?.coerceAtLeast(0)
+      if (timing[1] >= 10 && timing[2] == 1L && timing[3] == 1L && remaining != null && progress.completed != null && remaining > 0) {
         val estimate = ((timing[0].toDouble() / timing[1]) * remaining / 1_000.0).toLong().coerceAtLeast(1)
         job.put("etaSeconds", estimate)
         job.put("etaRangeSeconds", JSONObject().put("min", (estimate * 0.7).toLong().coerceAtLeast(1)).put("max", (estimate * 1.3).toLong().coerceAtLeast(estimate)))
@@ -284,28 +301,46 @@ internal class TranslatorDatabase(
     }
   }
 
-  private fun blockProgress(jobId: String): Pair<Int, Int> = readQuery(
-    "SELECT blocks_json FROM pages WHERE job_id=?", arrayOf(jobId),
+  private data class SavedBlockProgress(
+    val completed: Int?, val discovered: Int?, val total: Int?,
+    val currentCompleted: Int?, val currentDiscovered: Int?,
+  )
+
+  /** One indexed SQLite aggregate replaces reparsing every saved page JSON on each poll. */
+  private fun savedBlockProgress(jobId: String, totalPages: Int, currentPage: Int?): SavedBlockProgress = readQuery(
+    "SELECT SUM(completed_blocks),SUM(discovered_blocks),COUNT(*)," +
+      "SUM(CASE WHEN completed_blocks IS NULL OR discovered_blocks IS NULL THEN 1 ELSE 0 END)," +
+      "SUM(CASE WHEN expected_blocks IS NULL THEN 1 ELSE 0 END),SUM(expected_blocks)," +
+      "MAX(CASE WHEN page_index=? THEN completed_blocks END),MAX(CASE WHEN page_index=? THEN discovered_blocks END) FROM pages WHERE job_id=?",
+    arrayOf((currentPage ?: -1).toString(), (currentPage ?: -1).toString(), jobId),
   ).use { c ->
-    var completed = 0; var discovered = 0
-    while (c.moveToNext()) {
-      val blocks = runCatching { JSONArray(c.getString(0)) }.getOrNull() ?: continue
-      discovered += blocks.length()
-      for (index in 0 until blocks.length()) if (blocks.optJSONObject(index)?.optString("status") in setOf("translated", "partial", "failed", "skipped")) completed++
-    }
-    completed to discovered
+    if (!c.moveToFirst()) return@use SavedBlockProgress(null, null, null, null, null)
+    // Historical rows intentionally remain unknown until touched by the worker;
+    // show no misleading zero for data predating this additive migration.
+    val allCountersPresent = c.getInt(2) == 0 || c.getInt(3) == 0
+    val pagesKnown = c.getInt(2) == totalPages && c.getInt(4) == 0
+    SavedBlockProgress(
+      if (allCountersPresent && !c.isNull(0)) c.getInt(0) else if (c.getInt(2) == 0) 0 else null,
+      if (allCountersPresent && !c.isNull(1)) c.getInt(1) else if (c.getInt(2) == 0) 0 else null,
+      if (pagesKnown) c.getInt(5) else null,
+      if (currentPage == null || c.isNull(6)) null else c.getInt(6),
+      if (currentPage == null || c.isNull(7)) null else c.getInt(7),
+    )
   }
 
-  private fun knownBlockTotal(jobId: String, totalPages: Int): Int? = readQuery(
-    "SELECT expected_blocks FROM pages WHERE job_id=?", arrayOf(jobId),
-  ).use { c ->
-    var count = 0; var pages = 0
-    while (c.moveToNext()) {
-      pages++
-      if (c.isNull(0)) return@use null
-      count += c.getInt(0)
+  fun backfillPageBlockProgress(jobId: String, pageIndex: Int) {
+    val json = readQuery(
+      "SELECT blocks_json FROM pages WHERE job_id=? AND page_index=? AND (completed_blocks IS NULL OR discovered_blocks IS NULL)",
+      arrayOf(jobId, pageIndex.toString()),
+    ).use { if (it.moveToFirst()) it.getString(0) else null } ?: return
+    val blocks = JSONArray(json)
+    val completed = (0 until blocks.length()).count { index ->
+      blocks.optJSONObject(index)?.optString("status") in setOf("translated", "partial", "failed", "skipped")
     }
-    if (pages == totalPages) count else null
+    writableDatabase.execSQL(
+      "UPDATE pages SET completed_blocks=?,discovered_blocks=? WHERE job_id=? AND page_index=? AND (completed_blocks IS NULL OR discovered_blocks IS NULL)",
+      arrayOf(completed, blocks.length(), jobId, pageIndex),
+    )
   }
 
   fun recordBlockDuration(jobId: String, durationMillis: Long) {
@@ -316,6 +351,16 @@ internal class TranslatorDatabase(
   fun jobsJson(): JSONArray = readQuery("SELECT id FROM jobs ORDER BY created_at DESC", null).use { c ->
     JSONArray().also { out -> while (c.moveToNext()) jobJson(c.getString(0))?.let(out::put) }
   }
+
+  /** Activity polling omits only page warning text, avoiding a second full child-row scan per job. */
+  fun activityJobsJson(): JSONArray = readQuery("SELECT id FROM jobs ORDER BY created_at DESC", null).use { c ->
+    JSONArray().also { out -> while (c.moveToNext()) jobJson(c.getString(0), includePageWarnings = false)?.let(out::put) }
+  }
+
+  /** Page indices backed by durable complete/partial rows; computed once per worker, not once per page. */
+  fun completedPageIndexes(jobId: String): Set<Int> = readQuery(
+    "SELECT page_index FROM pages WHERE job_id=? AND status IN ('completed','partial')", arrayOf(jobId),
+  ).use { c -> buildSet { while (c.moveToNext()) add(c.getInt(0)) } }
 
   fun jobDocumentPath(id: String): String? = readQuery(
     "SELECT d.path FROM jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=?", arrayOf(id),
@@ -337,7 +382,7 @@ internal class TranslatorDatabase(
 
   fun validateJobSnapshot(id: String) {
     val job = jobJson(id) ?: error("Translation job was not found.")
-    val model = if (job.optJSONObject("engine")?.optString("kind") == "online") null else ModelCatalog.get(job.getString("modelId"))
+    val model = if (job.getJSONObject("engine").getString("kind") == "online") null else ModelCatalog.get(job.getString("modelId"))
     validateJobSnapshotInternal(id, model)
   }
 
@@ -387,14 +432,27 @@ internal class TranslatorDatabase(
     }
   }
 
+  /** Rebuilding an old finished PDF may discover a new review finding. Never
+   * overwrite a concurrent pause, cancellation, resume, or job deletion. */
+  fun markCompletedJobNeedsReview(id: String) {
+    writableDatabase.execSQL("UPDATE jobs SET status='partial',updated_at=? WHERE id=? AND status='completed'",
+      arrayOf(System.currentTimeMillis(), id))
+  }
+
   fun updateJob(id: String, status: String? = null, stage: String? = null, completedPages: Int? = null,
                 currentPage: Int? = null, error: String? = null, clearError: Boolean = false,
-                clearCurrentPage: Boolean = false) {
+                clearCurrentPage: Boolean = false, currentBlock: Int? = null, clearCurrentBlock: Boolean = false) {
+    val stageChanged = stage != null && readQuery("SELECT stage FROM jobs WHERE id=?", arrayOf(id)).use { cursor ->
+      !cursor.moveToFirst() || cursor.getString(0) != stage
+    }
     val values = ContentValues().apply {
       status?.let { put("status", it) }; stage?.let { put("stage", it) }
+      if (stageChanged) put("stage_started_at", System.currentTimeMillis())
       completedPages?.let { put("completed_pages", it) }
       if (currentPage != null) put("current_page", currentPage)
       if (clearCurrentPage) putNull("current_page")
+      currentBlock?.let { put("current_block", it) }
+      if (clearCurrentBlock) putNull("current_block")
       if (error != null) put("error", error)
       if (clearError) putNull("error")
       put("updated_at", System.currentTimeMillis())
@@ -403,10 +461,15 @@ internal class TranslatorDatabase(
   }
 
   /** Atomically transitions a job only while a worker still owns its active row. */
-  fun transitionActiveJob(id: String, status: String, stage: String? = null, error: String? = null): Boolean {
+  fun transitionActiveJob(id: String, status: String, stage: String? = null, error: String? = null, clearCurrentBlock: Boolean = false): Boolean {
+    val stageChanged = stage != null && readQuery("SELECT stage FROM jobs WHERE id=?", arrayOf(id)).use { cursor ->
+      !cursor.moveToFirst() || cursor.getString(0) != stage
+    }
     val values = ContentValues().apply {
       put("status", status)
       stage?.let { put("stage", it) }
+      if (stageChanged) put("stage_started_at", System.currentTimeMillis())
+      if (clearCurrentBlock) putNull("current_block")
       if (error == null) putNull("error") else put("error", error)
       put("updated_at", System.currentTimeMillis())
     }
@@ -421,10 +484,16 @@ internal class TranslatorDatabase(
     "SELECT glossary_snapshot FROM jobs WHERE id=?", arrayOf(id),
   ).use { if (it.moveToFirst()) it.getString(0) else "" }
 
-  fun savePage(jobId: String, pageIndex: Int, status: String, blocksJson: String, width: Double = 0.0, height: Double = 0.0, error: String? = null, expectedBlocks: Int? = null) {
+  fun savePage(jobId: String, pageIndex: Int, status: String, blocksJson: String, width: Double = 0.0, height: Double = 0.0,
+               error: String? = null, expectedBlocks: Int? = null, knownCompletedBlocks: Int? = null) {
+    val blocks = if (knownCompletedBlocks == null) runCatching { JSONArray(blocksJson) }.getOrNull() else null
+    val discovered = expectedBlocks ?: blocks?.length()
+    val completed = knownCompletedBlocks ?: blocks?.let { rows -> (0 until rows.length()).count { index -> rows.optJSONObject(index)?.optString("status") in setOf("translated", "partial", "failed", "skipped") } }
     writableDatabase.insertWithOnConflict("pages", null, ContentValues().apply {
       put("job_id", jobId); put("page_index", pageIndex); put("status", status); put("blocks_json", blocksJson)
       put("width", width); put("height", height); if (expectedBlocks == null) putNull("expected_blocks") else put("expected_blocks", expectedBlocks)
+      if (completed == null) putNull("completed_blocks") else put("completed_blocks", completed)
+      if (discovered == null) putNull("discovered_blocks") else put("discovered_blocks", discovered)
       put("error", error); put("updated_at", System.currentTimeMillis())
     }, SQLiteDatabase.CONFLICT_REPLACE)
   }
@@ -468,6 +537,12 @@ internal class TranslatorDatabase(
 
   fun deleteJob(id: String) { writableDatabase.delete("jobs", "id=?", arrayOf(id)) }
   fun deleteDocument(id: String) { writableDatabase.delete("documents", "id=?", arrayOf(id)) }
+  fun hasJobsForDocument(documentId: String): Boolean = readQuery(
+    "SELECT 1 FROM jobs WHERE document_id=? LIMIT 1", arrayOf(documentId),
+  ).use { it.moveToFirst() }
+  fun hasOtherJobsForDocument(documentId: String, jobId: String): Boolean = readQuery(
+    "SELECT 1 FROM jobs WHERE document_id=? AND id<>? LIMIT 1", arrayOf(documentId, jobId),
+  ).use { it.moveToFirst() }
   fun deleteModel(id: String) { writableDatabase.delete("models", "id=?", arrayOf(id)) }
 
   fun glossaryJson(): JSONArray = readQuery(

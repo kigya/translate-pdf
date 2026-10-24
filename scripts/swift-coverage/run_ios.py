@@ -26,6 +26,33 @@ MODULE_FILES = {
     "TranslatePDF":{"AppDelegate.swift","SceneDelegate.swift"},
     "TranslateCore":{"ModelCatalog.swift","ModelDownloadCoordinator.swift","PdfTranslatorModule.swift","TranslatorStore.swift","DocxPreviewRenderer.swift","MyMemoryTranslator.swift"},
 }
+# Finite, reviewed original-driver identity. These seven methods genuinely require
+# iOS 26 continued-processing APIs; any source edit needs a new review.
+AVAILABILITY_REVIEWED_DRIVER_SHA256 = "6e72290745b5de587a55f58393a5cbc356db79e141b808475720ed0827e6bd58"
+AVAILABILITY_REVIEWED_TESTS = (
+    "testContinuedProcessingOwnerMovesToRecreatedModuleWithoutRetainingOldOwner",
+    "testContinuedProcessingSubmitFailureDoesNotClaimBackgroundOwnership",
+    "testContinuedProcessingCallbackOnlyAttachesToAnAlreadyOwnedActiveRun",
+    "testContinuedProcessingAdmissionExpirationContractRejectsStaleGenerationAfterPauseResume",
+    "testQueuedPauseAndCancelAreAcknowledgedBeforeWorkerReturnsWithoutLeakingOwner",
+    "testFailedStopPersistenceRetriesThroughWorkerStopGateWithoutRestartingInference",
+    "testQueuedStopRetryCannotEnterSameJobsNewRunAfterItsTokenIsInvalidated",
+)
+
+def unavailable_test_arguments(runtime_id: str, original_driver: str, skip_continued: bool) -> list[str]:
+    """Omit only the seven reviewed iOS-26-only tests on an older identified runtime."""
+    if not skip_continued:
+        return []
+    runtime = re.fullmatch(r"com\.apple\.CoreSimulator\.SimRuntime\.iOS-(\d+)(?:-\d+)*", runtime_id)
+    if runtime is None or int(runtime.group(1)) >= 26:
+        raise ValueError("The continued-processing test may be omitted only on an identified pre-iOS-26 runtime")
+    if hashlib.sha256(original_driver.encode()).hexdigest() != AVAILABILITY_REVIEWED_DRIVER_SHA256:
+        raise ValueError("Unavailable-test selection requires the exact independently reviewed original driver")
+    for name in AVAILABILITY_REVIEWED_TESTS:
+        if not re.search(r"@available\(iOS\s+26\.0\s*,\s*\*\)\s+func\s+" + name + r"\(", original_driver):
+            raise ValueError("The original continued-processing test must retain its iOS 26 availability annotation")
+    return ["-skip-testing:TranslatePDFNativeCoverageTests/NativeCoverageTests/" + name
+            for name in AVAILABILITY_REVIEWED_TESTS]
 
 
 def execute(command: list[str], log: Path | None = None) -> subprocess.CompletedProcess:
@@ -45,14 +72,21 @@ def checked(command: list[str]) -> str:
     return result.stdout
 
 
+def execution_identity(original: str, filenames: dict[str,str], run_id: str) -> dict:
+    payload = {"driverOriginalSHA256":hashlib.sha256(original.encode()).hexdigest(), "filenames":filenames,
+               "runIDs":[run_id+":"+module for module in filenames]}
+    return {**payload,"digest":coverage.digest(payload)}
+
+
 def teardown_driver(original: str, filenames: dict[str,str], run_id: str) -> str:
     if "__FBCov" in original: raise ValueError("Original tests must not call recorder/probe helpers")
     if re.search(r"class\s+func\s+tearDown",original): raise ValueError("Existing class teardown requires reviewed composition")
     marker = "final class NativeCoverageTests: XCTestCase {"
     if original.count(marker) != 1: raise ValueError("Native test class declaration changed")
     calls = []
+    execution = execution_identity(original, filenames, run_id)
     for module,filename in filenames.items():
-        calls.append(f'''      try {module}.__FBCov.export(to:directory.appendingPathComponent({json.dumps(filename)}).path,runID:{json.dumps(run_id+':'+module)})''')
+        calls.append(f'''      try {module}.__FBCov.export(to:directory.appendingPathComponent({json.dumps(filename)}).path,runID:{json.dumps(run_id+':'+module)},executionDigest:{json.dumps(execution['digest'])})''')
     method = '''
   override class func tearDown() {
     defer { super.tearDown() }
@@ -89,6 +123,43 @@ def option(tokens: list[str], key: str) -> str | None:
     return None
 
 
+def swift_definitions(tokens: list[str]) -> list[str]:
+    result = []; index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-Xcc", "-Xfrontend", "-Xlinker", "-Xllvm"}:
+            if index + 1 >= len(tokens): raise ValueError("Truncated compiler forwarding option")
+            index += 2; continue
+        if token == "-D":
+            if index + 1 >= len(tokens): raise ValueError("Truncated Swift definition")
+            result.append(tokens[index + 1]); index += 2; continue
+        if token.startswith("-D") and len(token) > 2: result.append(token[2:])
+        index += 1
+    return sorted(set(result))
+
+
+def prepared_configurations(path: Path, compiler_version: str) -> dict[str,dict]:
+    """Reuse original-typing preparation, never a self-declared certificate."""
+    manifest = json.loads(path.read_text())
+    if manifest.get("registryDigest") != coverage.digest(coverage.registry_payload(manifest)):
+        raise ValueError("Prepared configuration manifest digest differs")
+    if manifest["compiler"]["version"] != compiler_version:
+        raise ValueError("Prepared configuration compiler differs")
+    expected = {str((coverage.ROOT / name).resolve()) for name in coverage.OWNED}
+    if {source["source"] for source in manifest["sources"]} != expected:
+        raise ValueError("Prepared configuration owned source inventory differs")
+    result = {}
+    for source in manifest["sources"]:
+        if coverage.sha(Path(source["source"])) != source["sourceSHA256"]:
+            raise ValueError("Prepared original typing is stale")
+        config = source.get("configuration") or {}
+        if any(config.get(key) != value for key,value in {"os":"iOS","arch":"arm64","environment":"simulator","languageVersion":[5]}.items()):
+            raise ValueError("Hosted Debug configuration does not match original typing preparation")
+        if "DEBUG" not in config.get("defines",[]): raise ValueError("Hosted Debug preparation has no Swift DEBUG definition")
+        result[source["source"]] = config
+    return result
+
+
 def compile_attestation(log: Path, manifest: dict, sdk: str) -> dict:
     observed = {};jobs = [];missing = [];overlay = str(Path(manifest["compiler"]["command"][-1]).parent / "overlay.json")
     for line in log.read_text(errors="replace").splitlines():
@@ -101,10 +172,7 @@ def compile_attestation(log: Path, manifest: dict, sdk: str) -> dict:
         sources = {str(Path(token).resolve()) for token in tokens if token.endswith(".swift") and Path(token).is_file()}
         target = option(tokens,"-target");actual_sdk = option(tokens,"-sdk");language = option(tokens,"-swift-version")
         overlays = [tokens[index+1] for index,token in enumerate(tokens[:-1]) if token == "-vfsoverlay"]
-        defines = []
-        for index,token in enumerate(tokens):
-            if token == "-D" and index+1 < len(tokens): defines.append(tokens[index+1])
-            elif token.startswith("-D") and len(token)>2: defines.append(token[2:])
+        defines = swift_definitions(tokens)
         job = {"module":module,"target":target,"sdk":actual_sdk,"languageVersion":language,
                "defines":sorted(set(defines)),"overlays":overlays,"sources":sorted(sources),
                "responseFiles":responses,"command":line.strip(),"commandSHA256":hashlib.sha256(line.encode()).hexdigest()}
@@ -117,6 +185,9 @@ def compile_attestation(log: Path, manifest: dict, sdk: str) -> dict:
                     if Path(actual_sdk).resolve() != Path(sdk).resolve(): missing.append(f"Unexpected SDK: {actual_sdk}")
                     if language != "5": missing.append(f"Unexpected language mode: {language}")
                     if module == "TranslatePDF" and "DEBUG" not in defines: missing.append("App DEBUG configuration missing")
+                    source_configuration = source.get("configuration",manifest.get("configuration"))
+                    if source_configuration is not None and sorted(set(source_configuration["defines"])) != defines:
+                        missing.append(f"Prepared/actual Swift definitions differ for {source['source']}")
                     observed[source["source"]] = {"module":module,"originalSHA256":source["sourceSHA256"],"transformedSHA256":source["transformedSHA256"],"commandSHA256":job["commandSHA256"]}
     required = {source["source"] for source in manifest["sources"]}
     if set(observed) != required: missing.append("Missing actual owned-source compile jobs: "+str(sorted(required-set(observed))))
@@ -134,29 +205,42 @@ def main() -> int:
     parser.add_argument("--derived-data-path",type=Path,help="Reuse an explicitly selected local Xcode build cache; all source and loaded-image attestations remain required")
     parser.add_argument("--stream-safe-clang",action="store_true",help="Use the project-local, real-output-preserving Clang discovery wrapper for this invocation only")
     parser.add_argument("--prepare-only",action="store_true")
+    parser.add_argument("--configuration-manifest",type=Path,help="Use exact per-source configurations and original-AST type hints from prepare_certification.py; grants no coverage approval")
+    parser.add_argument("--skip-ios26-continued-processing-test",action="store_true",help="Omit only the seven reviewed iOS-26-only tests on a pre-iOS-26 simulator; runtime, driver hash and availability annotations are verified")
     args = parser.parse_args()
     root = coverage.ROOT;output = (args.output or root / ".local-private/swift-ios" / str(uuid.uuid4())).resolve()
     output.mkdir(parents=True,exist_ok=False)
     inventory = json.loads(checked(["xcrun","simctl","list","devices","booted","--json"]))
-    devices = [device for group in inventory["devices"].values() for device in group if device["udid"] == args.simulator_id and device["state"] == "Booted"]
+    devices = [(runtime,device) for runtime,group in inventory["devices"].items() for device in group if device["udid"] == args.simulator_id and device["state"] == "Booted"]
     if len(devices) != 1: raise ValueError("Select exactly the existing approved booted simulator; no boot/reset is performed")
     run_id = str(uuid.uuid4());filenames = {module:f"swift-branches-{run_id}-{module}.json" for module in MODULE_FILES}
     driver_source = root / "ios/tests/NativeCoverageTests.swift"
+    driver_original = driver_source.read_text()
+    driver_original_sha = hashlib.sha256(driver_original.encode()).hexdigest()
+    runtime_id = devices[0][0]
+    test_selection = unavailable_test_arguments(runtime_id,driver_original,args.skip_ios26_continued_processing_test)
     native_inputs = [root / "ios/TranslatePDF/TranslateCoreBridge.mm",root / "ios/TranslatePDF/TranslateCoreBridge.h",
+                     root / "native/core.hpp", root / "native/docx.hpp",
                      root / "ios/Frameworks/TranslateCore.xcframework/ios-arm64-simulator/TranslateCore.framework/TranslateCore",
                      root / "ios/Frameworks/PDFium.xcframework/ios-arm64-simulator/PDFium.framework/PDFium"]
+    native_inputs += sorted({path for framework in (root / "ios/Frameworks").glob("*.xcframework")
+                             for path in framework.rglob("*") if path.is_file() and (path.suffix in {".h",".hpp",".modulemap"} or path.name == "module.modulemap")})
     if args.stream_safe_clang:
         native_inputs += [root / "ios/scripts/clang-stream-safe.py",root / "ios/scripts/clang++-stream-safe.py"]
     native_input_hashes = {str(path):coverage.sha(path) for path in native_inputs}
     test_copy = output / "NativeCoverageTests.test.swift"
-    test_copy.write_text(teardown_driver(driver_source.read_text(),filenames,run_id))
+    test_copy.write_text(teardown_driver(driver_original,filenames,run_id))
     version = checked(["xcrun","swiftc","--version"])
     match = re.search(r"Apple Swift version (\d+)\.(\d+)(?:\.(\d+))?",version)
     if not match: raise ValueError("Unrecognized compiler version")
     config = {"os":"iOS","arch":"arm64","environment":"simulator","defines":["DEBUG"],
               "languageVersion":[5],"compilerVersion":[int(value or "0") for value in match.groups()]}
     injections = {"TranslatePDF":root / "ios/TranslatePDF/AppDelegate.swift","TranslateCore":root / "ios/TranslatePDF/ModelCatalog.swift"}
-    manifest = coverage.prepare(output / "measurement",configuration=config,runtime_injections=injections,extra_overlays={driver_source:test_copy})
+    source_configurations = prepared_configurations(args.configuration_manifest,version) if args.configuration_manifest else None
+    execution = execution_identity(driver_original,filenames,run_id)
+    manifest = coverage.prepare(output / "measurement",configuration=config,runtime_injections=injections,extra_overlays={driver_source:test_copy},configurations_by_source=source_configurations,execution=execution)
+    if coverage.sha(driver_source) != driver_original_sha:
+        raise ValueError("Original test driver changed during unavailable-test selection or overlay preparation")
     sdk = checked(["xcrun","--sdk","iphonesimulator","--show-sdk-path"]).strip()
     overlay = output / "measurement/overlay.json"
     command = ["xcodebuild","-workspace",str(root / "ios/TranslatePDF.xcworkspace"),"-scheme","TranslatePDF","-configuration","Debug",
@@ -164,9 +248,10 @@ def main() -> int:
                "-jobs",str(args.jobs),"-parallel-testing-enabled","NO","-maximum-concurrent-test-simulator-destinations","1",
                "-enableCodeCoverage","YES","-only-testing:TranslatePDFNativeCoverageTests","-disableAutomaticPackageResolution",
                "OTHER_SWIFT_FLAGS=$(inherited) -vfsoverlay "+shlex.quote(str(overlay)),"test"]
+    command[-1:-1] = test_selection
     if args.stream_safe_clang:
         command[-1:-1] = ["CC="+str(root / "ios/scripts/clang-stream-safe.py"),"CXX="+str(root / "ios/scripts/clang++-stream-safe.py")]
-    coverage.write(output / "invocation.json",{"command":command,"configuration":config,"sdk":sdk,"compiler":version,"runID":run_id,"driverOriginalSHA256":coverage.sha(driver_source),"driverTestCopySHA256":coverage.sha(test_copy),"runnerSHA256":coverage.sha(Path(__file__)),"nativeBuildInputSHA256":native_input_hashes,"preparedAtEpoch":time.time()})
+    coverage.write(output / "invocation.json",{"command":command,"configuration":config,"sdk":sdk,"compiler":version,"runID":run_id,"driverOriginalSHA256":driver_original_sha,"driverTestCopySHA256":coverage.sha(test_copy),"runnerSHA256":coverage.sha(Path(__file__)),"nativeBuildInputSHA256":native_input_hashes,"simulatorRuntime":runtime_id,"skippedUnavailableTests":[value.removeprefix("-skip-testing:") for value in test_selection],"availabilityReviewedDriverSHA256":AVAILABILITY_REVIEWED_DRIVER_SHA256 if test_selection else None,"preparedAtEpoch":time.time()})
     if args.prepare_only: print(f"Prepared {output}; no iOS build or simulator action run");return 0
     result = execute(command,output / "xcodebuild.log")
     attestation = compile_attestation(output / "xcodebuild.log",manifest,sdk)

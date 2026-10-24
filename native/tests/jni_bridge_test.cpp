@@ -1,17 +1,22 @@
 #include "android/bitmap.h"
 #include "core.hpp"
+#include "core_operations.hpp"
 #include "../vendor/miniz.h"
 #include "../vendor/miniz_zip.h"
 #include <jni.h>
 
+#include <algorithm>
 #include <cstdarg>
 #include <codecvt>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <locale>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -23,15 +28,68 @@ jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_readDocxSegment(JNIEnv*, 
 jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_exportDocx(JNIEnv*, jobject, jstring, jstring, jstring);
 jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_readPage(JNIEnv*, jobject, jstring, jint);
 jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_loadModel(JNIEnv*, jobject, jstring, jint, jint, jstring);
+jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_loadModelBatch(JNIEnv*, jobject, jstring, jint, jint, jstring, jint);
+jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_translateBatch(JNIEnv*, jobject, jstring, jstring, jstring, jstring, jstring, jlong, jobject);
+void JNICALL Java_dev_kigya_translatepdf_NativeCore_setWeightRepackingAllowed(JNIEnv*, jobject, jboolean);
 jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_translate(JNIEnv*, jobject, jstring, jstring, jstring, jstring, jstring);
+jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_translateForLayout(JNIEnv*, jobject, jstring, jstring, jstring, jstring, jstring, jstring);
 void JNICALL Java_dev_kigya_translatepdf_NativeCore_releaseModel(JNIEnv*, jobject);
 void JNICALL Java_dev_kigya_translatepdf_NativeCore_cancel(JNIEnv*, jobject);
+jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_inferenceProgress(JNIEnv*, jobject);
 jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_exportPage(JNIEnv*, jobject, jstring, jint, jstring, jstring, jstring, jstring);
 jstring JNICALL Java_dev_kigya_translatepdf_NativeCore_mergePdf(JNIEnv*, jobject, jstring, jstring);
 jobject JNICALL Java_dev_kigya_translatepdf_NativeCore_render(JNIEnv*, jobject, jstring, jint, jint);
 }
 
 namespace {
+// Exercise the shipped core -> JNI -> checkpoint callback path without model
+// weights. Only the inference backend is substituted; JNI ownership, UTF-16,
+// acknowledgements and pending Java exceptions use the real bridge.
+struct CallbackBackend {
+  std::vector<std::function<void()>> restore;
+  static int sampled;
+  template<class T, class F> void set(T& slot,F replacement) {
+    const auto before=slot;restore.emplace_back([&slot,before]{slot=before;});
+    slot=static_cast<T>(replacement);
+  }
+  CallbackBackend() {
+    namespace ops=translatepdf::detail::ops;
+    set(ops::llama_model_load_from_file,[](const char*,llama_model_params){return reinterpret_cast<llama_model*>(0x1000);});
+    set(ops::llama_model_has_encoder,[](const llama_model*){return false;});
+    set(ops::llama_init_from_model,[](llama_model*,llama_context_params){return reinterpret_cast<llama_context*>(0x2000);});
+    set(ops::llama_model_free,[](llama_model*){});
+    set(ops::llama_free,[](llama_context*){});
+    set(ops::llama_n_ctx,[](const llama_context*){return uint32_t(2048);});
+    set(ops::llama_n_ctx_seq,[](const llama_context*){return uint32_t(512);});
+    set(ops::llama_n_threads,[](llama_context*){return int32_t(4);});
+    set(ops::llama_model_size,[](const llama_model*){return uint64_t(1234);});
+    set(ops::llama_model_chat_template,[](const llama_model*,const char*){return "default";});
+    set(ops::llama_model_get_vocab,[](const llama_model*){return reinterpret_cast<const llama_vocab*>(0x3000);});
+    set(ops::llama_get_memory,[](const llama_context*){return reinterpret_cast<llama_memory_t>(0x4000);});
+    set(ops::llama_memory_clear,[](llama_memory_t,bool){sampled=0;});
+    set(ops::llama_memory_seq_rm,[](llama_memory_t,llama_seq_id,llama_pos,llama_pos){return true;});
+    set(ops::llama_vocab_bos,[](const llama_vocab*){return llama_token(1);});
+    set(ops::llama_vocab_n_tokens,[](const llama_vocab*){return int32_t(16);});
+    set(ops::llama_vocab_is_eog,[](const llama_vocab*,llama_token token){return token==9;});
+    set(ops::llama_tokenize,[](const llama_vocab*,const char*,int32_t,llama_token* tokens,int32_t capacity,bool,bool parse){
+      const int count=parse?4:2;if(!tokens)return -count;
+      for(int at=0;at<std::min(count,int(capacity));++at)tokens[at]=2;
+      return count;
+    });
+    set(ops::llama_chat_apply_template,[](const char*,const llama_chat_message*,size_t,bool,char* buffer,int32_t capacity){
+      const std::string prompt="Callback fixture";if(capacity<static_cast<int>(prompt.size()))return -1;
+      std::memcpy(buffer,prompt.data(),prompt.size());return int32_t(prompt.size());
+    });
+    set(ops::llama_decode,[](llama_context*,llama_batch){return int32_t(0);});
+    set(ops::llama_sampler_sample,[](llama_sampler*,llama_context*,int32_t){return llama_token(++sampled==1?3:9);});
+    set(ops::llama_token_to_piece,[](const llama_vocab*,llama_token,char* buffer,int32_t capacity,int32_t,bool){
+      const std::string text="Введение";if(capacity<static_cast<int>(text.size()))return -int32_t(text.size());
+      std::memcpy(buffer,text.data(),text.size());return int32_t(text.size());
+    });
+  }
+  ~CallbackBackend(){translatepdf::releaseModel();for(auto at=restore.rbegin();at!=restore.rend();++at)(*at)();}
+};
+int CallbackBackend::sampled=0;
 struct FakeString final : _jstring { std::vector<jchar> value; };
 struct FakeBitmap final : _jobject {
   AndroidBitmapInfo info{};
@@ -48,6 +106,19 @@ struct JniHarness {
   int bitmapUnlockStatus = 0;
   std::string thrownMessage;
   FakeBitmap bitmap;
+  bool nullClass = false;
+  bool nullMethod = false;
+  bool nullString = false;
+  bool nullCharacters = false;
+  bool missingExceptionClass = false;
+  bool exceptionOnClass = false;
+  bool exceptionOnMethod = false;
+  bool exceptionOnLength = false;
+  bool nullStringWithoutException = false;
+  bool throwFromCallback = false;
+  int callbackAck = 1;
+  int deletedReferences = 0;
+  std::vector<std::string> completions;
 
   JniHarness() {
     table.FindClass = findClass;
@@ -61,12 +132,34 @@ struct JniHarness {
     table.GetStringChars = stringChars;
     table.ReleaseStringChars = releaseStringChars;
     table.NewString = newString;
+    table.GetObjectClass = objectClass;
+    table.GetMethodID = method;
+    table.CallIntMethodV = callInt;
+    table.DeleteLocalRef = deleteReference;
     env.functions = &table;
     active = this;
   }
   static JniHarness* active;
 
-  static jclass JNICALL findClass(JNIEnv*, const char*) { return reinterpret_cast<jclass>(1); }
+  static jclass JNICALL objectClass(JNIEnv*, jobject) {
+    if(active->exceptionOnClass){active->exception=true;return nullptr;}
+    return active->nullClass?nullptr:reinterpret_cast<jclass>(5);
+  }
+  static jmethodID JNICALL method(JNIEnv*, jclass, const char* name, const char* signature) {
+    if(std::string(name)!="onCompleted" || std::string(signature)!="(Ljava/lang/String;)I") throw std::runtime_error("Unexpected completion method contract");
+    if(active->exceptionOnMethod){active->exception=true;return nullptr;}
+    return active->nullMethod?nullptr:reinterpret_cast<jmethodID>(6);
+  }
+  static jint JNICALL callInt(JNIEnv*, jobject, jmethodID, va_list args) {
+    auto* payload=reinterpret_cast<FakeString*>(va_arg(args,jobject));
+    active->completions.push_back(std::wstring_convert<std::codecvt_utf8_utf16<char16_t>,char16_t>{}.to_bytes(
+      reinterpret_cast<const char16_t*>(payload->value.data()),reinterpret_cast<const char16_t*>(payload->value.data()+payload->value.size())));
+    if(active->throwFromCallback){active->exception=true;active->thrownMessage="checkpoint write failed";}
+    return active->callbackAck;
+  }
+  static void JNICALL deleteReference(JNIEnv*, jobject) { active->deletedReferences++; }
+
+  static jclass JNICALL findClass(JNIEnv*, const char*) { return active->missingExceptionClass?nullptr:reinterpret_cast<jclass>(1); }
   static jint JNICALL throwNew(JNIEnv*, jclass, const char* message) {
     active->exception = true;
     active->thrownMessage = message ? message : "";
@@ -93,14 +186,18 @@ struct JniHarness {
     return reinterpret_cast<jobject>(&bitmap);
   }
   static jsize JNICALL stringLength(JNIEnv*, jstring value) {
+    if(active->exceptionOnLength) active->exception=true;
     return static_cast<jsize>(reinterpret_cast<FakeString*>(value)->value.size());
   }
   static const jchar* JNICALL stringChars(JNIEnv*, jstring value, jboolean* copied) {
+    if(active->nullCharacters){active->exception=true;active->thrownMessage="string pin allocation failed";return nullptr;}
     if (copied) *copied = JNI_TRUE;
     return reinterpret_cast<FakeString*>(value)->value.data();
   }
   static void JNICALL releaseStringChars(JNIEnv*, jstring, const jchar*) {}
   static jstring JNICALL newString(JNIEnv*, const jchar* value, jsize length) {
+    if(active->nullStringWithoutException)return nullptr;
+    if(active->nullString){active->exception=true;active->thrownMessage="string allocation failed";return nullptr;}
     auto* result = new FakeString;
     result->value.assign(value, value + length);
     return reinterpret_cast<jstring>(result);
@@ -236,8 +333,78 @@ int main() {
           "loadModel should reject missing path/profile without crashing");
     check(failed(nativeString(Java_dev_kigya_translatepdf_NativeCore_translate(&harness.env, nullptr, javaString("中文 — café"), nullptr, nullptr, nullptr, nullptr))),
           "translate should return a controlled unloaded-model failure with nullable inputs");
+    check(failed(nativeString(Java_dev_kigya_translatepdf_NativeCore_translateForLayout(&harness.env, nullptr, javaString("中文 — café"), nullptr, nullptr, javaString("en"), javaString("ru"), javaString("{\"attempt\":2,\"maxCharacters\":40}")))),
+          "layout retry should return a controlled unloaded-model failure through JNI");
+    auto requests=javaString("[{\"id\":\"jni-1\",\"text\":\"Introduction\"}]");
+    auto callback=reinterpret_cast<jobject>(7);
+    auto batch=[&](){return Java_dev_kigya_translatepdf_NativeCore_translateBatch(&harness.env,nullptr,requests,nullptr,nullptr,javaString("en"),javaString("ru"),42,callback);};
+    check(failed(nativeString(Java_dev_kigya_translatepdf_NativeCore_loadModelBatch(&harness.env,nullptr,nullptr,2048,4,nullptr,4))),"Batch load rejects unavailable model");
+    check(failed(nativeString(batch())),"Unloaded batch reports structured failure through real JNI");
+    callback=nullptr;
+    check(batch()==nullptr && harness.exception,"Missing durable callback fails closed");
+    callback=reinterpret_cast<jobject>(7);harness.exception=false;
+    harness.nullClass=true;check(batch()==nullptr,"Unavailable callback class fails closed");harness.nullClass=false;
+    harness.nullMethod=true;check(batch()==nullptr,"Unavailable callback method fails closed");harness.nullMethod=false;
+    harness.exceptionOnClass=true;check(batch()==nullptr && harness.exception,"Callback class lookup preserves pending Java exception");harness.exceptionOnClass=false;harness.exception=false;
+    harness.exceptionOnMethod=true;check(batch()==nullptr && harness.exception,"Callback method lookup preserves pending Java exception");harness.exceptionOnMethod=false;harness.exception=false;
+    harness.exception=true;check(batch()==nullptr,"Already pending Java exception is preserved");
+    check(Java_dev_kigya_translatepdf_NativeCore_loadModelBatch(&harness.env,nullptr,nullptr,2048,4,nullptr,4)==nullptr,"Pending exception prevents model load");
+    harness.exception=false;
+    harness.nullCharacters=true;
+    check(batch()==nullptr && harness.exception && harness.thrownMessage=="string pin allocation failed","String pin failure preserves Java OOM rather than dereferencing null");
+    harness.nullCharacters=false;harness.exception=false;
+    auto goodRequests=requests;
+    requests=reinterpret_cast<jstring>(javaString(std::u16string(1,static_cast<char16_t>(0xdc00))));
+    check(batch()==nullptr && harness.exception,"Invalid UTF16 input becomes a controlled Java exception");
+    harness.exception=false;requests=goodRequests;
+    harness.missingExceptionClass=true;callback=nullptr;
+    check(batch()==nullptr,"Unavailable exception class remains a fail-closed null result");
+    harness.missingExceptionClass=false;callback=reinterpret_cast<jobject>(7);
+    harness.exceptionOnLength=true;
+    check(batch()==nullptr && harness.exception,"Unexpected pending exception after string read prevents inference");harness.exception=false;
+    check(Java_dev_kigya_translatepdf_NativeCore_loadModelBatch(&harness.env,nullptr,goodRequests,2048,4,javaString("hy-mt2"),4)==nullptr && harness.exception,"Pending exception after string read prevents model load");
+    harness.exceptionOnLength=false;harness.exception=false;
+    check(Java_dev_kigya_translatepdf_NativeCore_loadModelBatch(&harness.env,nullptr,reinterpret_cast<jstring>(javaString(std::u16string(1,static_cast<char16_t>(0xdc00)))),2048,4,nullptr,4)==nullptr && harness.exception,"Batch model path conversion failure remains a Java exception");
+    harness.exception=false;
+    {
+      std::unique_ptr<CallbackBackend> backend;
+      const auto* model=std::getenv("TRANSLATEPDF_JNI_MODEL");
+      if(!model){backend=std::make_unique<CallbackBackend>();model="callback-boundary-model";}
+      const auto loaded=nativeString(Java_dev_kigya_translatepdf_NativeCore_loadModelBatch(&harness.env,nullptr,javaString(model),2048,4,javaString("hy-mt2"),4));
+      check(!failed(loaded),"The selected test backend must load for actual JNI callback integration");
+      const auto before=harness.deletedReferences;
+      check(!failed(nativeString(batch())) && harness.completions.size()==1,"Actual EOS reaches durable JNI callback exactly once");
+      check(harness.completions.back().find("\"generation\":42")!=std::string::npos,"Worker generation survives UTF16 JNI boundary");
+      check(harness.deletedReferences==before+2,"Callback class and payload local refs are released");
+      harness.callbackAck=2;check(batch()!=nullptr,"Committed stop acknowledgement returns summary");
+      harness.callbackAck=0;check(batch()!=nullptr,"Rejected checkpoint returns controlled pending summary");
+      harness.callbackAck=1;harness.throwFromCallback=true;
+      check(batch()==nullptr && harness.exception && harness.thrownMessage=="checkpoint write failed","Checkpoint exception survives core cleanup without replacement");
+      harness.throwFromCallback=false;harness.exception=false;
+      harness.nullString=true;check(batch()==nullptr && harness.exception,"Payload allocation failure rejects commit and preserves Java exception");harness.nullString=false;harness.exception=false;
+      harness.nullStringWithoutException=true;
+      check(batch()==nullptr,"Null payload storage rejects commit even without a Java exception");harness.nullStringWithoutException=false;
+      auto sample=translatepdf::detail::ops::llama_sampler_sample;
+      static decltype(sample) originalSample=nullptr;
+      originalSample=sample;
+      translatepdf::detail::ops::llama_sampler_sample=[](llama_sampler* sampler,llama_context* context,int32_t index){
+        const auto token=originalSample(sampler,context,index);
+        JniHarness::active->exception=true;
+        return token;
+      };
+      const auto previousCompletions=harness.completions.size();
+      const auto pendingResult=batch();
+      translatepdf::detail::ops::llama_sampler_sample=sample;
+      check(pendingResult==nullptr && harness.exception && harness.completions.size()==previousCompletions,"Exception pending before EOS delivery rejects callback without calling Java");harness.exception=false;
+      translatepdf::releaseModel();
+    }
     Java_dev_kigya_translatepdf_NativeCore_releaseModel(&harness.env, nullptr);
+    Java_dev_kigya_translatepdf_NativeCore_setWeightRepackingAllowed(&harness.env, nullptr, JNI_FALSE);
+    Java_dev_kigya_translatepdf_NativeCore_setWeightRepackingAllowed(&harness.env, nullptr, JNI_TRUE);
     Java_dev_kigya_translatepdf_NativeCore_cancel(&harness.env, nullptr);
+    const auto progress = nativeString(Java_dev_kigya_translatepdf_NativeCore_inferenceProgress(&harness.env, nullptr));
+    check(progress.find("\"processedTokens\"") != std::string::npos && !failed(progress),
+          "Inference progress must remain readable without a loaded model or acquiring its mutex");
 
     const auto rendered = translatepdf::render(pdfPath.string(), 0, 40);
     harness.nullBitmap = true;

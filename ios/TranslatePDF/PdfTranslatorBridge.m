@@ -2,6 +2,7 @@
 
 @interface RCT_EXTERN_REMAP_MODULE(PdfTranslator, PdfTranslatorModule, NSObject)
 RCT_EXTERN_METHOD(bootstrap:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
+RCT_EXTERN_METHOD(getActivitySnapshot:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(pickPdf:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(pickDocument:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(startModelDownload:(NSString *)modelId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
@@ -15,6 +16,7 @@ RCT_EXTERN_METHOD(pauseJob:(NSString *)jobId resolver:(RCTPromiseResolveBlock)re
 RCT_EXTERN_METHOD(resumeJob:(NSString *)jobId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(cancelJob:(NSString *)jobId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(deleteJob:(NSString *)jobId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
+RCT_EXTERN_METHOD(deleteDocument:(NSString *)documentId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(getJob:(NSString *)jobId pageIndex:(nonnull NSNumber *)pageIndex resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(renderPage:(NSString *)documentId pageIndex:(nonnull NSNumber *)pageIndex width:(nonnull NSNumber *)width resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(renderTranslatedPage:(NSString *)jobId pageIndex:(nonnull NSNumber *)pageIndex width:(nonnull NSNumber *)width resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)

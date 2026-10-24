@@ -35,10 +35,11 @@ class InjectionTests(unittest.TestCase):
         commands = []
         for module,source in [("Alpha",first),("Beta",second)]:
             command = ["xcrun","swiftc","-j","1","-swift-version","5","-Onone","-enable-testing","-emit-library","-emit-module","-module-name",module,
+                       "-module-cache-path",str(root / "host-module-cache"),
                        "-vfsoverlay",overlay,str(source),"-emit-module-path",str(root / (module+".swiftmodule")),"-o",str(root / ("lib"+module+".dylib"))]
             coverage.run(command);commands.append(command)
         binary = root / "driver"
-        command = ["xcrun","swiftc","-j","1","-swift-version","5","-Onone","-parse-as-library","-vfsoverlay",overlay,"-I",str(root),"-L",str(root),"-lAlpha","-lBeta","-Xlinker","-rpath","-Xlinker",str(root),str(driver),"-o",str(binary)]
+        command = ["xcrun","swiftc","-j","1","-module-cache-path",str(root / "host-module-cache"),"-swift-version","5","-Onone","-parse-as-library","-vfsoverlay",overlay,"-I",str(root),"-L",str(root),"-lAlpha","-lBeta","-Xlinker","-rpath","-Xlinker",str(root),str(driver),"-o",str(binary)]
         coverage.run(command);commands.append(command)
         first_result = root / "alpha.json"; second_result = root / "beta.json"
         observed = coverage.run([str(binary),str(first_result),str(second_result)])

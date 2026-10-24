@@ -15,7 +15,7 @@ TranslatePDF is a private prototype. No project-level license has been selected 
 | Hermes | version resolved by `ios/Podfile.lock` and Android Gradle dependency resolution | MIT | [`licenses/hermes/LICENSE`](licenses/hermes/LICENSE) |
 | Tesseract4Android | 4.9.0 | Apache-2.0 | [`licenses/tesseract4android/4.9.0/`](licenses/tesseract4android/4.9.0/), including the wrapper, Tesseract, Leptonica, libpng, and IJG JPEG notices shipped with its AAR; upstream [tagged source](https://github.com/adaptech-cz/Tesseract4Android/tree/4.9.0) |
 
-The bundled `tessdata_fast` OCR data for English, Russian, Simplified Chinese, French, German, and Spanish is Apache-2.0. Its tracked notice is [`licenses/tessdata-fast/LICENSE.txt`](licenses/tessdata-fast/LICENSE.txt); the pinned source revision and each asset checksum are in [`assets/tessdata/SOURCE.json`](assets/tessdata/SOURCE.json). The redistributed Noto Sans Regular and Noto Sans SC Regular fonts are under SIL Open Font License 1.1. Their notices are copied to [`licenses/noto-sans/LICENSE.txt`](licenses/noto-sans/LICENSE.txt) and [`licenses/fonts/NotoSansSC/`](licenses/fonts/NotoSansSC/), respectively. Font provenance and checksums are in [`assets/fonts/SOURCE.md`](assets/fonts/SOURCE.md) and [`assets/fonts/NotoSansSC-SOURCE.json`](assets/fonts/NotoSansSC-SOURCE.json).
+The bundled `tessdata_fast` OCR data for English, Russian, Simplified Chinese, French, German, and Spanish is Apache-2.0. Its tracked notice is [`licenses/tessdata-fast/LICENSE.txt`](licenses/tessdata-fast/LICENSE.txt); the pinned source revision and each asset checksum are in [`assets/tessdata/SOURCE.json`](assets/tessdata/SOURCE.json). The redistributed Noto Sans Regular, Noto Sans Condensed Regular and Noto Sans SC Regular fonts are under SIL Open Font License 1.1. Noto Sans Regular and Condensed share the notice in [`licenses/noto-sans/LICENSE.txt`](licenses/noto-sans/LICENSE.txt); the SC notice is in [`licenses/fonts/NotoSansSC/`](licenses/fonts/NotoSansSC/). Font provenance and checksums are in [`assets/fonts/SOURCE.md`](assets/fonts/SOURCE.md), [`assets/fonts/NotoSansCondensed-SOURCE.json`](assets/fonts/NotoSansCondensed-SOURCE.json), and [`assets/fonts/NotoSansSC-SOURCE.json`](assets/fonts/NotoSansSC-SOURCE.json).
 
 ## Native dependencies
 
@@ -46,7 +46,7 @@ DOCX preview uses docx-preview 0.3.7 (Apache-2.0) and JSZip 3.10.1 (distributed 
 
 ## Kinetik UI
 
-Kinetik UI source components were installed with kinetik-ui 1.4.2 and adapted for Folivela under the MIT license. Source provenance is recorded in kinetik.json.
+Kinetik UI source components were installed with kinetik-ui 1.4.2 and adapted for Folivela under the MIT license. Source provenance is recorded in kinetik.json. The three newly copied components retain upstream runtime code; their source hashes and type-only compatibility patch are recorded in [the vendor manifest](licenses/kinetik-vendor-manifest.json). Customized components and application integration are maintained as owned code.
 
 ## Expo and bundled JavaScript
 

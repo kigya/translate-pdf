@@ -27,6 +27,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -54,11 +55,26 @@ class PdfTranslatorModuleTest {
   private lateinit var reactContext: ReactApplicationContext
   private lateinit var module: PdfTranslatorModule
   private lateinit var database: TranslatorDatabase
+  // ReactApplicationContext retains its Activity weakly; async fixtures must own the host.
+  private var retainedHostActivity: Activity? = null
+
+  private fun resumeHostActivity() {
+    val activity = Activity()
+    retainedHostActivity = activity
+    reactContext.onHostResume(activity)
+  }
 
   @Before
   fun setUp() {
     context = RuntimeEnvironment.getApplication()
     context.deleteDatabase("translator-private.db")
+    // AndroidX caches provider roots by authority while Robolectric gives each
+    // test a distinct real data directory. Reattach using actual manifest data
+    // so this fixture exercises the current sandbox rather than an older root.
+    val providerInfo = context.packageManager.resolveContentProvider(
+      "${context.packageName}.fileprovider", PackageManager.GET_META_DATA,
+    ) ?: error("The app's actual FileProvider manifest registration is missing")
+    androidx.core.content.FileProvider().attachInfo(context, providerInfo)
     reactContext = StubReactApplicationContext(context)
     module = PdfTranslatorModule(reactContext)
     database = moduleDatabase()
@@ -69,6 +85,7 @@ class PdfTranslatorModuleTest {
     ShadowNativePdfCore.inspectionResponse = null
     ShadowNativePdfCore.resetCallbacks()
     module.invalidate()
+    retainedHostActivity = null
     database.close()
     ModelCatalog.models.forEach { model ->
       File(context.filesDir, "models/${model.id}.gguf").delete()
@@ -145,11 +162,102 @@ class PdfTranslatorModuleTest {
   }
 
   @Test
+  @Config(sdk = [28])
+  fun notificationPermissionSnapshotMarksPreAndroid13DevicesAsNotRequired() {
+    database.setSetting("notification_permission_requested", "false")
+    val result = PromiseCapture()
+
+    module.getActivitySnapshot(result.promise)
+
+    val notifications = JSONObject(result.awaitSuccess().toString()).getJSONObject("notifications")
+    assertEquals("not_required", notifications.getString("status"))
+    assertFalse(notifications.getBoolean("canRequest"))
+    assertFalse(notifications.getBoolean("requestedBefore"))
+  }
+
+  @Test
+  fun disabledForegroundNotificationChannelIsReportedAsDenied() {
+    context.getSystemService(NotificationManager::class.java).createNotificationChannel(
+      NotificationChannel(PdfTranslationService.CHANNEL_ID, "Translation", NotificationManager.IMPORTANCE_NONE),
+    )
+    database.setSetting("notification_permission_requested", "false")
+    val result = PromiseCapture()
+
+    module.getActivitySnapshot(result.promise)
+
+    val notifications = JSONObject(result.awaitSuccess().toString()).getJSONObject("notifications")
+    assertEquals("denied", notifications.getString("status"))
+    assertFalse(notifications.getBoolean("canRequest"))
+  }
+
+  @Test
+  fun activitySnapshotReturnsOnlyFrequentlyPolledSectionsAndCurrentJobCounters() {
+    val source = File(context.filesDir, "activity-snapshot.pdf").apply { writeText("private source") }
+    database.upsertDocument("activity-snapshot-doc", "manual.pdf", source.absolutePath, 1, "snapshot-hash")
+    database.addJob("activity-snapshot-job", jobInput("activity-snapshot-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("activity-snapshot-job", status = "running", stage = "extracting", currentPage = 0)
+
+    val result = PromiseCapture()
+    module.getActivitySnapshot(result.promise)
+    val snapshot = JSONObject(result.awaitSuccess().toString())
+    assertEquals(setOf("jobs", "models", "notifications"), snapshot.keys().asSequence().toSet())
+    assertFalse(snapshot.has("device"))
+    assertFalse(snapshot.has("documents"))
+    assertFalse(snapshot.has("preferences"))
+    val job = snapshot.getJSONArray("jobs").getJSONObject(0)
+    assertEquals("activity-snapshot-job", job.getString("id"))
+    assertEquals("extracting", job.getString("stage"))
+    assertTrue(job.getLong("stageStartedAt") > 0L)
+    assertEquals(0, job.getInt("completedBlocks"))
+    assertTrue(job.isNull("totalBlocks"))
+    source.delete()
+  }
+
+  @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
+  fun activitySnapshotReadsInferenceOnlyForActiveTranslationAndContainsNativeFailures() {
+    val source = File(context.filesDir, "activity-inference.pdf").apply { writeText("private source") }
+    database.upsertDocument("activity-inference-doc", "manual.pdf", source.absolutePath, 1, "snapshot-hash")
+    database.addJob("activity-inference-job", jobInput("activity-inference-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("activity-inference-job", status = "running", stage = "translating", currentPage = 0)
+    var inferenceReads = 0
+    ShadowNativePdfCore.inferenceProgressCallback = { inferenceReads++; """{"processedTokens":12,"generatedTokens":5}""" }
+
+    val translated = PromiseCapture()
+    module.getActivitySnapshot(translated.promise)
+    val translatedJob = JSONObject(translated.awaitSuccess().toString()).getJSONArray("jobs").getJSONObject(0)
+    assertEquals(1, inferenceReads)
+    assertEquals(12L, translatedJob.getLong("processedTokens"))
+    assertEquals(5L, translatedJob.getLong("generatedTokens"))
+
+    database.updateJob("activity-inference-job", status = "paused", stage = "translating", currentPage = 0)
+    val paused = PromiseCapture()
+    module.getActivitySnapshot(paused.promise)
+    val pausedJob = JSONObject(paused.awaitSuccess().toString()).getJSONArray("jobs").getJSONObject(0)
+    assertEquals("paused", pausedJob.getString("status"))
+    assertEquals("inference polling must stop once the worker is paused", 1, inferenceReads)
+
+    database.updateJob("activity-inference-job", status = "running", stage = "translating", currentPage = 0)
+    ShadowNativePdfCore.inferenceProgressCallback = { inferenceReads++; error("native progress unavailable") }
+    val unavailable = PromiseCapture()
+    module.getActivitySnapshot(unavailable.promise)
+    assertEquals("activity polling tolerates unavailable native progress", "activity-inference-job",
+      JSONObject(unavailable.awaitSuccess().toString()).getJSONArray("jobs").getJSONObject(0).getString("id"))
+    assertEquals(2, inferenceReads)
+    source.delete()
+  }
+
+  @Test
   fun reactPackageRegistersTheTranslatorModuleAndNoUnusedViewManagers() {
-    val packageModules = PdfTranslatorPackage().createNativeModules(reactContext)
+    val reactPackage = PdfTranslatorPackage()
+    val packageModules = reactPackage.createNativeModules(reactContext)
     val registeredModule = packageModules.single() as PdfTranslatorModule
     assertEquals("PdfTranslator", registeredModule.name)
-    assertTrue(PdfTranslatorPackage().createViewManagers(reactContext).isEmpty())
+    assertTrue(reactPackage.createViewManagers(reactContext).isEmpty())
+    // This legacy ReactPackage registers through createNativeModules. The
+    // optional TurboModule lookup is inherited and deliberately returns null.
+    assertNull(reactPackage.getModule("PdfTranslator", reactContext))
+    assertNull(reactPackage.getModule("MissingNativeModule", reactContext))
     registeredModule.invalidate()
     (registeredModule.javaClass.getDeclaredField("database").apply { isAccessible = true }
       .get(registeredModule) as TranslatorDatabase).close()
@@ -269,6 +377,25 @@ class PdfTranslatorModuleTest {
   }
 
   @Test
+  fun leavingTheAppWhileSystemPickerIsOpenKeepsItsPromisePendingUntilPickerReturns() {
+    val activity = DestinationActivity()
+    retainedHostActivity = activity
+    reactContext.onHostResume(activity)
+    val picker = PromiseCapture()
+
+    module.pickPdf(picker.promise)
+    assertEquals(Intent.ACTION_OPEN_DOCUMENT, activity.openedIntent?.action)
+
+    // ReactContext dispatches this to the ActivityEventListener registered by
+    // the module; its generated default bridge must not consume the picker.
+    reactContext.onUserLeaveHint(activity)
+    picker.assertPending("leaving for the system picker must not settle the import promise")
+
+    module.onActivityResult(activity, 6101, Activity.RESULT_CANCELED, null)
+    assertEquals("null", picker.awaitSuccess())
+  }
+
+  @Test
   fun pauseModelDownloadPersistsPartialBytesAndNotifiesTheService() {
     val model = ModelCatalog.models.first()
     val partial = File(context.filesDir, "models/${model.id}.part").apply {
@@ -325,8 +452,42 @@ class PdfTranslatorModuleTest {
   }
 
   @Test
+  fun startJobRejectsWhileDestroyedWorkerStillOwnsCleanupWithoutCreatingQueuedRow() {
+    resumeHostActivity()
+    val source = File(context.cacheDir, "pending-owner-source.pdf").apply { writeText("%PDF-1.7") }
+    database.upsertDocument("pending-owner-doc", source.name, source.absolutePath, 1, "source-hash")
+    database.addJob("old-paused-job", jobInput("pending-owner-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("old-paused-job", status = "paused")
+
+    val ownerField = PdfTranslationService::class.java.getDeclaredField("activeJobId").apply { isAccessible = true }
+    val previousOwner = ownerField.get(null)
+    val activeField = PdfTranslationService::class.java.getDeclaredField("isActive").apply { isAccessible = true }
+    val previousActive = activeField.getBoolean(null)
+    try {
+      // Model onDestroy's interval: the service is no longer active, but the
+      // entered worker has not completed checkpoint/cleanup and still owns it.
+      activeField.setBoolean(null, false)
+      ownerField.set(null, "old-paused-job")
+
+      val start = PromiseCapture()
+      module.startJob(jobInput("pending-owner-doc", ModelCatalog.RECOMMENDED_ID).toString(), start.promise)
+
+      val failure = start.awaitFailure()
+      assertEquals("JOB_START_FAILED", failure.code)
+      assertTrue(failure.message.orEmpty().contains("Wait until the current background operation finishes"))
+      assertEquals(1, database.jobsJson().length())
+      assertNull(Shadows.shadowOf(context.applicationContext as Application).nextStartedService)
+      assertNull(database.jobJson("old-paused-job")?.takeIf { it.optString("status") == "queued" })
+    } finally {
+      ownerField.set(null, previousOwner)
+      activeField.setBoolean(null, previousActive)
+      source.delete()
+    }
+  }
+
+  @Test
   fun onlineJobsRequireFreshConsentAndQueueBothFormatsWithoutInstalledWeightsOrGlossary() {
-    reactContext.onHostResume(Activity())
+    resumeHostActivity()
     database.saveGlossary("local-only-term", "SDK", "SDK", "zh-Hans", "en")
     for (format in listOf("pdf", "docx")) {
       val source = File(context.filesDir, "documents/online-consent.$format").apply {
@@ -369,14 +530,14 @@ class PdfTranslatorModuleTest {
 
   @Test
   fun unsupportedOnlineProviderIsRejectedEvenAfterPrivacyConsent() {
-    reactContext.onHostResume(Activity())
+    resumeHostActivity()
     val result = PromiseCapture()
     module.startJob(jobInput("not-read-before-provider-check", ModelCatalog.RECOMMENDED_ID)
       .put("engine", JSONObject().put("kind", "online").put("id", "unapproved-provider"))
       .put("onlineConsent", true).toString(), result.promise)
     val failure = result.awaitFailure()
     assertEquals("JOB_START_FAILED", failure.code)
-    assertTrue(failure.message.orEmpty().contains("supported online translation provider"))
+    assertTrue("Unexpected rejection: ${failure.message}", failure.message.orEmpty().contains("supported online translation provider"))
     assertEquals(0, database.jobsJson().length())
     assertNull(Shadows.shadowOf(context.applicationContext as Application).nextStartedService)
   }
@@ -438,7 +599,7 @@ class PdfTranslatorModuleTest {
     val open = PromiseCapture()
     module.openPdf("openable-doc", open.promise)
     assertEquals("OPEN_PDF_FAILED", open.awaitFailure().code)
-    assertTrue(open.awaitFailure().message.orEmpty().contains("Open the app"))
+    assertTrue(open.awaitFailure().message.orEmpty(), open.awaitFailure().message.orEmpty().contains("Open the app"))
 
     val exported = File(context.filesDir, "exports/shareable.pdf").apply {
       parentFile?.mkdirs()
@@ -448,7 +609,7 @@ class PdfTranslatorModuleTest {
     val share = PromiseCapture()
     module.shareExport("saved-export", share.promise)
     assertEquals("SHARE_FAILED", share.awaitFailure().code)
-    assertTrue(share.awaitFailure().message.orEmpty().contains("Open the app"))
+    assertTrue(share.awaitFailure().message.orEmpty(), share.awaitFailure().message.orEmpty().contains("Open the app"))
     source.delete()
     exported.delete()
   }
@@ -474,6 +635,101 @@ class PdfTranslatorModuleTest {
     assertNull(module.javaClass.getDeclaredField("pendingExport").apply { isAccessible = true }.get(module))
     assertNull(module.javaClass.getDeclaredField("pendingExportFile").apply { isAccessible = true }.get(module))
     assertNull(module.javaClass.getDeclaredField("pendingExportId").apply { isAccessible = true }.get(module))
+    source.delete()
+  }
+
+  @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
+  fun previewJobBuildsAndOpensTheVerifiedPdfAfterItsAsyncWorkCompletes() {
+    val jobId = "preview-success-${UUID.randomUUID()}"
+    val source = File(context.filesDir, "documents/$jobId.pdf").apply {
+      parentFile?.mkdirs()
+      writeText("%PDF-1.7 source")
+    }
+    database.upsertDocument("$jobId-doc", "owners-manual.pdf", source.absolutePath, 1, "source-hash")
+    database.addJob(jobId, jobInput("$jobId-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob(jobId, status = "completed", stage = "complete")
+    database.savePage(jobId, 0, "completed", JSONArray().put(
+      JSONObject().put("id", "block-1").put("sourceText", "Brake").put("translatedText", "Тормоз")
+        .put("status", "translated"),
+    ).toString(), expectedBlocks = 1)
+    val activity = DestinationActivity()
+    reactContext.onHostResume(activity)
+
+    val result = PromiseCapture()
+    module.previewJob(jobId, result.promise)
+
+    val preview = JSONObject(result.awaitSuccess().toString())
+    val saved = database.exportInfo(preview.getString("id"))!!
+    val pdf = File(saved.path)
+    assertTrue("preview should point to a verified, non-empty PDF", pdf.isFile && pdf.length() > 0L)
+    assertEquals("application/pdf", saved.mimeType)
+    assertEquals(Intent.ACTION_VIEW, activity.openedIntent?.action)
+    assertEquals("application/pdf", activity.openedIntent?.type)
+    assertEquals(preview.getString("uri"), activity.openedIntent?.data.toString())
+    assertEquals("completed", database.jobJson(jobId)!!.getString("status"))
+    assertEquals("complete", database.jobJson(jobId)!!.getString("stage"))
+    assertFalse("temporary single-page render artifacts must be cleaned", File(context.cacheDir, "translated-page-work")
+      .listFiles().orEmpty().any { it.name.startsWith("$jobId-") })
+    pdf.delete()
+    source.delete()
+  }
+
+  @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
+  fun getJobRefreshesLegacyCompletedStateWhenRebuiltLayoutFindsReviewIssue() {
+    val jobId = "legacy-layout-review-${UUID.randomUUID()}"
+    val source = File(context.filesDir, "documents/$jobId.pdf").apply {
+      parentFile?.mkdirs()
+      writeText("%PDF-1.7 source")
+    }
+    database.upsertDocument("$jobId-doc", "owners-manual.pdf", source.absolutePath, 1, "source-hash")
+    database.addJob(jobId, jobInput("$jobId-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob(jobId, status = "completed", stage = "complete")
+    database.savePage(jobId, 0, "completed", JSONArray().put(
+      JSONObject().put("id", "block-1").put("sourceText", "Brake")
+        .put("translatedText", "Тормоз").put("status", "translated"),
+    ).toString(), expectedBlocks = 1)
+
+    // Simulate a pre-v3 published PDF. Its bytes and export row remain valid legacy data,
+    // but without a layout receipt getJob must rebuild from the durable checkpoint.
+    val exportId = privateJobExportIdForTest(jobId)
+    val oldPdf = File(context.filesDir, "exports/$exportId.pdf").apply {
+      parentFile?.mkdirs()
+      writeText("%PDF-1.7 legacy output")
+    }
+    database.saveExport(exportId, oldPdf.absolutePath, "legacy.pdf")
+    ShadowNativePdfCore.exportCallback = { _, _, destination ->
+      File(destination).writeText("%PDF-1.7 preserve-source output")
+      JSONObject().put("layoutVersion", 3).put("mode", "preserve-source").put("path", destination)
+        .put("sourcePageIndex", 0).put("pageCount", 1)
+        .put("partial", true)
+        .put("issues", JSONArray().put(JSONObject().put("blockId", "block-1")
+          .put("reason", "translation_review").put("message", "The translated region needs source review.")))
+        .put("placements", JSONArray().put(JSONObject().put("blockId", "block-1")
+          .put("outputPageIndex", 0).put("role", "paragraph")))
+        .toString()
+    }
+
+    val result = PromiseCapture()
+    module.getJob(jobId, 0, result.promise)
+    val snapshot = JSONObject(result.awaitSuccess().toString())
+
+    assertEquals("partial", snapshot.getJSONObject("job").getString("status"))
+    assertEquals("partial", snapshot.getJSONArray("pages").getJSONObject(0).getString("status"))
+    assertEquals("partial", snapshot.getJSONObject("selectedPage").getString("status"))
+    assertEquals("Тормоз", snapshot.getJSONObject("selectedPage").getJSONArray("blocks")
+      .getJSONObject(0).getString("translatedText"))
+    assertEquals(1, snapshot.getJSONObject("pdfLayout").getInt("outputPageCount"))
+    assertFalse("the invalidated legacy PDF is replaced after the partial rebuild", oldPdf.exists())
+    val published = database.export(exportId)!!.first
+    assertTrue(File(published).isFile)
+    assertTrue("the rebuilt artifact has a versioned layout receipt", File(published).parentFile
+      ?.resolve("layout-receipt.json")?.isFile == true)
+
+    val delete = PromiseCapture()
+    module.deleteJob(jobId, delete.promise)
+    delete.awaitSuccess()
     source.delete()
   }
 
@@ -508,6 +764,316 @@ class PdfTranslatorModuleTest {
     assertNull(delete.awaitSuccess())
     assertNull(database.jobJson("module-job"))
     source.delete()
+  }
+
+  @Test
+  fun deletionRemovesOnlyPrivateResultsAndWaitsUntilTheLastTranslationBeforeRemovingSource() {
+    val documentDirectory = File(context.filesDir, "documents").apply { mkdirs() }
+    val source = File(documentDirectory, "shared.pdf").apply { writeText("%PDF-1.7 source") }
+    database.upsertDocument("shared-doc", "shared.pdf", source.absolutePath, 1, "shared-hash")
+    for (id in listOf("shared-job-a", "shared-job-b")) {
+      database.addJob(id, jobInput("shared-doc", ModelCatalog.RECOMMENDED_ID), 1)
+      database.updateJob(id, status = "paused")
+    }
+    val exportId = privateJobExportIdForTest("shared-job-a")
+    val exportDirectory = File(context.filesDir, "exports").apply { mkdirs() }
+    val privateResult = File(exportDirectory, "$exportId.pdf").apply { writeText("private result") }
+    database.saveExport(exportId, privateResult.absolutePath, "translated.pdf")
+    val userExport = File(context.cacheDir, "user-owned-export.pdf").apply { writeText("user export") }
+
+    val deleteFirst = PromiseCapture()
+    module.deleteJob("shared-job-a", deleteFirst.promise)
+    deleteFirst.awaitSuccess()
+    assertFalse(privateResult.exists())
+    assertTrue(source.exists())
+    assertTrue(userExport.exists())
+    assertTrue(database.documentInfo("shared-doc") != null)
+    assertNotNull(database.jobJson("shared-job-b"))
+
+    val deleteLast = PromiseCapture()
+    module.deleteJob("shared-job-b", deleteLast.promise)
+    deleteLast.awaitSuccess()
+    assertFalse(source.exists())
+    assertNull(database.documentInfo("shared-doc"))
+    assertTrue(userExport.exists())
+    userExport.delete()
+  }
+
+  @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
+  fun deletingJobRemovesPublishedV2PdfReceiptAndThumbnailsButPreservesSharedSource() {
+    val jobId = "delete-v2-${UUID.randomUUID()}"
+    val documentId = "$jobId-document"
+    val source = File(context.filesDir, "documents/$jobId.pdf").apply {
+      parentFile?.mkdirs()
+      writeText("%PDF-1.7 shared source")
+    }
+    database.upsertDocument(documentId, source.name, source.absolutePath, 1, "shared-source-hash")
+    database.addJob(jobId, jobInput(documentId, ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob(jobId, status = "completed", stage = "complete")
+    database.savePage(jobId, 0, "completed", JSONArray().put(JSONObject()
+      .put("id", "v2-block").put("sourceText", "Brake").put("translatedText", "Тормоз")
+      .put("status", "translated")).toString(), 612.0, 792.0, null, 1)
+    val siblingId = "$jobId-sibling"
+    database.addJob(siblingId, jobInput(documentId, ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob(siblingId, status = "paused")
+
+    val font = File(context.cacheDir, "$jobId-test-font.ttf").apply { writeText("font") }
+    val published = JobPdfExporter(context, database, fontProvider = { font }, cjkFontProvider = { font })
+      .getOrBuild(jobId)
+    val previewDirectory = File(context.cacheDir, "thumbnails").apply { mkdirs() }
+    val jobPreview = File(previewDirectory,
+      "translated_v2_${jobId}_${published.receipt.outputSha256}_0_320.png").apply { writeText("job preview") }
+    val siblingPreview = File(previewDirectory, "translated_v2_${jobId}-sibling_hash_0_320.png")
+      .apply { writeText("sibling preview") }
+    assertTrue(published.file.isFile)
+    assertTrue(File(published.generationDirectory, "layout-receipt.json").isFile)
+
+    val result = PromiseCapture()
+    module.deleteJob(jobId, result.promise)
+
+    assertNull(result.awaitSuccess())
+    assertFalse("private v2 generation and receipt must be removed", published.generationDirectory.exists())
+    assertFalse(jobPreview.exists())
+    assertTrue("the source remains while a sibling translation references it", source.isFile)
+    assertNotNull(database.documentInfo(documentId))
+    assertNotNull(database.jobJson(siblingId))
+    assertNull(database.exportInfo(published.exportId))
+    assertEquals("sibling preview", siblingPreview.readText())
+    siblingPreview.delete()
+    font.delete()
+    source.delete()
+  }
+
+  @Test
+  fun deletingTheLastJobRemovesItsLibraryRowButPreservesAnExternalUserSource() {
+    val externalSource = File(context.cacheDir, "user-selected-original.pdf").apply { writeText("%PDF-1.7 external source") }
+    database.upsertDocument("external-job-doc", externalSource.name, externalSource.absolutePath, 1, "external-hash")
+    database.addJob("external-job", jobInput("external-job-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("external-job", status = "paused")
+
+    val result = PromiseCapture()
+    module.deleteJob("external-job", result.promise)
+
+    assertNull(result.awaitSuccess())
+    assertNull(database.jobJson("external-job"))
+    assertNull(database.documentInfo("external-job-doc"))
+    assertTrue("deleting a library entry must never delete a source outside the private import directory", externalSource.isFile)
+    externalSource.delete()
+  }
+
+  @Test
+  fun deletingDocxJobRemovesPrivateDocxAndPdfExportRowsButKeepsUserCopies() {
+    val source = File(context.filesDir, "documents/deleted-word.docx").apply {
+      parentFile?.mkdirs()
+      writeBytes(byteArrayOf(0x50, 0x4b, 0x03, 0x04))
+    }
+    database.upsertDocument("deleted-word-doc", source.name, source.absolutePath, 1, "word-hash", "docx", 1)
+    database.addJob("deleted-word-job", jobInput("deleted-word-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("deleted-word-job", status = "completed")
+
+    val privateDocx = File(context.filesDir, "translated-docx/deleted-word-job.docx").apply {
+      parentFile?.mkdirs()
+      writeText("private translated Word")
+    }
+    val privatePreview = File(context.cacheDir, "docx-preview-pdf/renderer-v5-translated-deleted-word-job.pdf").apply {
+      parentFile?.mkdirs()
+      writeText("private translated PDF preview")
+    }
+    val hashedExportId = privateJobExportIdForTest("deleted-word-job")
+    val hashedPdf = File(context.filesDir, "exports/$hashedExportId.pdf").apply {
+      parentFile?.mkdirs()
+      writeText("private PDF export")
+    }
+    val externalDocx = File(context.cacheDir, "user-saved-word.docx").apply { writeText("user copy") }
+    val externalPdf = File(context.cacheDir, "user-saved-word.pdf").apply { writeText("user copy") }
+    database.saveExport("deleted-word-job", privateDocx.absolutePath, "translated.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    database.saveExport("pdf-export-deleted-word-job", privatePreview.absolutePath, "translated.pdf")
+    database.saveExport("preview-pdf-deleted-word-job", privatePreview.absolutePath, "preview.pdf")
+    database.saveExport(hashedExportId, hashedPdf.absolutePath, "translated.pdf")
+
+    val result = PromiseCapture()
+    module.deleteJob("deleted-word-job", result.promise)
+
+    result.awaitSuccess()
+    assertFalse(privateDocx.exists())
+    assertFalse(privatePreview.exists())
+    assertFalse(hashedPdf.exists())
+    for (id in listOf("deleted-word-job", "pdf-export-deleted-word-job", "preview-pdf-deleted-word-job", hashedExportId)) {
+      assertNull("stale private export row: $id", database.exportInfo(id))
+    }
+    assertTrue(externalDocx.isFile)
+    assertTrue(externalPdf.isFile)
+    externalDocx.delete()
+    externalPdf.delete()
+  }
+
+  @Test
+  fun deletingAnUnscheduledExternalDocumentRemovesOnlyItsPrivateLibraryRow() {
+    val external = File(context.cacheDir, "outside-import-directory.pdf").apply { writeText("source") }
+    database.upsertDocument("external-doc", "outside.pdf", external.absolutePath, 1, "external-hash")
+    val result = PromiseCapture()
+    module.deleteDocument("external-doc", result.promise)
+    result.awaitSuccess()
+    assertNull(database.documentInfo("external-doc"))
+    assertTrue(external.exists())
+    external.delete()
+  }
+
+  @Test
+  fun deleteDocumentRejectsMissingOrReferencedRowsAndRemovesAnUnreferencedPrivateImportAndPreviews() {
+    val missing = PromiseCapture()
+    module.deleteDocument("no-such-document", missing.promise)
+    assertEquals("DOCUMENT_DELETE_FAILED", missing.awaitFailure().code)
+    assertTrue(missing.awaitFailure().message.orEmpty().contains("not found"))
+
+    val documentDirectory = File(context.filesDir, "documents").apply { mkdirs() }
+    val referencedSource = File(documentDirectory, "referenced.pdf").apply { writeText("referenced") }
+    database.upsertDocument("referenced-doc", referencedSource.name, referencedSource.absolutePath, 1, "referenced-hash")
+    database.addJob("referenced-job", jobInput("referenced-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("referenced-job", status = "paused")
+    val referenced = PromiseCapture()
+
+    module.deleteDocument("referenced-doc", referenced.promise)
+
+    assertEquals("DOCUMENT_DELETE_FAILED", referenced.awaitFailure().code)
+    assertTrue(referenced.awaitFailure().message.orEmpty().contains("translation jobs"))
+    assertTrue(referencedSource.isFile)
+    assertNotNull(database.documentInfo("referenced-doc"))
+
+    val privateSource = File(documentDirectory, "unreferenced.pdf").apply { writeText("private import") }
+    database.upsertDocument("unreferenced-doc", privateSource.name, privateSource.absolutePath, 1, "unreferenced-hash")
+    val thumbnail = File(context.cacheDir, "thumbnails/original_unreferenced-doc_0_128.png").apply {
+      parentFile?.mkdirs()
+      writeBytes(byteArrayOf(1, 2, 3))
+    }
+    val previewPdf = File(context.cacheDir, "docx-preview-pdf/renderer-v5-original-unreferenced-doc.pdf").apply {
+      parentFile?.mkdirs()
+      writeText("private preview")
+    }
+    val removed = PromiseCapture()
+
+    module.deleteDocument("unreferenced-doc", removed.promise)
+
+    assertNull(removed.awaitSuccess())
+    assertFalse(privateSource.exists())
+    assertFalse(thumbnail.exists())
+    assertFalse(previewPdf.exists())
+    assertNull(database.documentInfo("unreferenced-doc"))
+    assertTrue("the rejected row must remain until its job is separately removed", referencedSource.exists())
+    database.deleteJob("referenced-job")
+    referencedSource.delete()
+  }
+
+  @Test
+  fun deleteJobWaitsForStoppingWorkerEvenWhenItsLastPersistedStatusIsPaused() {
+    val source = File(context.cacheDir, "stopping-delete-source.pdf").apply { writeText("source") }
+    database.upsertDocument("stopping-delete-doc", source.name, source.absolutePath, 1, "source-hash")
+    database.addJob("stopping-delete-job", jobInput("stopping-delete-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("stopping-delete-job", status = "paused")
+    val stopIdField = PdfTranslationService::class.java.getDeclaredField("stopRequestedJobId").apply { isAccessible = true }
+    val stopCanceledField = PdfTranslationService::class.java.getDeclaredField("stopRequestedCanceled").apply { isAccessible = true }
+    val previousStopId = stopIdField.get(null)
+    val previousCanceled = stopCanceledField.getBoolean(null)
+    try {
+      PdfTranslationService.markWorkerStopping("stopping-delete-job", canceled = false)
+      val snapshot = database.jobJson("stopping-delete-job")!!
+      assertTrue(snapshot.getBoolean("workerStopping"))
+
+      val result = PromiseCapture()
+      module.deleteJob("stopping-delete-job", result.promise)
+
+      assertEquals("JOB_DELETE_FAILED", result.awaitFailure().code)
+      assertTrue(result.awaitFailure().message.orEmpty().contains("wait for it to stop"))
+      assertNotNull(database.jobJson("stopping-delete-job"))
+      assertTrue(source.isFile)
+    } finally {
+      stopIdField.set(null, previousStopId)
+      stopCanceledField.setBoolean(null, previousCanceled)
+      source.delete()
+    }
+  }
+
+  @Test
+  fun docxPreviewRejectsNonWordAndMissingSourcesAndNeverKeepsAnInvalidCachedPdf() {
+    val pdfSource = File(context.cacheDir, "preview-not-word.pdf").apply { writeText("source") }
+    database.upsertDocument("preview-not-word", pdfSource.name, pdfSource.absolutePath, 1, "pdf-hash", "pdf")
+    val nonWord = PromiseCapture()
+    module.renderDocxPreview("preview-not-word", null, false, nonWord.promise)
+    assertEquals("DOCX_PREVIEW_FAILED", nonWord.awaitFailure().code)
+    assertTrue(nonWord.awaitFailure().message.orEmpty().contains("not a Word"))
+
+    val missing = PromiseCapture()
+    module.renderDocxPreview("missing-word-document", null, false, missing.promise)
+    assertEquals("DOCX_PREVIEW_FAILED", missing.awaitFailure().code)
+
+    val source = File(context.filesDir, "documents/invalid-preview.docx").apply {
+      parentFile?.mkdirs()
+      writeText("private Word source")
+    }
+    database.upsertDocument("invalid-preview-doc", source.name, source.absolutePath, 1, "word-hash", "docx", 1)
+    val invalidCache = File(context.cacheDir, "docx-preview-pdf/renderer-v5-original-invalid-preview-doc.pdf").apply {
+      parentFile?.mkdirs()
+      writeText("not a PDF")
+    }
+    val noActivity = PromiseCapture()
+
+    module.renderDocxPreview("invalid-preview-doc", null, false, noActivity.promise)
+
+    assertEquals("DOCX_PREVIEW_FAILED", noActivity.awaitFailure().code)
+    assertTrue(noActivity.awaitFailure().message.orEmpty().contains("Open Folivela"))
+    assertFalse("an invalid cached PDF must be discarded", invalidCache.exists())
+    assertTrue("preview preparation must preserve the source", source.isFile)
+    source.delete()
+    pdfSource.delete()
+  }
+
+
+  @Test
+  fun docxPreviewRequiresTheMatchingCompletedTranslation() {
+    val source = File(context.filesDir, "documents/cached-preview.docx").apply {
+      parentFile?.mkdirs()
+      writeText("private Word source")
+    }
+    database.upsertDocument("cached-preview-doc", source.name, source.absolutePath, 1, "word-hash", "docx", 1)
+
+    val noJobId = PromiseCapture()
+    module.renderDocxPreview("cached-preview-doc", null, true, noJobId.promise)
+    assertEquals("DOCX_PREVIEW_FAILED", noJobId.awaitFailure().code)
+
+    database.addJob("queued-preview-job", jobInput("cached-preview-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    val queued = PromiseCapture()
+    module.renderDocxPreview("cached-preview-doc", "queued-preview-job", true, queued.promise)
+    assertEquals("DOCX_PREVIEW_FAILED", queued.awaitFailure().code)
+
+    val otherSource = File(context.filesDir, "documents/other-preview.docx").apply {
+      parentFile?.mkdirs()
+      writeText("other Word source")
+    }
+    database.upsertDocument("elsewhere", otherSource.name, otherSource.absolutePath, 1, "other-word-hash", "docx", 1)
+    database.addJob("other-preview-job", jobInput("elsewhere", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("other-preview-job", status = "completed")
+    val mismatched = PromiseCapture()
+    module.renderDocxPreview("cached-preview-doc", "other-preview-job", true, mismatched.promise)
+    assertEquals("DOCX_PREVIEW_FAILED", mismatched.awaitFailure().code)
+
+    val pdfSource = File(context.cacheDir, "translated-nonword-source.pdf").apply { writeText("source") }
+    database.upsertDocument("translated-nonword-doc", pdfSource.name, pdfSource.absolutePath, 1, "pdf-hash", "pdf")
+    database.addJob("translated-nonword-job", jobInput("translated-nonword-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("translated-nonword-job", status = "completed")
+    val translatedNonWord = PromiseCapture()
+    module.renderDocxPreview("translated-nonword-doc", "translated-nonword-job", true, translatedNonWord.promise)
+    assertEquals("DOCX_PREVIEW_FAILED", translatedNonWord.awaitFailure().code)
+    assertTrue(translatedNonWord.awaitFailure().message.orEmpty().contains("not a Word"))
+
+    source.delete()
+    otherSource.delete()
+    pdfSource.delete()
+  }
+
+  private fun privateJobExportIdForTest(jobId: String): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256").digest(jobId.toByteArray(Charsets.UTF_8))
+    return "job-" + digest.take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
   }
 
   @Test
@@ -577,6 +1143,83 @@ class PdfTranslatorModuleTest {
   }
 
   @Test
+  fun resumeJobRejectsTerminalRowsWithoutMutatingTheirCheckpointOrStartingService() {
+    val source = File(context.cacheDir, "resume-terminal-source.pdf").apply { writeText("%PDF-1.7") }
+    database.upsertDocument("resume-terminal-doc", source.name, source.absolutePath, 1, "source-hash")
+    for ((jobId, terminalStatus) in listOf("resume-completed" to "completed", "resume-canceled" to "canceled")) {
+      database.addJob(jobId, jobInput("resume-terminal-doc", ModelCatalog.RECOMMENDED_ID), 1)
+      database.updateJob(jobId, status = terminalStatus, stage = "export", error = "preserve this result")
+    }
+    resumeHostActivity()
+
+    for ((jobId, terminalStatus) in listOf("resume-completed" to "completed", "resume-canceled" to "canceled")) {
+      val before = database.jobJson(jobId)!!
+      val result = PromiseCapture()
+      module.resumeJob(jobId, result.promise)
+
+      assertEquals("JOB_RESUME_FAILED", result.awaitFailure().code)
+      val after = database.jobJson(jobId)!!
+      assertEquals(terminalStatus, after.getString("status"))
+      assertEquals("preserve this result", after.getString("error"))
+      assertEquals(before.getString("stage"), after.getString("stage"))
+      assertEquals(before.getInt("updatedAt"), after.getInt("updatedAt"))
+      assertNull(Shadows.shadowOf(context.applicationContext as Application).nextStartedService)
+    }
+    source.delete()
+  }
+
+  @Test
+  fun resumeJobRejectsAnotherQueuedJobWithoutChangingEitherRowOrStartingService() {
+    val source = File(context.cacheDir, "resume-active-source.pdf").apply { writeText("%PDF-1.7") }
+    database.upsertDocument("resume-active-doc", source.name, source.absolutePath, 1, "source-hash")
+    database.addJob("resume-target", jobInput("resume-active-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("resume-target", status = "paused", stage = "reading", error = "keep target error")
+    database.addJob("resume-other", jobInput("resume-active-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("resume-other", status = "queued", stage = "queued")
+    resumeHostActivity()
+    val targetBefore = database.jobJson("resume-target")!!
+    val otherBefore = database.jobJson("resume-other")!!
+    val result = PromiseCapture()
+
+    module.resumeJob("resume-target", result.promise)
+
+    assertEquals("JOB_RESUME_FAILED", result.awaitFailure().code)
+    val targetAfter = database.jobJson("resume-target")!!
+    val otherAfter = database.jobJson("resume-other")!!
+    assertEquals("paused", targetAfter.getString("status"))
+    assertEquals("reading", targetAfter.getString("stage"))
+    assertEquals("keep target error", targetAfter.getString("error"))
+    assertEquals(targetBefore.getInt("updatedAt"), targetAfter.getInt("updatedAt"))
+    assertEquals("queued", otherAfter.getString("status"))
+    assertEquals(otherBefore.getInt("updatedAt"), otherAfter.getInt("updatedAt"))
+    assertNull(Shadows.shadowOf(context.applicationContext as Application).nextStartedService)
+    source.delete()
+  }
+
+  @Test
+  fun resumeJobRejectsStalePipelineBeforeChangingTheSavedJob() {
+    val source = File(context.cacheDir, "resume-stale-pipeline.pdf").apply { writeText("%PDF-1.7") }
+    database.upsertDocument("resume-stale-doc", source.name, source.absolutePath, 1, "source-hash")
+    database.addJob("resume-stale-job", jobInput("resume-stale-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob("resume-stale-job", status = "paused", stage = "reading", error = "old checkpoint")
+    database.writableDatabase.execSQL("UPDATE jobs SET pipeline_version=? WHERE id=?", arrayOf(TranslatorDatabase.PIPELINE_VERSION - 1, "resume-stale-job"))
+    resumeHostActivity()
+    val before = database.jobJson("resume-stale-job")!!
+    val result = PromiseCapture()
+
+    module.resumeJob("resume-stale-job", result.promise)
+
+    assertEquals("JOB_RESUME_FAILED", result.awaitFailure().code)
+    val after = database.jobJson("resume-stale-job")!!
+    assertEquals("paused", after.getString("status"))
+    assertEquals("reading", after.getString("stage"))
+    assertEquals("old checkpoint", after.getString("error"))
+    assertEquals(before.getInt("updatedAt"), after.getInt("updatedAt"))
+    assertNull(Shadows.shadowOf(context.applicationContext as Application).nextStartedService)
+    source.delete()
+  }
+
+  @Test
   fun pageRenderRejectsInvalidDimensionsAndUntranslatedPreviewRequests() {
     val source = File(context.cacheDir, "render-validation-source.pdf").apply { writeBytes("%PDF-1.7".toByteArray()) }
     database.upsertDocument("render-doc", "source.pdf", source.absolutePath, 1, "source-hash")
@@ -602,6 +1245,7 @@ class PdfTranslatorModuleTest {
   }
 
   @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
   fun pageRenderReusesPngSignatureCheckedOriginalAndTranslatedCaches() {
     val source = File(context.cacheDir, "cached-render-source.pdf").apply { writeBytes("not parsed when cached".toByteArray()) }
     database.upsertDocument("cached-doc", "source.pdf", source.absolutePath, 1, "source-hash")
@@ -609,12 +1253,14 @@ class PdfTranslatorModuleTest {
     database.updateJob("cached-job", status = "completed")
     database.savePage(
       "cached-job", 0, "completed",
-      JSONArray().put(JSONObject().put("status", "translated")).toString(), expectedBlocks = 1,
+      JSONArray().put(JSONObject().put("id", "cached-block").put("sourceText", "Brake")
+        .put("translatedText", "Тормоз").put("status", "translated")).toString(), expectedBlocks = 1,
     )
+    val builtPdf = JobPdfExporter(context, database).getOrBuild("cached-job")
     val thumbnails = File(context.cacheDir, "thumbnails").apply { mkdirs() }
     val signature = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
     File(thumbnails, "original_cached-doc_0_320.png").writeBytes(signature)
-    File(thumbnails, "translated_cached-job_0_320.png").writeBytes(signature)
+    File(thumbnails, "translated_v2_cached-job_${builtPdf.receipt.outputSha256}_0_320.png").writeBytes(signature)
 
     val original = PromiseCapture()
     module.renderPage("cached-doc", 0, 320, original.promise)
@@ -622,7 +1268,8 @@ class PdfTranslatorModuleTest {
 
     val translated = PromiseCapture()
     module.renderTranslatedPage("cached-job", 0, 320, translated.promise)
-    assertTrue(translated.awaitSuccess().toString().endsWith("translated_cached-job_0_320.png"))
+    assertTrue(translated.awaitSuccess().toString().endsWith(
+      "translated_v2_cached-job_${builtPdf.receipt.outputSha256}_0_320.png"))
     source.delete()
   }
 
@@ -640,7 +1287,8 @@ class PdfTranslatorModuleTest {
     database.addJob(jobId, input, 1)
     database.updateJob(jobId, status = "completed")
     database.savePage(jobId, 0, "completed", JSONArray().put(
-      JSONObject().put("status", "translated").put("source", "hello").put("target", "你好"),
+      JSONObject().put("id", "word-block").put("status", "translated")
+        .put("sourceText", "hello").put("translatedText", "你好"),
     ).toString(), expectedBlocks = 1)
     val result = PromiseCapture()
 
@@ -651,7 +1299,7 @@ class PdfTranslatorModuleTest {
     assertTrue(rendered.readBytes().take(8).toByteArray().contentEquals(byteArrayOf(
       0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
     )))
-    assertTrue(File(context.cacheDir, "NotoSans-Regular.ttf").isFile)
+    assertTrue(File(context.cacheDir, "NotoSansCondensed-Regular.ttf").isFile)
     assertTrue(File(context.cacheDir, "NotoSansSC-Regular.ttf").isFile)
     assertTrue(File(context.cacheDir, "translated-page-work").listFiles().orEmpty().none { it.name.startsWith("$jobId-0-") })
     rendered.delete()
@@ -840,7 +1488,7 @@ class PdfTranslatorModuleTest {
   }
 
   @Test
-  fun setJobColorPersistsOnlySupportedColorsForTerminalJobsAndAllowsClearing() {
+  fun setJobColorPersistsOnlySupportedColorsForNonCanceledJobsAndAllowsClearing() {
     val source = File(context.cacheDir, "labeled-source.pdf").apply { writeBytes("%PDF-1.7".toByteArray()) }
     database.upsertDocument("labeled-doc", "source.pdf", source.absolutePath, 1, "source-hash")
     database.addJob("labeled-job", jobInput("labeled-doc", ModelCatalog.RECOMMENDED_ID), 1)
@@ -878,7 +1526,7 @@ class PdfTranslatorModuleTest {
     database.addJob("queued-label-job", jobInput("queued-label-doc", ModelCatalog.RECOMMENDED_ID), 1)
     val queued = PromiseCapture()
     module.setJobColor("queued-label-job", "yellow", queued.promise)
-    assertEquals("JOB_COLOR_SAVE_FAILED", queued.awaitFailure().code)
+    assertEquals("yellow", JSONObject(queued.awaitSuccess().toString()).getString("labelColor"))
 
     val missing = PromiseCapture()
     module.setJobColor("no-such-job", "red", missing.promise)
@@ -1100,6 +1748,54 @@ class PdfTranslatorModuleTest {
   }
 
   @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
+  fun exportJobBuildsVerifiedPdfAndCopiesItToTheUserChosenDestination() {
+    val jobId = "export-roundtrip-${UUID.randomUUID()}"
+    val source = File(context.filesDir, "documents/$jobId.pdf").apply {
+      parentFile?.mkdirs()
+      writeText("%PDF-1.7 source")
+    }
+    database.upsertDocument("$jobId-doc", "owners-manual.pdf", source.absolutePath, 1, "source-hash")
+    database.addJob(jobId, jobInput("$jobId-doc", ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob(jobId, status = "completed", stage = "complete")
+    database.savePage(jobId, 0, "completed", JSONArray().put(
+      JSONObject().put("id", "block-1").put("sourceText", "Brake").put("translatedText", "Тормоз")
+        .put("status", "translated"),
+    ).toString(), expectedBlocks = 1)
+    val activity = DestinationActivity()
+    reactContext.onHostResume(activity)
+    val destination = File(context.cacheDir, "user-chosen-translation.pdf")
+    val authority = "dev.kigya.translatepdf.export-roundtrip"
+    TestPdfOutputProvider(destination).also {
+      it.attachInfo(context, ProviderInfo().apply { this.authority = authority })
+      ShadowContentResolver.registerProviderInternal(authority, it)
+    }
+
+    val result = PromiseCapture()
+    module.exportJob(jobId, result.promise)
+
+    assertTrue("export should wait for the destination picker after building the result", activity.opened.await(10, TimeUnit.SECONDS))
+    assertEquals(Intent.ACTION_CREATE_DOCUMENT, activity.openedIntent?.action)
+    assertEquals("application/pdf", activity.openedIntent?.type)
+    assertEquals("owners-manual-zh-Hans-en.pdf", activity.openedIntent?.getStringExtra(Intent.EXTRA_TITLE))
+    module.onActivityResult(activity, activity.requestCode, Activity.RESULT_OK,
+      Intent().setData(Uri.parse("content://$authority/translation.pdf")))
+
+    val saved = JSONObject(result.awaitSuccess().toString())
+    val privateExport = database.exportInfo(saved.getString("id"))!!
+    assertEquals("pdf", saved.getString("format"))
+    assertEquals("application/pdf", saved.getString("mimeType"))
+    assertEquals("content://$authority/translation.pdf", saved.getString("uri"))
+    assertTrue("the selected destination must receive the verified output bytes",
+      destination.isFile && destination.readBytes().contentEquals(File(privateExport.path).readBytes()))
+    assertEquals("completed", database.jobJson(jobId)!!.getString("status"))
+    assertNull(module.javaClass.getDeclaredField("pendingExport").apply { isAccessible = true }.get(module))
+    destination.delete()
+    File(privateExport.path).delete()
+    source.delete()
+  }
+
+  @Test
   fun deletedExportDuringDestinationSelectionRejectsWithoutLosingThePublishedRecord() {
     val source = File(context.cacheDir, "removed-during-picker.pdf").apply { writeText("%PDF-1.7 synthetic") }
     database.saveExport("removed-during-picker", source.absolutePath, "translated.pdf")
@@ -1210,7 +1906,7 @@ class PdfTranslatorModuleTest {
   @Test
   fun notificationPromptFailureKeepsPermissionRetryableAndDoesNotBlockTheLibrary() {
     Shadows.shadowOf(context.applicationContext as Application).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
-    reactContext.onHostResume(Activity())
+    resumeHostActivity()
     val unsupported = PromiseCapture()
     module.requestNotificationPermission(unsupported.promise)
     assertEquals("NOTIFICATION_PERMISSION_UNAVAILABLE", unsupported.awaitFailure().code)
@@ -1232,6 +1928,22 @@ class PdfTranslatorModuleTest {
     val library = PromiseCapture()
     module.bootstrap(library.promise)
     assertEquals(0, JSONObject(library.awaitSuccess().toString()).getJSONArray("documents").length())
+  }
+
+  @Test
+  fun notificationPermissionRequestRejectsAFinishingActivityWithoutMarkingThePromptAsShown() {
+    Shadows.shadowOf(context.applicationContext as Application).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    database.setSetting("notification_permission_requested", "false")
+    val finishing = PermissionTestActivity().apply { finish() }
+    reactContext.onHostResume(finishing)
+
+    val result = PromiseCapture()
+    module.requestNotificationPermission(result.promise)
+
+    assertEquals("NOTIFICATION_PERMISSION_UNAVAILABLE", result.awaitFailure().code)
+    assertTrue(result.awaitFailure().message.orEmpty().contains("Open the app"))
+    assertFalse(database.setting("notification_permission_requested", "false").toBoolean())
+    assertNull(module.javaClass.getDeclaredField("pendingNotificationPermission").apply { isAccessible = true }.get(module))
   }
 
   @Test
@@ -1420,6 +2132,7 @@ class PdfTranslatorModuleTest {
     override fun startActivityForResult(intent:Intent,requestCode:Int) {
       this.openedIntent=intent;this.requestCode=requestCode;opened.countDown()
     }
+    override fun startActivity(intent: Intent) { openedIntent = intent }
   }
 
   @Test
@@ -1523,6 +2236,10 @@ class PdfTranslatorModuleTest {
       assertTrue("native promise should settle", latch.await(10, TimeUnit.SECONDS))
       return failure ?: throw AssertionError("expected promise rejection")
     }
+
+    fun assertPending(message: String) {
+      assertFalse(message, latch.await(100, TimeUnit.MILLISECONDS))
+    }
   }
 
   private class PermissionTestActivity : Activity(), PermissionAwareActivity {
@@ -1537,6 +2254,395 @@ class PdfTranslatorModuleTest {
       requestFailure?.let { throw it }
       this.requestCode = requestCode
       this.listener = listener
+    }
+  }
+
+  @Test
+  fun bootstrapPreservesAnActiveModelReservationAsDownloading() {
+    val model = ModelCatalog.models.first()
+    val partial = File(context.filesDir, "models/${model.id}.part").apply {
+      parentFile?.mkdirs()
+      writeBytes(byteArrayOf(2, 4, 6))
+    }
+    database.modelStatus(model.id, "downloading", 3)
+    val downloader = module.javaClass.getDeclaredField("downloader").apply { isAccessible = true }
+      .get(module) as ModelDownloader
+    val token = downloader.reserve(model.id)
+    try {
+      val result = PromiseCapture()
+      module.bootstrap(result.promise)
+
+      val models = JSONObject(result.awaitSuccess().toString()).getJSONArray("models")
+      val row = (0 until models.length()).map(models::getJSONObject).first { it.getString("id") == model.id }
+      assertEquals("downloading", row.getString("status"))
+      assertEquals(3L, row.getLong("downloadedBytes"))
+      assertEquals(3L, row.getLong("partialBytes"))
+      assertEquals(3L, row.getLong("storedBytes"))
+      assertTrue(downloader.hasActiveTransfer(model.id))
+      assertEquals(Triple("downloading", 3L, null), database.modelState(model.id))
+      assertTrue(partial.isFile)
+    } finally {
+      downloader.releaseReservation(model.id, token)
+      partial.delete()
+    }
+  }
+
+  @Test
+  fun lateDocumentPickerResultWithoutPendingPromiseDoesNotImportOrDisturbExport() {
+    val bytes = "%PDF-1.7\nlate picker result".toByteArray()
+    val source = File(context.cacheDir, "late-picker-source.pdf").apply { writeBytes(bytes) }
+    val authority = "dev.kigya.translatepdf.test-late-picker"
+    val provider = TestPdfOutputProvider(source, "late.pdf")
+    provider.attachInfo(context, ProviderInfo().apply { this.authority = authority })
+    ShadowContentResolver.registerProviderInternal(authority, provider)
+    val pendingExport = PromiseCapture()
+    module.javaClass.getDeclaredField("pendingExport").apply { isAccessible = true }.set(module, pendingExport.promise)
+
+    module.onActivityResult(Activity(), 6101, Activity.RESULT_OK,
+      Intent().setData(Uri.parse("content://$authority/source.pdf")))
+
+    assertNull(module.javaClass.getDeclaredField("pendingImport").apply { isAccessible = true }.get(module))
+    assertSame(pendingExport.promise, module.javaClass.getDeclaredField("pendingExport").apply { isAccessible = true }.get(module))
+    pendingExport.assertPending("a late import callback must not settle an unrelated export")
+    assertEquals(0, database.documentsJson().length())
+    assertArrayEquals(bytes, source.readBytes())
+    source.delete()
+  }
+
+  @Test
+  fun originalThumbnailCacheEvictsOldestFilesBeforeReturningAValidCachedPage() {
+    val source = File(context.cacheDir, "cache-prune-source.pdf").apply { writeText("synthetic source") }
+    database.upsertDocument("cache-prune-doc", source.name, source.absolutePath, 1, "cache-prune-hash")
+    val directory = File(context.cacheDir, "thumbnails").apply { mkdirs() }
+    val oldest = File(directory, "u050-cache-oldest.bin").apply { java.io.RandomAccessFile(this, "rw").use { it.setLength(30L * 1024L * 1024L) } }
+    val newer = File(directory, "u050-cache-newer.bin").apply { java.io.RandomAccessFile(this, "rw").use { it.setLength(20L * 1024L * 1024L) } }
+    assertTrue(oldest.setLastModified(1L))
+    assertTrue(newer.setLastModified(2L))
+    val cachedPage = File(directory, "original_cache-prune-doc_0_320.png").apply {
+      val bitmap = android.graphics.Bitmap.createBitmap(2, 2, android.graphics.Bitmap.Config.ARGB_8888)
+      try {
+        java.io.FileOutputStream(this).use { out ->
+          assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out))
+        }
+      } finally { bitmap.recycle() }
+    }
+    try {
+      val result = PromiseCapture()
+      module.renderPage("cache-prune-doc", 0, 320, result.promise)
+
+      assertTrue(result.awaitSuccess().toString().endsWith("original_cache-prune-doc_0_320.png"))
+      assertFalse("cache trimming removes the oldest entry first", oldest.exists())
+      assertTrue("newer cache entry is retained once the cache is within its limit", newer.isFile)
+      assertTrue(cachedPage.isFile)
+      assertTrue(directory.listFiles().orEmpty().sumOf(File::length) <= 48L * 1024L * 1024L)
+    } finally {
+      source.delete()
+      oldest.delete()
+      newer.delete()
+      cachedPage.delete()
+    }
+  }
+
+  @Test
+  @Config(shadows = [ShadowNativePdfCore::class])
+  fun pageRenderingConvertsMissingJniIntoStableNativeCoreRejection() {
+    val source = File(context.cacheDir, "missing-jni-render-source.pdf").apply { writeText("synthetic source") }
+    database.upsertDocument("missing-jni-render-doc", source.name, source.absolutePath, 1, "jni-render-hash")
+    ShadowNativePdfCore.renderCallback = { throw UnsatisfiedLinkError("native renderer unavailable") }
+    try {
+      val result = PromiseCapture()
+      module.renderPage("missing-jni-render-doc", 0, 320, result.promise)
+
+      val failure = result.awaitFailure()
+      assertEquals("NATIVE_CORE_UNAVAILABLE", failure.code)
+      assertTrue(failure.message.orEmpty().contains("engine is unavailable"))
+      assertNotNull(database.documentInfo("missing-jni-render-doc"))
+      assertTrue(source.isFile)
+    } finally {
+      ShadowNativePdfCore.renderCallback = null
+      source.delete()
+    }
+  }
+
+  @Test
+  fun deletingDocumentThroughPrivateSymlinkKeepsExternalSourceBytes() {
+    val external = File(context.cacheDir, "u050-external-symlink-source.pdf").apply { writeText("user-owned source bytes") }
+    val documents = File(context.filesDir, "documents").apply { mkdirs() }
+    val alias = File(documents, "u050-symlink-import.pdf")
+    java.nio.file.Files.createSymbolicLink(alias.toPath(), external.toPath())
+    database.upsertDocument("u050-symlink-doc", alias.name, alias.absolutePath, 1, "symlink-source-hash")
+    try {
+      val result = PromiseCapture()
+      module.deleteDocument("u050-symlink-doc", result.promise)
+
+      assertNull(result.awaitSuccess())
+      assertNull(database.documentInfo("u050-symlink-doc"))
+      assertEquals("user-owned source bytes", external.readText())
+      assertTrue("the symlink must not be followed to delete its external target", external.isFile)
+    } finally {
+      alias.delete()
+      external.delete()
+    }
+  }
+
+// PRIVATE STAGED MEMBERS for existing PdfTranslatorModuleTest.
+// Root inserts these members inside that class; existing fixture/imports are reused.
+// No production/private-field mutation. Deferred UI context controls only scheduling.
+
+  private class DeferredModuleUiContext(base: Context) : StubReactApplicationContext(base) {
+    private val pendingUi = java.util.ArrayDeque<Runnable>()
+    override fun runOnUiQueueThread(runnable: Runnable) { pendingUi.addLast(runnable) }
+    fun runNextUi() {
+      check(pendingUi.isNotEmpty()) { "expected a queued platform UI operation" }
+      pendingUi.removeFirst().run()
+    }
+    fun pendingUiCount(): Int = pendingUi.size
+  }
+
+  private fun deferModuleUi(): DeferredModuleUiContext {
+    module.invalidate()
+    database.close()
+    val deferred = DeferredModuleUiContext(context)
+    reactContext = deferred
+    module = PdfTranslatorModule(deferred)
+    database = moduleDatabase()
+    return deferred
+  }
+
+  @Test
+  fun queuedNotificationRequestsOpenOnePromptAndRejectTheSecondQueuedRequest() {
+    Shadows.shadowOf(context.applicationContext as Application).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    val deferred = deferModuleUi()
+    val activity = PermissionTestActivity()
+    retainedHostActivity = activity
+    reactContext.onHostResume(activity)
+    val first = PromiseCapture()
+    val second = PromiseCapture()
+
+    module.requestNotificationPermission(first.promise)
+    module.requestNotificationPermission(second.promise)
+    assertEquals(2, deferred.pendingUiCount())
+    assertNull(activity.listener)
+    deferred.runNextUi()
+    val listener = activity.listener!!
+    first.assertPending("the first request remains pending until Android returns its permission result")
+    deferred.runNextUi()
+
+    assertEquals("NOTIFICATION_PERMISSION_BUSY", second.awaitFailure().code)
+    assertSame("the duplicate must not replace the first permission callback", listener, activity.listener)
+    assertTrue(database.setting("notification_permission_requested", "false").toBoolean())
+    assertTrue(listener.onRequestPermissionsResult(activity.requestCode,
+      arrayOf(Manifest.permission.POST_NOTIFICATIONS), intArrayOf(PackageManager.PERMISSION_DENIED)))
+    assertEquals("denied", JSONObject(first.awaitSuccess().toString()).getString("status"))
+    assertEquals(0, deferred.pendingUiCount())
+  }
+
+  @Test
+  fun notificationGrantBetweenEnqueueAndUiExecutionAvoidsAnUnnecessaryPrompt() {
+    val application = Shadows.shadowOf(context.applicationContext as Application)
+    application.denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    val deferred = deferModuleUi()
+    val activity = PermissionTestActivity()
+    retainedHostActivity = activity
+    reactContext.onHostResume(activity)
+    val result = PromiseCapture()
+    try {
+      module.requestNotificationPermission(result.promise)
+      assertEquals(1, deferred.pendingUiCount())
+      application.grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+      deferred.runNextUi()
+
+      val state = JSONObject(result.awaitSuccess().toString())
+      assertEquals("granted", state.getString("status"))
+      assertFalse(state.getBoolean("canRequest"))
+      assertFalse(state.getBoolean("requestedBefore"))
+      assertNull(activity.listener)
+      assertEquals("false", database.setting("notification_permission_requested", "false"))
+    } finally {
+      application.denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    }
+  }
+
+  @Test
+  fun notificationUiLosingItsHostRejectsWithoutConsumingTheFuturePermissionPrompt() {
+    Shadows.shadowOf(context.applicationContext as Application).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    val deferred = deferModuleUi()
+    val activity = PermissionTestActivity()
+    retainedHostActivity = activity
+    reactContext.onHostResume(activity)
+    val abandoned = PromiseCapture()
+    module.requestNotificationPermission(abandoned.promise)
+    reactContext.onHostDestroy()
+    assertNull(reactContext.currentActivity)
+    deferred.runNextUi()
+
+    assertEquals("NOTIFICATION_PERMISSION_UNAVAILABLE", abandoned.awaitFailure().code)
+    assertEquals("false", database.setting("notification_permission_requested", "false"))
+    assertNull(activity.listener)
+    reactContext.onHostResume(activity)
+    val retry = PromiseCapture()
+    module.requestNotificationPermission(retry.promise)
+    deferred.runNextUi()
+    assertTrue(activity.listener!!.onRequestPermissionsResult(activity.requestCode,
+      arrayOf(Manifest.permission.POST_NOTIFICATIONS), intArrayOf(PackageManager.PERMISSION_DENIED)))
+    assertEquals("denied", JSONObject(retry.awaitSuccess().toString()).getString("status"))
+  }
+
+  @Test
+  fun appWideNotificationBlockingOverridesGrantedRuntimePermissionWithoutPrompting() {
+    val application = Shadows.shadowOf(context.applicationContext as Application)
+    val manager = context.getSystemService(NotificationManager::class.java)
+    val shadowManager = Shadows.shadowOf(manager)
+    application.grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    shadowManager.setNotificationsEnabled(false)
+    val activity = PermissionTestActivity()
+    retainedHostActivity = activity
+    reactContext.onHostResume(activity)
+    try {
+      val result = PromiseCapture()
+      module.requestNotificationPermission(result.promise)
+      val state = JSONObject(result.awaitSuccess().toString())
+      assertEquals("denied", state.getString("status"))
+      assertFalse(state.getBoolean("canRequest"))
+      assertFalse(state.getBoolean("requestedBefore"))
+      assertNull(activity.listener)
+      val snapshot = PromiseCapture()
+      module.getActivitySnapshot(snapshot.promise)
+      assertEquals("denied", JSONObject(snapshot.awaitSuccess().toString())
+        .getJSONObject("notifications").getString("status"))
+    } finally {
+      shadowManager.setNotificationsEnabled(true)
+      application.denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    }
+  }
+
+  @Test
+  fun jobDeletionPreservesExternalSymlinkTargetsAndUnrelatedPreviewCaches() {
+    val jobId = "delete-alias-${UUID.randomUUID()}"
+    val documentId = "$jobId-document"
+    val externalSource = File(context.cacheDir, "$jobId-source.pdf").apply { writeText("user-owned source") }
+    database.upsertDocument(documentId, externalSource.name, externalSource.absolutePath, 1, "source-hash")
+    database.addJob(jobId, jobInput(documentId, ModelCatalog.RECOMMENDED_ID), 1)
+    database.updateJob(jobId, status = "paused")
+    // Existing fixture helper reads the real private export ID; no coordinator state is fabricated.
+    val exportId = privateJobExportIdForTest(jobId)
+    val aliases = listOf(
+      File(context.filesDir, "exports/$exportId.pdf"),
+      File(context.filesDir, "translated-docx/$jobId.docx"),
+      File(context.cacheDir, "docx-preview-pdf/renderer-v5-translated-$jobId.pdf"),
+    )
+    val external = aliases.indices.map { index ->
+      File(context.cacheDir, "$jobId-external-$index").apply { writeText("user-owned output $index") }
+    }
+    val thumbnails = File(context.cacheDir, "thumbnails").apply { mkdirs() }
+    val ownedCaches = listOf("translated_${jobId}_0_128.png", "docx_translated_v5_${jobId}_0_128.png")
+      .map { File(thumbnails, it).apply { writeText("private stale preview") } }
+    val unrelated = listOf("translated_${jobId}-neighbor_0_128.png", "docx_translated_v5_${jobId}-neighbor_0_128.png")
+      .map { File(thumbnails, it).apply { writeText("another job's preview") } }
+    try {
+      aliases.zip(external).forEach { (alias, target) ->
+        alias.parentFile!!.mkdirs()
+        java.nio.file.Files.createSymbolicLink(alias.toPath(), target.toPath())
+      }
+      database.saveExport(exportId, aliases[0].absolutePath, "translated.pdf")
+      database.saveExport(jobId, aliases[1].absolutePath, "translated.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+      database.saveExport("preview-pdf-$jobId", aliases[2].absolutePath, "preview.pdf")
+      val result = PromiseCapture()
+      module.deleteJob(jobId, result.promise)
+
+      assertNull(result.awaitSuccess())
+      assertNull(database.jobJson(jobId))
+      assertNull(database.documentInfo(documentId))
+      for (id in listOf(exportId, jobId, "preview-pdf-$jobId")) assertNull(database.exportInfo(id))
+      external.forEachIndexed { index, file -> assertEquals("user-owned output $index", file.readText()) }
+      assertEquals("user-owned source", externalSource.readText())
+      ownedCaches.forEach { assertFalse("owned preview should be removed: $it", it.exists()) }
+      unrelated.forEach { assertEquals("another job's preview", it.readText()) }
+    } finally {
+      aliases.forEach(File::delete)
+      external.forEach(File::delete)
+      ownedCaches.forEach(File::delete)
+      unrelated.forEach(File::delete)
+      externalSource.delete()
+    }
+  }
+
+  @Test
+  @Config(sdk = [26], application = Application::class)
+  fun oldestSupportedAndroidModelDownloadDispatchReleasesItsReservationOnPause() {
+    org.robolectric.shadows.ShadowStatFs.registerStats(context.filesDir.absolutePath, 4096, 2_000_000, 2_000_000)
+    resumeHostActivity()
+    val model = ModelCatalog.models.first()
+    val downloader = ModelDownloader(context, database)
+    var token: String? = null
+    try {
+      val result = PromiseCapture()
+      module.startModelDownload(model.id, result.promise)
+      assertEquals("downloading", JSONObject(result.awaitSuccess().toString()).getString("status"))
+      val intent = Shadows.shadowOf(context.applicationContext as Application).nextStartedService
+      assertEquals(PdfTranslationService.ACTION_START_MODEL, intent.action)
+      assertEquals(model.id, intent.getStringExtra(PdfTranslationService.EXTRA_MODEL_ID))
+      token = intent.getStringExtra(PdfTranslationService.EXTRA_MODEL_TRANSFER_TOKEN)
+      assertFalse(token.isNullOrBlank())
+      assertTrue(downloader.hasActiveTransfer(model.id))
+      val paused = PromiseCapture()
+      module.pauseModelDownload(model.id, paused.promise)
+      assertEquals("paused", JSONObject(paused.awaitSuccess().toString()).getString("status"))
+      assertFalse(downloader.hasActiveTransfer(model.id))
+      assertEquals(PdfTranslationService.ACTION_PAUSE_MODEL,
+        Shadows.shadowOf(context.applicationContext as Application).nextStartedService.action)
+    } finally {
+      downloader.cancel(model.id)
+      token?.let { downloader.releaseReservation(model.id, it) }
+    }
+  }
+
+  @Test
+  fun openAndShareDispatchReadOnlyContentUrisAndPreserveTheirDurableFiles() {
+    val id = "open-share-${UUID.randomUUID()}"
+    val source = File(context.filesDir, "documents/$id.pdf").apply {
+      parentFile!!.mkdirs(); writeText("%PDF-1.7 user source")
+    }
+    val exported = File(context.filesDir, "exports/$id.pdf").apply {
+      parentFile!!.mkdirs(); writeText("%PDF-1.7 translated artifact")
+    }
+    database.upsertDocument(id, source.name, source.absolutePath, 1, "source-hash")
+    database.saveExport(id, exported.absolutePath, "translated.pdf")
+    val activity = DestinationActivity()
+    retainedHostActivity = activity
+    reactContext.onHostResume(activity)
+    try {
+      val opened = PromiseCapture()
+      module.openPdf(id, opened.promise)
+      assertNull(opened.awaitSuccess())
+      val viewer = activity.openedIntent!!
+      assertEquals(Intent.ACTION_VIEW, viewer.action)
+      assertEquals("application/pdf", viewer.type)
+      assertEquals("content", viewer.data!!.scheme)
+      assertTrue(viewer.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+      assertEquals(0, viewer.flags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+
+      val shared = PromiseCapture()
+      module.shareExport(id, shared.promise)
+      assertNull(shared.awaitSuccess())
+      val chooser = activity.openedIntent!!
+      assertEquals(Intent.ACTION_CHOOSER, chooser.action)
+      @Suppress("DEPRECATION")
+      val send = chooser.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)!!
+      assertEquals(Intent.ACTION_SEND, send.action)
+      assertEquals("application/pdf", send.type)
+      @Suppress("DEPRECATION")
+      val uri = send.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)!!
+      assertEquals("content", uri.scheme)
+      assertTrue(send.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+      assertEquals(0, send.flags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+      assertEquals("%PDF-1.7 user source", source.readText())
+      assertEquals("%PDF-1.7 translated artifact", exported.readText())
+      assertNotNull(database.exportInfo(id))
+    } finally {
+      source.delete()
+      exported.delete()
     }
   }
 

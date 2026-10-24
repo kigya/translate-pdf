@@ -1,6 +1,6 @@
 import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react-native-legacy';
-import { AppState, Text, View } from 'react-native';
+import { AppState, StyleSheet, Text, View } from 'react-native';
 
 const mockPathFallback = { current: false };
 const mockDerivedFactories: Array<() => unknown> = [];
@@ -352,6 +352,10 @@ describe('U035 motion controls: ScanProgress', () => {
     expect(view.UNSAFE_getByType(RingSpinner).props.active).toBe(true);
     const card = view.UNSAFE_getAllByType(View).find((node) => node.props.accessibilityLabel === 'Page preview');
     expect(card).toBeDefined();
+    expect(view.UNSAFE_getAllByType(View).some(node => {
+      const style = StyleSheet.flatten(node.props.style);
+      return !!style && 'boxShadow' in style;
+    })).toBe(true);
     act(() => card!.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 180, height: 180 } } }));
     expect(view.UNSAFE_getAllByProps({ testID: 'canvas' }).length).toBeGreaterThanOrEqual(2);
     const pill = view.UNSAFE_getAllByType(View).find((node) => node.props.accessibilityLabel === 'Reading document' && node.props.accessibilityRole === 'progressbar' && node.props.accessible === true);
@@ -362,6 +366,49 @@ describe('U035 motion controls: ScanProgress', () => {
 
     act(() => listeners.forEach((listener) => listener('background')));
     expect(view.UNSAFE_getByType(RingSpinner).props.active).toBe(false);
+    view.unmount();
+  });
+
+  it('uses a native determinate progress track without mounting Skia while heavy processing is active', () => {
+    AppState.currentState = 'active';
+    const view = render(wrap(<ScanProgress label="Translating a large document" imageLabel="Reference page" progress={0.25} active reduceEffects />));
+    const card = view.UNSAFE_getAllByType(View).find(node => node.props.accessibilityLabel === 'Reference page');
+    act(() => card!.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 180, height: 180 } } }));
+    expect(mockPixelRects).toBe(0);
+    expect(view.UNSAFE_queryAllByType(RingSpinner)).toHaveLength(0);
+    expect(screen.getByRole('progressbar', { name: 'Translating a large document' }).props.accessibilityValue.now).toBe(25);
+    expect(view.UNSAFE_getAllByType(View).some(node => {
+      const style = StyleSheet.flatten(node.props.style);
+      return !!style && 'boxShadow' in style;
+    })).toBe(false);
+    fireEvent(screen.getByRole('progressbar', { name: 'Translating a large document' }), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 260, height: 60 } } });
+    expect(view.UNSAFE_getByProps({ testID: 'low-effects-progress-track' })).toBeDefined();
+    expect(StyleSheet.flatten(view.UNSAFE_getByProps({ testID: 'low-effects-progress-fill' }).props.style).width).toBe('25%');
+    expect(view.UNSAFE_queryAllByProps({ testID: 'canvas' })).toHaveLength(0);
+    view.rerender(wrap(<ScanProgress label="Translating a large document" progress={1.25} active reduceEffects />));
+    expect(screen.getByRole('progressbar', { name: 'Translating a large document' }).props.accessibilityValue).toEqual({ min: 0, max: 100, now: 100 });
+    expect(StyleSheet.flatten(view.UNSAFE_getByProps({ testID: 'low-effects-progress-fill' }).props.style).width).toBe('100%');
+    expect(view.UNSAFE_queryAllByProps({ testID: 'canvas' })).toHaveLength(0);
+    for (const invalidProgress of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      view.rerender(wrap(<ScanProgress label="Translating a large document" progress={invalidProgress} active reduceEffects />));
+      expect(screen.getByRole('progressbar', { name: 'Translating a large document' }).props.accessibilityValue).toBeUndefined();
+      expect(view.UNSAFE_queryByProps({ testID: 'low-effects-progress-fill' })).toBeNull();
+    }
+    view.unmount();
+  });
+
+  it('keeps unknown progress indeterminate and completes accessibly without Skia in low-effects mode', () => {
+    const view = render(wrap(<ScanProgress label="Preparing the document" active={false} reduceEffects />));
+    expect(screen.getByRole('progressbar', { name: 'Preparing the document' }).props.accessibilityValue).toBeUndefined();
+    expect(view.UNSAFE_getByProps({ testID: 'low-effects-progress-indicator' })).toBeDefined();
+    expect(view.UNSAFE_queryByProps({ testID: 'low-effects-progress-fill' })).toBeNull();
+    expect(view.UNSAFE_queryAllByProps({ testID: 'canvas' })).toHaveLength(0);
+
+    view.rerender(wrap(<ScanProgress label="Preparing the document" done doneLabel="Document ready" reduceEffects />));
+    expect(screen.getByRole('progressbar', { name: 'Document ready' }).props.accessibilityValue).toEqual({ min: 0, max: 100, now: 100 });
+    expect(view.UNSAFE_getByProps({ testID: 'low-effects-progress-fill' })).toBeDefined();
+    expect(StyleSheet.flatten(view.UNSAFE_getByProps({ testID: 'low-effects-progress-fill' }).props.style).width).toBe('100%');
+    expect(view.UNSAFE_queryAllByProps({ testID: 'canvas' })).toHaveLength(0);
     view.unmount();
   });
 

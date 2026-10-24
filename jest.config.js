@@ -1,3 +1,13 @@
+const { createHash } = require('node:crypto');
+const { readFileSync } = require('node:fs');
+const { resolve } = require('node:path');
+const vendor = require('./licenses/kinetik-vendor-manifest.json');
+// Fail closed when copied vendor code changes; owned adapters remain fully covered.
+for (const component of vendor.components) {
+  const hash = createHash('sha256').update(readFileSync(resolve(__dirname, component.path))).digest('hex');
+  if (hash !== component.installedSha256) throw new Error(`Review vendor provenance before excluding changed code: ${component.path}`);
+}
+
 module.exports = {
   preset: '@react-native/jest-preset',
   testEnvironment: '<rootDir>/__tests__/mocks/skia-environment.js',
@@ -13,7 +23,7 @@ module.exports = {
   transformIgnorePatterns: [
     'node_modules/(?!((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|react-native-svg|react-native-worklets)/)',
   ],
-  collectCoverageFrom: ['App.tsx', 'app/**/*.{ts,tsx}', 'src/**/*.{ts,tsx}', '!src/**/*.test.{ts,tsx}'],
+  collectCoverageFrom: ['App.tsx', 'app/**/*.{ts,tsx}', 'src/**/*.{ts,tsx}', '!src/**/*.test.{ts,tsx}', ...vendor.components.map(component => `!${component.path}`)],
   coverageReporters: ['json', 'json-summary', 'text-summary', 'lcov'],
   coverageThreshold: { global: { statements: 100, branches: 100, functions: 100, lines: 100 } },
 };

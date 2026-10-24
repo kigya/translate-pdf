@@ -1,0 +1,47 @@
+// Finite transfer rule. The complete SSA/CFG below must match; only SSA spelling and debug/profiling may differ.
+bb0(%0 : $*T, %1 : @guaranteed $String, %2 : @guaranteed $@noescape @callee_guaranteed @substituted <τ_0_0> () -> (@out τ_0_0, @error any Error) for <T>, %3 : $@thin __FBCov.Type):
+%4 = alloc_stack [lexical] [var_decl] $T, let, name "result"
+%5 = copy_value %2
+%6 = begin_borrow %5
+try_apply %6(%4) : $@noescape @callee_guaranteed @substituted <τ_0_0> () -> (@out τ_0_0, @error any Error) for <T>, normal bb1, error bb2
+bb1(%7 : $()):
+end_borrow %6
+destroy_value %5
+%8 = string_literal utf8 "success"
+%9 = integer_literal $Builtin.Word, 7
+%10 = integer_literal $Builtin.Int1, -1
+%11 = metatype $@thin String.Type
+%12 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+%13 = apply %12(%8, %9, %10, %11) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+%14 = function_ref @RECORDER : $@convention(method) (@guaranteed String, @guaranteed String, @thin __FBCov.Type) -> ()
+%15 = apply %14(%1, %13, %3) : $@convention(method) (@guaranteed String, @guaranteed String, @thin __FBCov.Type) -> ()
+destroy_value %13
+copy_addr %4 to [init] %0
+destroy_addr %4
+dealloc_stack %4
+%16 = tuple ()
+return %16
+bb2(%17 : @owned $any Error):
+end_borrow %6
+destroy_value %5
+dealloc_stack %4
+%18 = begin_borrow %17
+%19 = copy_value %18
+%20 = move_value [lexical] [var_decl] %19
+%21 = string_literal utf8 "error"
+%22 = integer_literal $Builtin.Word, 5
+%23 = integer_literal $Builtin.Int1, -1
+%24 = metatype $@thin String.Type
+%25 = function_ref @$sSS21_builtinStringLiteral17utf8CodeUnitCount7isASCIISSBp_BwBi1_tcfC : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+%26 = apply %25(%21, %22, %23, %24) : $@convention(method) (Builtin.RawPointer, Builtin.Word, Builtin.Int1, @thin String.Type) -> @owned String
+%27 = function_ref @RECORDER : $@convention(method) (@guaranteed String, @guaranteed String, @thin __FBCov.Type) -> ()
+%28 = apply %27(%1, %26, %3) : $@convention(method) (@guaranteed String, @guaranteed String, @thin __FBCov.Type) -> ()
+destroy_value %26
+%29 = begin_borrow %20
+%30 = copy_value %29
+%31 = builtin "willThrow"(%30) : $()
+end_borrow %29
+destroy_value %20
+end_borrow %18
+destroy_value %17
+throw %30

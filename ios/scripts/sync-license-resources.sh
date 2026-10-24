@@ -13,6 +13,8 @@ source = root / 'licenses'
 dest = root / 'ios/TranslateCore/Licenses'
 font_source = root / 'assets/fonts'
 font_dest = root / 'ios/TranslateCore/Resources/fonts'
+preview_source = root / 'assets/docx-preview'
+preview_dest = root / 'ios/TranslateCore/Resources/docx-preview'
 catalog = json.loads((source / 'catalog.json').read_text(encoding='utf-8'))
 if catalog.get('version') != 1 or not isinstance(catalog.get('notices'), list) or not catalog['notices']:
     raise ValueError('Invalid or empty license catalog')
@@ -41,9 +43,12 @@ for notice in catalog['notices']:
             if name == 'catalog.json' or (name in files and files[name] != path):
                 raise ValueError('Colliding license resource names')
             files[name] = path
-fonts = [font_source / name for name in ('NotoSans-Regular.ttf', 'NotoSansSC-Regular.ttf')]
+fonts = [font_source / name for name in ('NotoSans-Regular.ttf', 'NotoSansCondensed-Regular.ttf', 'NotoSansSC-Regular.ttf')]
 if any(not path.is_file() for path in fonts):
     raise ValueError('Missing bundled font')
+preview_assets = [preview_source / name for name in ('index.html', 'docx-preview.min.js', 'jszip.min.js')]
+if any(not path.is_file() or not path.resolve().is_relative_to(preview_source.resolve()) for path in preview_assets):
+    raise ValueError('Missing or escaped offline Word preview asset')
 # Validate all inputs before changing existing resources, including parse failures.
 dest.parent.mkdir(parents=True, exist_ok=True)
 staging = Path(tempfile.mkdtemp(prefix='.licenses-', dir=dest.parent))
@@ -60,5 +65,8 @@ finally:
 font_dest.mkdir(parents=True, exist_ok=True)
 for path in fonts:
     shutil.copyfile(path, font_dest / path.name)
-print(f'Synced {len(files)} license files and {len(fonts)} bundled fonts')
+preview_dest.mkdir(parents=True, exist_ok=True)
+for path in preview_assets:
+    shutil.copyfile(path, preview_dest / path.name)
+print(f'Synced {len(files)} license files, {len(fonts)} bundled fonts and {len(preview_assets)} offline Word preview assets')
 PY

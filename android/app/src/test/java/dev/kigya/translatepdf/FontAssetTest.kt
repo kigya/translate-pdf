@@ -26,16 +26,17 @@ class FontAssetTest {
   fun corruptedCachedFontIsReplacedAndOnlyVerifiedFileRemains() {
     val context = RuntimeEnvironment.getApplication()
     val directory = File(context.cacheDir, "font-integrity-test").apply { deleteRecursively(); mkdirs() }
-    val target = File(directory, "NotoSans-Regular.ttf")
+    assertEquals("NotoSansCondensed-Regular.ttf", FontAsset.DEFAULT_CACHE_FILENAME)
+    val target = File(directory, FontAsset.DEFAULT_CACHE_FILENAME)
     target.writeText("interrupted-copy")
 
     val installed = FontAsset.ensure(context, target)
     val digest = sha256(installed)
 
     assertEquals(installed, target)
-    assertEquals("b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5", digest)
+    assertEquals("5c15b8bb0ac1bbd533917b23968c6f0a420f143533e1293cc575f4f9dd543be8", digest)
     assertTrue(installed.length() > 500_000L)
-    assertFalse(File(directory, "NotoSans-Regular.ttf.tmp").exists())
+    assertFalse(File(directory, "NotoSansCondensed-Regular.ttf.tmp").exists())
     directory.deleteRecursively()
   }
 
@@ -51,6 +52,24 @@ class FontAssetTest {
     assertEquals(modifiedAt, second.lastModified())
     target.delete()
     File(target.parentFile, "${target.name}.tmp").delete()
+  }
+
+  @Test
+  fun legacyRegularFontCacheDoesNotSatisfyTheNewCondensedDefault() {
+    val context = RuntimeEnvironment.getApplication()
+    val directory = File(context.cacheDir, "font-policy-v7-cache").apply { deleteRecursively(); mkdirs() }
+    val legacy = File(directory, "NotoSans-Regular.ttf")
+    context.assets.open("fonts/NotoSans-Regular.ttf").use { input -> legacy.outputStream().use(input::copyTo) }
+    val legacyBytes = sha256(legacy)
+
+    val condensed = FontAsset.ensure(context, File(directory, FontAsset.DEFAULT_CACHE_FILENAME))
+
+    assertEquals("b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5", legacyBytes)
+    assertEquals(FontAsset.EXPECTED_SHA256, sha256(condensed))
+    assertTrue(legacy.isFile)
+    assertTrue(condensed.isFile)
+    assertFalse(legacy.absolutePath == condensed.absolutePath)
+    directory.deleteRecursively()
   }
 
   @Test
@@ -96,14 +115,14 @@ class FontAssetTest {
   fun rejectsMismatchedBundledBytesAndRemovesUntrustedTemporaryFile() {
     val context = RuntimeEnvironment.getApplication()
     val directory = File(context.cacheDir, "font-hash-rejection").apply { deleteRecursively(); mkdirs() }
-    val target = File(directory, "NotoSans-Regular.ttf").apply { writeText("previous verified destination") }
+    val target = File(directory, "NotoSansCondensed-Regular.ttf").apply { writeText("previous verified destination") }
     val openAsset: (android.content.Context, String) -> java.io.InputStream = { _, _ -> ByteArrayInputStream("wrong asset".toByteArray()) }
 
     val failure = runCatching { FontAsset.ensure(context, target, openAsset) }.exceptionOrNull()
 
     assertTrue(failure is IllegalStateException)
     assertEquals("previous verified destination", target.readText())
-    assertFalse(File(directory, "NotoSans-Regular.ttf.tmp").exists())
+    assertFalse(File(directory, "NotoSansCondensed-Regular.ttf.tmp").exists())
     directory.deleteRecursively()
   }
 
@@ -111,13 +130,13 @@ class FontAssetTest {
   fun rejectsInstallThatDoesNotReplaceAndPreservesVerifiedTempCleanup() {
     val context = RuntimeEnvironment.getApplication()
     val directory = File(context.cacheDir, "font-install-rejection").apply { deleteRecursively(); mkdirs() }
-    val target = File(directory, "NotoSans-Regular.ttf").apply { writeText("wrong prior bytes") }
+    val target = File(directory, "NotoSansCondensed-Regular.ttf").apply { writeText("wrong prior bytes") }
 
     val failure = runCatching { FontAsset.ensure(context, target, replace = { _, _ -> }) }.exceptionOrNull()
 
     assertTrue(failure is IllegalStateException)
     assertEquals("wrong prior bytes", target.readText())
-    assertFalse(File(directory, "NotoSans-Regular.ttf.tmp").exists())
+    assertFalse(File(directory, "NotoSansCondensed-Regular.ttf.tmp").exists())
     val absentTarget = File(directory, "never-installed.ttf")
     val absentFailure = runCatching { FontAsset.ensure(context, absentTarget, replace = { _, _ -> }) }.exceptionOrNull()
     assertTrue(absentFailure is IllegalStateException)
@@ -130,18 +149,18 @@ class FontAssetTest {
   fun assetOpenAndReplacementFailuresPropagateWithoutLeavingTemporaryFiles() {
     val context = RuntimeEnvironment.getApplication()
     val directory = File(context.cacheDir, "font-io-failure").apply { deleteRecursively(); mkdirs() }
-    val target = File(directory, "NotoSans-Regular.ttf")
+    val target = File(directory, "NotoSansCondensed-Regular.ttf")
     val openFailure = runCatching {
       FontAsset.ensure(context, target, openAsset = { _, _ -> throw IOException("asset unavailable") })
     }.exceptionOrNull()
     assertEquals("asset unavailable", openFailure?.message)
-    assertFalse(File(directory, "NotoSans-Regular.ttf.tmp").exists())
+    assertFalse(File(directory, "NotoSansCondensed-Regular.ttf.tmp").exists())
 
     val replaceFailure = runCatching {
       FontAsset.ensure(context, target, replace = { _, _ -> throw IOException("storage unavailable") })
     }.exceptionOrNull()
     assertEquals("storage unavailable", replaceFailure?.message)
-    assertFalse(File(directory, "NotoSans-Regular.ttf.tmp").exists())
+    assertFalse(File(directory, "NotoSansCondensed-Regular.ttf.tmp").exists())
     assertFalse(target.exists())
     directory.deleteRecursively()
   }
@@ -150,7 +169,7 @@ class FontAssetTest {
   fun assetStreamCloseFailureIsReportedAndTemporaryCopyIsRemoved() {
     val context = RuntimeEnvironment.getApplication()
     val directory = File(context.cacheDir, "font-close-failure").apply { deleteRecursively(); mkdirs() }
-    val target = File(directory, "NotoSans-Regular.ttf")
+    val target = File(directory, "NotoSansCondensed-Regular.ttf")
     val stream = object : InputStream() {
       private val bytes = "untrusted content".toByteArray()
       private var index = 0
@@ -162,7 +181,7 @@ class FontAssetTest {
 
     assertEquals("asset close failure", failure?.message)
     assertFalse(target.exists())
-    assertFalse(File(directory, "NotoSans-Regular.ttf.tmp").exists())
+    assertFalse(File(directory, "NotoSansCondensed-Regular.ttf.tmp").exists())
     directory.deleteRecursively()
   }
 
@@ -170,7 +189,7 @@ class FontAssetTest {
   fun checksumReadFailurePreservesPrimaryErrorAndSuppressesStreamCloseFailure() {
     val context = RuntimeEnvironment.getApplication()
     val directory = File(context.cacheDir, "font-hash-io-failure").apply { deleteRecursively(); mkdirs() }
-    val target = File(directory, "NotoSans-Regular.ttf")
+    val target = File(directory, "NotoSansCondensed-Regular.ttf")
     val openFile: (File) -> java.io.InputStream = { file ->
       if (!file.name.endsWith(".tmp")) FileInputStream(file) else object : java.io.InputStream() {
         private var firstRead = true
@@ -192,7 +211,7 @@ class FontAssetTest {
     assertEquals("checksum read failure", failure?.message)
     assertTrue(failure?.suppressed?.any { it.message == "checksum close failure" } == true)
     assertFalse(target.exists())
-    assertFalse(File(directory, "NotoSans-Regular.ttf.tmp").exists())
+    assertFalse(File(directory, "NotoSansCondensed-Regular.ttf.tmp").exists())
     directory.deleteRecursively()
   }
 
@@ -205,7 +224,7 @@ class FontAssetTest {
       assertEquals(null, target.parentFile)
       val installed = FontAsset.ensure(context, target)
       assertEquals(target, installed)
-      assertEquals("b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5", sha256(installed))
+      assertEquals(FontAsset.EXPECTED_SHA256, sha256(installed))
     } finally {
       target.delete()
       File("$name.tmp").delete()
@@ -254,7 +273,7 @@ class FontAssetTest {
     val context = RuntimeEnvironment.getApplication()
     val directory = File(context.cacheDir, "font-asset-close-failures").apply { deleteRecursively(); mkdirs() }
     val cases = listOf(
-      "NotoSans-Regular.ttf" to { target: File ->
+      "NotoSansCondensed-Regular.ttf" to { target: File ->
         runCatching {
           FontAsset.ensure(context, target, openAsset = { _, _ -> failingCloseStream("font") })
         }.exceptionOrNull()

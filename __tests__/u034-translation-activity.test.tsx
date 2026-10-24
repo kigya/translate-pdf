@@ -26,10 +26,10 @@ jest.mock('../src/components/kinetik/scan-progress', () => {
   const ReactRuntime = require('react');
   const Native = require('react-native');
   return {
-    ScanProgress: ({ children, progress, done, label, active, source, imageLabel }: Record<string, unknown>) =>
+    ScanProgress: ({ children, progress, done, label, active, source, imageLabel, reduceEffects }: Record<string, unknown>) =>
       ReactRuntime.createElement(Native.View, {
         testID: 'translation-scan',
-        accessibilityLabel: JSON.stringify({ progress, done, label, active, source, imageLabel }),
+        accessibilityLabel: JSON.stringify({ progress, done, label, active, source, imageLabel, reduceEffects }),
       }, children),
   };
 });
@@ -79,7 +79,8 @@ describe('translation activity', () => {
     await act(async () => { await Promise.resolve(); });
 
     const scan = JSON.parse(screen.getByTestId('translation-scan').props.accessibilityLabel);
-    expect(scan).toEqual(expect.objectContaining({ progress: 0.3, done: false, active: false }));
+    expect(scan).toEqual(expect.objectContaining({ progress: 0.3, done: false, active: false, reduceEffects: true }));
+    expect(screen.queryByTestId('confetti-host')).toBeNull();
     expect(screen.getByText('manual.pdf')).toBeTruthy();
     expect(screen.getByText('Page 4 / 10')).toBeTruthy();
     expect(screen.getByTestId('translation-timeline')).toBeTruthy();
@@ -169,10 +170,14 @@ describe('translation activity', () => {
   });
 
   test('celebrates only a new completed transition, once, while active', () => {
-    const view = renderActivity(baseJob({ status: 'completed', stage: 'complete' }));
-    expect(mockBurst).not.toHaveBeenCalled();
-    view.rerender(<TranslationActivity job={baseJob()} colors={palettes.light} t={t} locale="en" active />);
+    const view = renderActivity(baseJob());
+    expect(screen.queryByTestId('confetti-host')).toBeNull();
+    view.rerender(<TranslationActivity job={baseJob({ status: 'paused' })} colors={palettes.light} t={t} locale="en" active />);
+    expect(screen.queryByTestId('confetti-host')).toBeNull();
     view.rerender(<TranslationActivity job={baseJob({ status: 'completed', stage: 'complete' })} colors={palettes.light} t={t} locale="en" active />);
+    expect(screen.getByTestId('confetti-host')).toBeTruthy();
+    expect(mockBurst).toHaveBeenCalledTimes(1);
+
     view.rerender(<TranslationActivity job={baseJob({ status: 'completed', stage: 'complete' })} colors={palettes.light} t={t} locale="en" active />);
     expect(mockBurst).toHaveBeenCalledTimes(1);
 
@@ -180,15 +185,35 @@ describe('translation activity', () => {
     expect(mockBurst).toHaveBeenCalledTimes(1);
   });
 
-  test('defers a new completion burst until foreground and never celebrates partial output', () => {
+  test('celebrates deferred successful results once after foreground but not partial results', () => {
     const view = renderActivity(baseJob(), false);
+    expect(screen.queryByTestId('confetti-host')).toBeNull();
     view.rerender(<TranslationActivity job={baseJob({ status: 'completed', stage: 'complete' })} colors={palettes.light} t={t} locale="en" active={false} />);
+    expect(screen.getByTestId('confetti-host')).toBeTruthy();
     expect(mockBurst).not.toHaveBeenCalled();
     view.rerender(<TranslationActivity job={baseJob({ status: 'completed', stage: 'complete' })} colors={palettes.light} t={t} locale="en" active />);
     expect(mockBurst).toHaveBeenCalledTimes(1);
 
     view.rerender(<TranslationActivity job={baseJob({ id: 'partial-job', status: 'partial', stage: 'complete' })} colors={palettes.light} t={t} locale="en" active />);
+    expect(screen.getByTestId('confetti-host')).toBeTruthy();
     expect(mockBurst).toHaveBeenCalledTimes(1);
+  });
+
+  test('mounts the finished wrapper for an imported partial result without celebrating it', () => {
+    renderActivity(baseJob({ status: 'partial', stage: 'complete' }));
+    expect(screen.getByTestId('confetti-host')).toBeTruthy();
+    expect(mockBurst).not.toHaveBeenCalled();
+  });
+
+  test('retains a stable plain wrapper while a job is active', () => {
+    renderActivity(baseJob());
+    expect(screen.getByTestId('translation-scan')).toBeTruthy();
+    expect(screen.queryByTestId('confetti-host')).toBeNull();
+  });
+
+  test('does not fire for an already completed result on first mount', () => {
+    renderActivity(baseJob({ status: 'completed', stage: 'complete' }));
+    expect(mockBurst).not.toHaveBeenCalled();
   });
 
   test('keeps unknown, paused and failed stages from becoming completed timeline events', () => {

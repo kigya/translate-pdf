@@ -11,10 +11,11 @@ import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
 internal object FontAsset {
-  private const val ASSET_PATH = "fonts/NotoSans-Regular.ttf"
+  private const val ASSET_PATH = "fonts/NotoSansCondensed-Regular.ttf"
   private const val CJK_ASSET_PATH = "fonts/NotoSansSC-Regular.ttf"
-  private const val EXPECTED_SHA256 = "b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5"
-  private const val EXPECTED_CJK_SHA256 = "b7bebb49c3c6b0266362cf75dd9bdd9bf5fbe5fb390be8f7808ebedef376de76"
+  const val EXPECTED_SHA256 = "5c15b8bb0ac1bbd533917b23968c6f0a420f143533e1293cc575f4f9dd543be8"
+  const val DEFAULT_CACHE_FILENAME = "NotoSansCondensed-Regular.ttf"
+  const val EXPECTED_CJK_SHA256 = "b7bebb49c3c6b0266362cf75dd9bdd9bf5fbe5fb390be8f7808ebedef376de76"
 
   fun ensure(
     context: Context,

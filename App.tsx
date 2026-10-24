@@ -2,11 +2,14 @@ import { ReviewLayout, ReviewColumn } from './src/ui/ReviewLayout';
 import { TranslationActivity } from './src/ui/TranslationActivity';
 import { UiLocaleContext } from './src/i18n/UiLocaleContext';
 import { WordResultScreen } from './src/screens/WordResultScreen';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigationContainerRef, useRootNavigationState, useRouter } from 'expo-router';
 import { KinetikProvider } from './src/lib/kinetik/tokens/theme';
 import { usePaletteTransition } from './src/ui/usePaletteTransition';
-import { LiquidTabs } from './src/components/kinetik/liquid-tabs';
-import { Icon } from './src/ui/Controls';
+import { ToastProvider } from './src/components/kinetik/toast-stack';
+import { LargeDocumentHint } from './src/ui/LargeDocumentHint';
+import { ProcessingMetrics } from './src/ui/ProcessingMetrics';
+import type { LibraryFolder } from './src/ui/DocumentLibrary';
+import { processingUx } from './src/i18n/processingUx';
 import { LanguagePair } from './src/ui/LanguagePair';
 import { useMotionReduced } from './src/ui/useMotionReduced';
 import React, {
@@ -115,6 +118,7 @@ const BASE_ONBOARDING: OnboardingState = {
 const stageKeys: Record<JobSnapshot['stage'], MessageKey> = {
   queued: 'stageQueued',
   copying: 'stageCopying',
+  loadingModel: 'stageQueued',
   extracting: 'stageExtracting',
   ocr: 'stageOcr',
   translating: 'stageTranslating',
@@ -149,6 +153,41 @@ const localeSystem = (nativeLocale?: string) =>
     nativeLocale ?? Intl?.DateTimeFormat?.().resolvedOptions?.().locale ?? 'en',
   );
 
+const JOB_ACTIVITY_FIELDS: ReadonlyArray<keyof JobSnapshot> = [
+  'id', 'status', 'stage', 'workerStopping', 'stageStartedAt', 'currentPage',
+  'currentBlock', 'completedPages', 'totalPages', 'completedBlocks',
+  'discoveredBlocks', 'totalBlocks', 'pageBlocks', 'completedPageBlocks',
+  'processedTokens', 'generatedTokens', 'etaSeconds', 'updatedAt', 'error',
+];
+const MODEL_ACTIVITY_FIELDS: ReadonlyArray<keyof ModelSnapshot> = [
+  'id', 'status', 'downloadedBytes', 'storedBytes', 'partialBytes',
+  'activeTransferBytes', 'resourceEstimateEligible', 'memoryEstimateEligible',
+  'diskEstimateEligible', 'resourceReason', 'error',
+];
+
+function activityMatchesSnapshot(
+  snapshot: BootstrapSnapshot,
+  activity: Awaited<ReturnType<typeof PdfTranslator.getActivitySnapshot>>,
+) {
+  if (snapshot.jobs.length !== activity.jobs.length || snapshot.models.length !== activity.models.length) return false;
+  for (let index = 0; index < snapshot.jobs.length; index++) {
+    const current = snapshot.jobs[index];
+    const next = activity.jobs[index];
+    for (const field of JOB_ACTIVITY_FIELDS) if (current[field] !== next[field]) return false;
+  }
+  for (let index = 0; index < snapshot.models.length; index++) {
+    const current = snapshot.models[index];
+    const next = activity.models[index];
+    if (current.id !== next.id) return false;
+    for (const field of MODEL_ACTIVITY_FIELDS) if (current[field] !== next[field]) return false;
+  }
+  const currentNotifications = snapshot.notifications;
+  const nextNotifications = activity.notifications;
+  return currentNotifications?.status === nextNotifications?.status &&
+    currentNotifications?.requestedBefore === nextNotifications?.requestedBefore &&
+    currentNotifications?.canRequest === nextNotifications?.canRequest;
+}
+
 function AppContent() {
   const scheme = useColorScheme();
   const reducedMotion = useMotionReduced();
@@ -160,12 +199,37 @@ function AppContent() {
   const [snapshot, setSnapshot] = useState<BootstrapSnapshot | null>(null);
   const [bootstrapError, setBootstrapError] = useState('');
   const router = useRouter();
-  const { screen } = useLocalSearchParams<{ screen?: Route }>();
+  const navigationContainerRef = useNavigationContainerRef();
+  const rootNavigationState = useRootNavigationState();
+  const rootNavigationKey = rootNavigationState?.key;
+  const { screen, jobId: linkedJobId } = useLocalSearchParams<{ screen?: Route; jobId?: string }>();
   const route: Route = screen ?? 'home';
-  const setRoute = useCallback((next: Route) => router.setParams({ screen: next }), [router]);
   const routeStack = useRef<Route[]>([]);
+  const pendingRoute = useRef<{ next: Route; history: 'push' | 'pop' | 'clear' | 'preserve'; previous?: Route } | null>(null);
+  const applyRoute = useCallback((intent: { next: Route; history: 'push' | 'pop' | 'clear' | 'preserve'; previous?: Route }) => {
+    if (!rootNavigationKey || !navigationContainerRef.isReady()) {
+      pendingRoute.current = intent;
+      return false;
+    }
+    router.setParams({ screen: intent.next, jobId: undefined });
+    if (intent.history === 'push' && intent.previous) routeStack.current.push(intent.previous);
+    else if (intent.history === 'pop') routeStack.current.pop();
+    else if (intent.history === 'clear') routeStack.current = [];
+    pendingRoute.current = null;
+    return true;
+  }, [navigationContainerRef, rootNavigationKey, router]);
+  const setRoute = useCallback((next: Route, history: 'push' | 'pop' | 'clear' | 'preserve' = 'preserve', previous?: Route) => {
+    const intent = { next, history, previous };
+    pendingRoute.current = intent;
+    applyRoute(intent);
+  }, [applyRoute]);
+  useEffect(() => {
+    const intent = pendingRoute.current;
+    if (rootNavigationKey && intent) applyRoute(intent);
+  }, [applyRoute, rootNavigationState, rootNavigationKey]);
   const [selectedDocument, setSelectedDocument] =
     useState<DocumentSnapshot | null>(null);
+  const [libraryFolder, setLibraryFolder] = useState<LibraryFolder | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [details, setDetails] = useState<JobDetails | null>(null);
   const [selectedPage, setSelectedPage] = useState(0);
@@ -180,6 +244,7 @@ function AppContent() {
   const notificationRationaleSeen = useRef(false);
   const operationInFlight = useRef(false);
   const snapshotRequestEpoch = useRef(0);
+  const refreshRequestsInFlight = useRef(0);
   const [startupReady, setStartupReady] = useState(false);
   const [splashShownAt, setSplashShownAt] = useState<number | null>(null);
   const markSplashShown = useCallback(
@@ -199,7 +264,7 @@ function AppContent() {
   );
   const transition = usePaletteTransition(activeTheme, reducedMotion);
   const colors = palettes[transition.mode];
-  const frame = (children: React.ReactNode) => <UiLocaleContext.Provider value={locale}><KinetikProvider scheme={transition.mode} colors={kinetikBrand[transition.mode]} reduceMotion={reducedMotion ? 'always' : 'never'}><View ref={transition.view} collapsable={false} style={{ flex: 1 }}>{children}{transition.image ? <View pointerEvents="none" collapsable={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}><Animated.Image source={{ uri: transition.image }} onLoad={transition.reveal} onError={transition.reveal} style={[{ width: '100%', height: '100%' }, transition.overlay]} /></View> : null}</View></KinetikProvider></UiLocaleContext.Provider>;
+  const frame = (children: React.ReactNode) => <UiLocaleContext.Provider value={locale}><KinetikProvider scheme={transition.mode} colors={kinetikBrand[transition.mode]} reduceMotion={reducedMotion ? 'always' : 'never'}><ToastProvider><LargeDocumentHint jobs={snapshot?.jobs ?? []} notifications={snapshot?.notifications} active={bootComplete && !showIntro && appState === 'active'} locale={locale} onEnable={() => { void safely(async () => { if (snapshot?.notifications?.canRequest) await PdfTranslator.requestNotificationPermission(); else await Linking.openSettings(); }); }} /><View ref={transition.view} collapsable={false} style={{ flex: 1 }}>{children}{transition.image ? <View pointerEvents="none" collapsable={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}><Animated.Image source={{ uri: transition.image }} onLoad={transition.reveal} onError={transition.reveal} style={[{ width: '100%', height: '100%' }, transition.overlay]} /></View> : null}</View></ToastProvider></KinetikProvider></UiLocaleContext.Provider>;
   const savedLanguage = snapshot?.preferences.language ?? 'system';
   const locale: Locale =
     savedLanguage === 'system'
@@ -220,6 +285,10 @@ function AppContent() {
       job => job.status === 'running' || job.status === 'paused',
     ) ??
     null;
+  const linkedJobExists = !!snapshot?.jobs.some(job => job.id === linkedJobId);
+  useEffect(() => {
+    if (linkedJobId && linkedJobExists) setSelectedJobId(linkedJobId);
+  }, [linkedJobId, linkedJobExists]);
   const recommendedModel =
     snapshot?.models.find(
       model => model.id === snapshot.device.recommendedModelId,
@@ -255,6 +324,7 @@ function AppContent() {
     ) ?? [];
 
   const refresh = useCallback(async () => {
+    refreshRequestsInFlight.current++;
     const request = ++snapshotRequestEpoch.current;
     try {
       const fresh = await PdfTranslator.bootstrap();
@@ -271,6 +341,8 @@ function AppContent() {
             : currentTranslator.current('unknownError'),
         );
       throw error;
+    } finally {
+      refreshRequestsInFlight.current--;
     }
   }, []);
 
@@ -306,19 +378,52 @@ function AppContent() {
     return () => clearTimeout(timer);
   }, [startupReady, splashShownAt]);
 
+  const activeWork = !!snapshot && (snapshot.jobs.some(job => isRunning(job.status) || job.workerStopping) || snapshot.models.some(model => model.status === 'downloading' || model.status === 'verifying'));
+  const pollingInterval = route === 'job' || route === 'model' ? 1000 : route === 'home' ? 4000 : null;
   useEffect(() => {
-    if (appState !== 'active' || !snapshot) return;
-    const activeWork =
-      snapshot.jobs.some(job => isRunning(job.status)) ||
-      snapshot.models.some(
-        model => model.status === 'downloading' || model.status === 'verifying',
-      );
-    if (!activeWork) return;
-    const timer = setInterval(() => {
-      if (!operationInFlight.current) void refresh().catch(() => undefined);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [appState, refresh, snapshot]);
+    if (appState !== 'active' || !activeWork || pollingInterval === null) return;
+    let live = true;
+    let polling = false;
+    const timer = setInterval(async () => {
+      if (polling || operationInFlight.current || refreshRequestsInFlight.current > 0) return;
+      polling = true;
+      const request = snapshotRequestEpoch.current;
+      try {
+        const activity = await PdfTranslator.getActivitySnapshot();
+        if (live && request === snapshotRequestEpoch.current && !operationInFlight.current && refreshRequestsInFlight.current === 0) {
+          setSnapshot(current => {
+            if (!current || activityMatchesSnapshot(current, activity)) return current;
+            return {
+              ...current,
+              jobs: activity.jobs,
+              models: current.models.map(model => {
+                const updated = activity.models.find(value => value.id === model.id);
+                return updated ? { ...model, ...updated } : model;
+              }),
+              notifications: activity.notifications ?? current.notifications,
+            };
+          });
+        }
+      } catch {
+        // A transient poll failure leaves the last durable snapshot usable.
+      } finally { polling = false; }
+    }, pollingInterval);
+    return () => { live = false; clearInterval(timer); };
+  }, [appState, activeWork, pollingInterval]);
+  const previousRoute = useRef(route);
+  useEffect(() => {
+    const previous = previousRoute.current;
+    previousRoute.current = route;
+    if (previous === 'settings' && route !== 'settings' && appState === 'active' && !operationInFlight.current) {
+      void refresh().catch(() => undefined);
+    }
+  }, [appState, refresh, route]);
+  const previousAppState = useRef(appState);
+  useEffect(() => {
+    const previous = previousAppState.current;
+    previousAppState.current = appState;
+    if (previous !== 'active' && appState === 'active' && !operationInFlight.current) void refresh().catch(() => undefined);
+  }, [appState, refresh]);
 
   useEffect(() => {
     if (
@@ -351,7 +456,7 @@ function AppContent() {
               )
             : PdfTranslator.renderTranslatedPage(
                 value.job.id,
-                value.selectedPage.index,
+                value.pdfLayout ? selectedPage : value.selectedPage.index,
                 Math.min(900, width * 1.5),
               );
         }
@@ -373,25 +478,29 @@ function AppContent() {
 
   const go = (next: Route) => {
     setInlineError('');
-    routeStack.current.push(route);
-    setRoute(next);
+    setRoute(next, 'push', route);
   };
   const back = () => {
     setInlineError('');
-    setRoute(routeStack.current.pop() ?? 'home');
+    const previous = routeStack.current.length > 0 ? routeStack.current[routeStack.current.length - 1] : 'home';
+    setRoute(previous, 'pop');
   };
   useEffect(() => {
-    if (showIntro || route === 'home') return;
+    if (showIntro || (route === 'home' && !libraryFolder)) return;
     const subscription = BackHandler.addEventListener(
       'hardwareBackPress',
       () => {
         setInlineError('');
-        setRoute(routeStack.current.pop() ?? 'home');
+        if (route === 'home' && libraryFolder) setLibraryFolder(null);
+        else {
+          const previous = routeStack.current.length > 0 ? routeStack.current[routeStack.current.length - 1] : 'home';
+          setRoute(previous, 'pop');
+        }
         return true;
       },
     );
     return () => subscription.remove();
-  }, [showIntro, route, setRoute]);
+  }, [showIntro, route, setRoute, libraryFolder]);
   const safely = async <T,>(
     operation: () => Promise<T>,
     success?: (value: T) => void,
@@ -477,6 +586,29 @@ function AppContent() {
       { id: 'cancel', label: ux(locale, 'cancel'), quiet: true }, { id: 'delete', label: ux(locale, 'confirm'), destructive: true },
     ] });
     if (result === 'delete') await safely(() => PdfTranslator.deleteModel(model.id));
+  };
+  const deleteLibraryEntry = async (entry: JobSnapshot | DocumentSnapshot) => {
+    const answer = await showDialog({ title: processingUx(locale, 'remove'), message: processingUx(locale, 'removeBody'), icon: 'trash', actions: [
+      { id: 'cancel', label: ux(locale, 'cancel'), quiet: true }, { id: 'delete', label: ux(locale, 'confirm'), destructive: true },
+    ] });
+    if (answer !== 'delete') return;
+    await safely(async () => {
+      if ('documentId' in entry) {
+        if (isRunning(entry.status) || entry.workerStopping) {
+          await PdfTranslator.pauseJob(entry.id);
+          const deadline = Date.now() + 60000;
+          for (;;) {
+            const state = await PdfTranslator.getActivitySnapshot();
+            const job = state.jobs.find(value => value.id === entry.id);
+            if (job && !job.workerStopping && !isRunning(job.status)) break;
+            if (Date.now() >= deadline) throw new Error(processingUx(locale, 'removing'));
+            await new Promise<void>(resolve => setTimeout(resolve, 250));
+          }
+        }
+        await PdfTranslator.deleteJob(entry.id);
+        setSelectedJobId(current => current === entry.id ? null : current);
+      } else await PdfTranslator.deleteDocument(entry.id);
+    });
   };
   const clearModels = async () => {
     const result = await showDialog({ title: ux(locale, 'clearModels'), message: ux(locale, 'deleteModelInfo'), icon: 'trash', actions: [
@@ -600,8 +732,7 @@ function AppContent() {
           persist={persistOnboarding}
           onComplete={() => {
             setOnboardingOverride({ version: ONBOARDING_VERSION, page: 2, done: true });
-            setRoute('home');
-            routeStack.current = [];
+            setRoute('home', 'clear');
           }}
           ios={Platform.OS === 'ios'}
         />
@@ -618,13 +749,18 @@ function AppContent() {
       backLabel={t('back')}
     />
   );
-  const tabBar = () => <View style={{ padding: 12, paddingBottom: Math.max(12, insets.bottom), backgroundColor: colors.background }}><LiquidTabs iconOnly tabs={[{ key: 'home', label: t('home'), icon: <Icon name="document" color={route === 'home' ? colors.onPrimary : colors.muted} size={18} /> }, { key: 'settings', label: t('settings'), icon: <Icon name="settings" color={route === 'settings' ? colors.onPrimary : colors.muted} size={18} /> }]} value={route} onChange={value => { routeStack.current = []; setRoute(value as Route); }} /></View>;
+
   const base = { colors, t, locale, busy };
   const renderHome = () => (
     <LibraryScreen
       {...base}
       snapshot={snapshot}
       model={selectedModel}
+      folder={libraryFolder}
+      onFolderChange={setLibraryFolder}
+      onSettings={() => go('settings')}
+      onDeleteJob={job => void deleteLibraryEntry(job)}
+      onDeleteDocument={document => void deleteLibraryEntry(document)}
       onTranslate={() => void pickPdf()}
       onModel={() => go('model')}
       onJob={job => {
@@ -710,6 +846,7 @@ function AppContent() {
         : null;
     const pinnedModel = snapshot.models.find(model => model.id === job.modelId);
     const missingPinnedModel =
+      job.engine?.kind !== 'online' &&
       job.completedPages < job.totalPages &&
       pinnedModel?.translationEnabled !== false &&
       pinnedModel?.status !== 'ready'
@@ -722,11 +859,11 @@ function AppContent() {
       <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
         {job.status === 'running' || job.status === 'queued' ? (
           <Button
-            label={t('pause')}
+            label={job.workerStopping ? processingUx(locale, 'pausing') : t('pause')}
             onPress={() => void safely(() => PdfTranslator.pauseJob(job.id))}
             colors={colors}
             variant="secondary"
-            disabled={busy}
+            disabled={busy || job.workerStopping}
           />
         ) : job.status === 'paused' || job.status === 'failed' ? (
           <Button
@@ -744,7 +881,7 @@ function AppContent() {
               }
             }}
             colors={colors}
-            disabled={busy}
+            disabled={busy || job.workerStopping}
           />
         ) : null}
         {!done && job.status !== 'canceled' && job.status !== 'failed' ? (
@@ -793,7 +930,7 @@ function AppContent() {
     return (
       <>
         {screenHeader(t('progress'), job.documentName)}
-        <ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
+        <ScrollView testID="translation-progress-root" scrollEventThrottle={64} contentContainerStyle={{ padding: 20, gap: 16 }}>
           <Card colors={colors} style={{ padding: 22 }}>
             <Row style={{ justifyContent: 'space-between' }}>
               <Label
@@ -815,8 +952,9 @@ function AppContent() {
             <Text
               style={{ fontSize: 21, color: colors.text, fontWeight: '800' }}
             >
-              {job.engine?.kind === 'online' && job.stage === 'translating' ? ux(locale, 'onlineProcessing') : job.documentFormat === 'docx' && job.stage === 'exporting' ? ux(locale, 'exportDocx') : t(stageKeys[job.stage])}
+              {job.stage === 'loadingModel' ? processingUx(locale, 'loadingModel') : job.engine?.kind === 'online' && job.stage === 'translating' ? ux(locale, 'onlineProcessing') : job.documentFormat === 'docx' && job.stage === 'exporting' ? ux(locale, 'exportDocx') : t(stageKeys[job.stage])}
             </Text>
+            <ProcessingMetrics job={job} active={appState === 'active' && route === 'job'} colors={colors} locale={locale} />
             <TranslationActivity job={job} colors={colors} t={t} locale={locale} active={appState === 'active'} />
             <Row style={{ justifyContent: 'space-between' }}>
               <Text style={{ color: colors.text, fontWeight: '700' }}>
@@ -854,7 +992,7 @@ function AppContent() {
                 {t('eta')}: ~{formatDuration(eta, key => t(key))}
               </Text>
             ) : null}
-            {job.error ? <Notice text={job.error} colors={colors} /> : null}
+            {job.error && job.status !== 'paused' ? <Notice text={job.error} colors={colors} /> : null}
             {controls}
             {exported ? (
               <Text style={{ color: colors.success, fontWeight: '700' }}>
@@ -906,7 +1044,7 @@ function AppContent() {
         <ReviewColumn wide={wide} weight={1.15} gap={14}>
           {renderedUri ? (
             <Image
-              accessibilityLabel={`${t('page')} ${selectedPage + 1}`}
+              accessibilityLabel={`${t('page')} ${previewOriginal && details?.pdfLayout && details.selectedPage ? details.selectedPage.index + 1 : selectedPage + 1}`}
               source={{ uri: renderedUri }}
               resizeMode="contain"
               style={{
@@ -934,7 +1072,7 @@ function AppContent() {
               disabled={selectedPage === 0}
             />
             <Text style={{ color: colors.text, fontWeight: '700' }}>
-              {t('page')} {selectedPage + 1}
+              {t('page')} {previewOriginal && details?.pdfLayout && details.selectedPage ? details.selectedPage.index + 1 : selectedPage + 1}
             </Text>
             <Button
               label={t('next')}
@@ -942,7 +1080,7 @@ function AppContent() {
               colors={colors}
               variant="secondary"
               disabled={Boolean(
-                details && selectedPage >= details.job.totalPages - 1,
+                details && selectedPage >= (details.pdfLayout?.outputPageCount ?? details.job.totalPages) - 1,
               )}
             />
           </Row>
@@ -1051,6 +1189,7 @@ function AppContent() {
       <SettingsScreen
         {...base}
         snapshot={snapshot}
+        selectedModel={selectedModel}
         onRoute={go}
         onTheme={theme => void safely(() => PdfTranslator.setSettings({ theme }))}
         onPrivacy={openPrivacy}
@@ -1158,29 +1297,19 @@ function AppContent() {
           paddingLeft: insets.left,
           paddingRight: insets.right,
           paddingBottom:
-            route === 'home' || route === 'settings' ? 0 : insets.bottom,
+            insets.bottom,
         }}
       >
-        <View
-          testID="library-tab-root"
-          style={{ flex: 1, display: route === 'home' ? 'flex' : 'none' }}
-          accessibilityElementsHidden={route !== 'home'}
-          importantForAccessibility={
-            route === 'home' ? 'auto' : 'no-hide-descendants'
-          }
-        >
-          {renderHome()}
-        </View>
-        <View
-          testID="settings-tab-root"
-          style={{ flex: 1, display: route === 'settings' ? 'flex' : 'none' }}
-          accessibilityElementsHidden={route !== 'settings'}
-          importantForAccessibility={
-            route === 'settings' ? 'auto' : 'no-hide-descendants'
-          }
-        >
-          {renderSettings()}
-        </View>
+        {route === 'home' ? (
+          <View testID="library-tab-root" style={{ flex: 1 }}>
+            {renderHome()}
+          </View>
+        ) : null}
+        {route === 'settings' ? (
+          <View testID="settings-tab-root" style={{ flex: 1 }}>
+            {renderSettings()}
+          </View>
+        ) : null}
         {route !== 'home' && route !== 'settings' ? (
           <Animated.View
             key={route}
@@ -1214,7 +1343,7 @@ function AppContent() {
           />
         </View>
       ) : null}
-      {route === 'home' || route === 'settings' ? tabBar() : null}
+
     </Screen>
     </View>
     {dialog}

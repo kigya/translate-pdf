@@ -21,7 +21,7 @@ import java.util.concurrent.Future;
 import java.lang.reflect.Proxy;
 
 /** Minimal host context for exercising the native module without a JS runtime. */
-final class StubReactApplicationContext extends ReactApplicationContext {
+class StubReactApplicationContext extends ReactApplicationContext {
   StubReactApplicationContext(Context context) { super(context); initializeTestQueues(); }
 
   @SuppressWarnings({"unchecked", "rawtypes"})

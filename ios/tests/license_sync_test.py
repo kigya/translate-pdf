@@ -22,8 +22,12 @@ class LicenseSyncTest(unittest.TestCase):
         (self.root / 'licenses/pkg').mkdir(parents=True)
         (self.root / 'licenses/pkg/LICENSE').write_text('required attribution')
         (self.root / 'assets/fonts').mkdir(parents=True)
-        for font in ('NotoSans-Regular.ttf', 'NotoSansSC-Regular.ttf'):
+        for font in ('NotoSans-Regular.ttf', 'NotoSansCondensed-Regular.ttf', 'NotoSansSC-Regular.ttf'):
             (self.root / 'assets/fonts' / font).write_bytes(b'fixture')
+        self.preview = self.root / 'assets/docx-preview'
+        self.preview.mkdir()
+        for asset in ('index.html', 'docx-preview.min.js', 'jszip.min.js'):
+            (self.preview / asset).write_bytes(('fixture:' + asset).encode())
         self.catalog = {'version': 1, 'notices': [{'id': 'pkg', 'title': 'Package', 'platforms': ['ios'], 'files': ['pkg/LICENSE']}]}
 
     def run_sync(self):
@@ -37,6 +41,20 @@ class LicenseSyncTest(unittest.TestCase):
         self.assertEqual(self.run_sync().returncode, 0)
         self.assertEqual(set(p.name for p in self.dest.iterdir()), {'catalog.json', 'pkg__LICENSE'})
         self.assertEqual((self.dest / 'pkg__LICENSE').read_text(), 'required attribution')
+        preview_dest = self.root / 'ios/TranslateCore/Resources/docx-preview'
+        self.assertEqual(set(p.name for p in preview_dest.iterdir()), {'index.html', 'docx-preview.min.js', 'jszip.min.js'})
+        for asset in preview_dest.iterdir():
+            self.assertEqual(asset.read_bytes(), (self.preview / asset.name).read_bytes())
+        font_dest = self.root / 'ios/TranslateCore/Resources/fonts'
+        self.assertEqual({p.name for p in font_dest.iterdir()},
+                         {'NotoSans-Regular.ttf', 'NotoSansCondensed-Regular.ttf', 'NotoSansSC-Regular.ttf'})
+        for font in font_dest.iterdir():
+            self.assertEqual(font.read_bytes(), (self.root / 'assets/fonts' / font.name).read_bytes())
+
+    def test_missing_preview_asset_fails_before_replacing_existing_resources(self):
+        (self.preview / 'jszip.min.js').unlink()
+        self.assertNotEqual(self.run_sync().returncode, 0)
+        self.assert_preserved()
 
     def test_malformed_missing_traversal_and_collision_leave_existing_notices(self):
         valid = json.loads(json.dumps(self.catalog))

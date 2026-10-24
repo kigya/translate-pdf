@@ -12,8 +12,10 @@
 		5F36B0F1FE7DECF3BADE4D63 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8335F66438B05C0C4056A5A /* ExpoModulesProvider.swift */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		761780EF2CA45674006654EF /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EE2CA45674006654EF /* SceneDelegate.swift */; };
+		7EC758CE0251111FC341552F /* libPods-TranslatePDFNativeCoverageTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = BD6AFC4C9601D48403116ED6 /* libPods-TranslatePDFNativeCoverageTests.a */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		A10000000000000000000001 /* NativeCoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* NativeCoverageTests.swift */; };
+		AEE6C9378FC2916669E3D0D8 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33DF30EEB4254E9E9C879693 /* ExpoModulesProvider.swift */; };
 		B823448208FD2F33C26706DB /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
@@ -28,18 +30,22 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		01CBC6D513D2CD26B8BB473C /* Pods-TranslatePDF.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-TranslatePDF.debug.xcconfig"; path = "Target Support Files/Pods-TranslatePDF/Pods-TranslatePDF.debug.xcconfig"; sourceTree = "<group>"; };
 		13B07F961A680F5B00A75B9A /* TranslatePDF.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TranslatePDF.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = TranslatePDF/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = TranslatePDF/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = TranslatePDF/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		2F475A47207E5A8963A22FAC /* Pods-TranslatePDFNativeCoverageTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-TranslatePDFNativeCoverageTests.release.xcconfig"; path = "Target Support Files/Pods-TranslatePDFNativeCoverageTests/Pods-TranslatePDFNativeCoverageTests.release.xcconfig"; sourceTree = "<group>"; };
+		33DF30EEB4254E9E9C879693 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-TranslatePDFNativeCoverageTests/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
+		59555E5DF3EC37F62CA16E0C /* Pods-TranslatePDF.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-TranslatePDF.release.xcconfig"; path = "Target Support Files/Pods-TranslatePDF/Pods-TranslatePDF.release.xcconfig"; sourceTree = "<group>"; };
 		5DCACB8F33CDC322A6C60F78 /* libPods-TranslatePDF.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-TranslatePDF.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = TranslatePDF/AppDelegate.swift; sourceTree = "<group>"; };
 		761780EE2CA45674006654EF /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SceneDelegate.swift; path = TranslatePDF/SceneDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = TranslatePDF/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		8CBFE192B8D2ADE08F177227 /* Pods-TranslatePDFNativeCoverageTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-TranslatePDFNativeCoverageTests.debug.xcconfig"; path = "Target Support Files/Pods-TranslatePDFNativeCoverageTests/Pods-TranslatePDFNativeCoverageTests.debug.xcconfig"; sourceTree = "<group>"; };
 		A10000000000000000000002 /* TranslatePDFNativeCoverageTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TranslatePDFNativeCoverageTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000003 /* NativeCoverageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCoverageTests.swift; sourceTree = "<group>"; };
-		CB59879999A1547BB16B7A43 /* Pods-TranslatePDF.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-TranslatePDF.release.xcconfig"; path = "Target Support Files/Pods-TranslatePDF/Pods-TranslatePDF.release.xcconfig"; sourceTree = "<group>"; };
+		BD6AFC4C9601D48403116ED6 /* libPods-TranslatePDFNativeCoverageTests.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-TranslatePDFNativeCoverageTests.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		D3F60ED6956E2830CA51646F /* Pods-TranslatePDF.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-TranslatePDF.debug.xcconfig"; path = "Target Support Files/Pods-TranslatePDF/Pods-TranslatePDF.debug.xcconfig"; sourceTree = "<group>"; };
 		D8335F66438B05C0C4056A5A /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-TranslatePDF/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -57,12 +63,21 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7EC758CE0251111FC341552F /* libPods-TranslatePDFNativeCoverageTests.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		04BA4BD33EFEAA03D63DEA50 /* TranslatePDFNativeCoverageTests */ = {
+			isa = PBXGroup;
+			children = (
+				33DF30EEB4254E9E9C879693 /* ExpoModulesProvider.swift */,
+			);
+			name = TranslatePDFNativeCoverageTests;
+			sourceTree = "<group>";
+		};
 		13B07FAE1A68108700A75B9A /* TranslatePDF */ = {
 			isa = PBXGroup;
 			children = (
@@ -81,6 +96,7 @@
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
 				5DCACB8F33CDC322A6C60F78 /* libPods-TranslatePDF.a */,
+				BD6AFC4C9601D48403116ED6 /* libPods-TranslatePDFNativeCoverageTests.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -129,6 +145,7 @@
 			isa = PBXGroup;
 			children = (
 				2E630841F2AE380605F89543 /* TranslatePDF */,
+				04BA4BD33EFEAA03D63DEA50 /* TranslatePDFNativeCoverageTests */,
 			);
 			name = ExpoModulesProviders;
 			sourceTree = "<group>";
@@ -144,8 +161,10 @@
 		BBD78D7AC51CEA395F1C20DB /* Pods */ = {
 			isa = PBXGroup;
 			children = (
-				01CBC6D513D2CD26B8BB473C /* Pods-TranslatePDF.debug.xcconfig */,
-				CB59879999A1547BB16B7A43 /* Pods-TranslatePDF.release.xcconfig */,
+				D3F60ED6956E2830CA51646F /* Pods-TranslatePDF.debug.xcconfig */,
+				59555E5DF3EC37F62CA16E0C /* Pods-TranslatePDF.release.xcconfig */,
+				8CBFE192B8D2ADE08F177227 /* Pods-TranslatePDFNativeCoverageTests.debug.xcconfig */,
+				2F475A47207E5A8963A22FAC /* Pods-TranslatePDFNativeCoverageTests.release.xcconfig */,
 			);
 			path = Pods;
 			sourceTree = "<group>";
@@ -179,6 +198,8 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = A1000000000000000000000C /* Build configuration list for PBXNativeTarget "TranslatePDFNativeCoverageTests" */;
 			buildPhases = (
+				6EA1BAF435BAB8EAB3EEE917 /* [CP] Check Pods Manifest.lock */,
+				48A6584BC602203FA3EDB375 /* [Expo] Configure project */,
 				A10000000000000000000007 /* Sources */,
 				A10000000000000000000004 /* Frameworks */,
 			);
@@ -275,6 +296,51 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-TranslatePDF/Pods-TranslatePDF-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
+		48A6584BC602203FA3EDB375 /* [Expo] Configure project */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/.xcode.env",
+				"$(SRCROOT)/.xcode.env.local",
+				"$(SRCROOT)/Pods/Target Support Files/Pods-TranslatePDFNativeCoverageTests/expo-configure-project.sh",
+			);
+			name = "[Expo] Configure project";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Pods/Target Support Files/Pods-TranslatePDFNativeCoverageTests/ExpoModulesProvider.swift",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# This script configures Expo modules and generates the modules provider file.\nbash -l -c \"./Pods/Target\\ Support\\ Files/Pods-TranslatePDFNativeCoverageTests/expo-configure-project.sh\"\n";
+		};
+		6EA1BAF435BAB8EAB3EEE917 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-TranslatePDFNativeCoverageTests-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
 		8F284FD1B585F42462B17330 /* [Expo] Configure project */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -355,6 +421,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000001 /* NativeCoverageTests.swift in Sources */,
+				AEE6C9378FC2916669E3D0D8 /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -371,11 +438,11 @@
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 01CBC6D513D2CD26B8BB473C /* Pods-TranslatePDF.debug.xcconfig */;
+			baseConfigurationReference = D3F60ED6956E2830CA51646F /* Pods-TranslatePDF.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 500;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = TranslatePDF/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -383,7 +450,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.0.1;
+				MARKETING_VERSION = 0.5.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -402,18 +469,18 @@
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = CB59879999A1547BB16B7A43 /* Pods-TranslatePDF.release.xcconfig */;
+			baseConfigurationReference = 59555E5DF3EC37F62CA16E0C /* Pods-TranslatePDF.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 500;
 				INFOPLIST_FILE = "TranslatePDF/Info-Release.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.0.1;
+				MARKETING_VERSION = 0.5.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -587,13 +654,16 @@
 		};
 		A10000000000000000000008 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 01CBC6D513D2CD26B8BB473C /* Pods-TranslatePDF.debug.xcconfig */;
+			baseConfigurationReference = 8CBFE192B8D2ADE08F177227 /* Pods-TranslatePDFNativeCoverageTests.debug.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGNING_ALLOWED = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				OTHER_LDFLAGS = "-lc++";
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lc++",
+				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.kigya.translatepdf.NativeCoverageTests;
 				PRODUCT_NAME = TranslatePDFNativeCoverageTests;
@@ -608,13 +678,16 @@
 		};
 		A10000000000000000000009 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = CB59879999A1547BB16B7A43 /* Pods-TranslatePDF.release.xcconfig */;
+			baseConfigurationReference = 2F475A47207E5A8963A22FAC /* Pods-TranslatePDFNativeCoverageTests.release.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGNING_ALLOWED = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				OTHER_LDFLAGS = "-lc++";
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lc++",
+				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.kigya.translatepdf.NativeCoverageTests;
 				PRODUCT_NAME = TranslatePDFNativeCoverageTests;

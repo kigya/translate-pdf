@@ -25,7 +25,10 @@ private object TessShadowState {
   var imageSet = 0
   var recognizeCalls = 0
   var iteratorBegins = 0
+  var iteratorCreates = 0
   var iteratorDeletes = 0
+  val confidenceLevels = mutableListOf<Int>()
+  val nextLevels = mutableListOf<Int>()
   var clears = 0
   var stops = 0
   var recycles = 0
@@ -37,7 +40,10 @@ private object TessShadowState {
     imageSet = 0
     recognizeCalls = 0
     iteratorBegins = 0
+    iteratorCreates = 0
     iteratorDeletes = 0
+    confidenceLevels.clear()
+    nextLevels.clear()
     clears = 0
     stops = 0
     recycles = 0
@@ -56,6 +62,7 @@ class ShadowTessBaseAPI {
   @Implementation fun setImage(bitmap: Bitmap) { TessShadowState.imageSet++ }
   @Implementation fun getHOCRText(page: Int): String { TessShadowState.recognizeCalls++; return "" }
   @Implementation fun getResultIterator(): ResultIterator {
+    TessShadowState.iteratorCreates++
     val constructor: Constructor<ResultIterator> = ResultIterator::class.java.getDeclaredConstructor(Long::class.javaPrimitiveType)
     constructor.isAccessible = true
     return constructor.newInstance(1L)
@@ -73,7 +80,7 @@ class ShadowTessBaseAPI {
 open class ShadowPageIterator {
   @Implementation open fun __constructor__(nativeIterator: Long) = Unit
   @Implementation fun begin() { TessShadowState.iteratorBegins++ }
-  @Implementation fun next(level: Int): Boolean = false
+  @Implementation fun next(level: Int): Boolean { TessShadowState.nextLevels += level; return false }
   @Implementation fun getBoundingRect(level: Int): Rect = Rect(10, 20, 70, 40)
 
   companion object {
@@ -85,6 +92,7 @@ open class ShadowPageIterator {
 class ShadowResultIterator : ShadowPageIterator() {
   @Implementation override fun __constructor__(nativeIterator: Long) = Unit
   @Implementation fun getUTF8Text(level: Int): String = "  adapter boundary  "
+  @Implementation fun confidence(level: Int): Float { TessShadowState.confidenceLevels += level; return if (level == TessBaseAPI.PageIteratorLevel.RIL_WORD) 72f else 88.5f }
   @Implementation fun delete() { TessShadowState.iteratorDeletes++ }
 
   companion object {
@@ -108,17 +116,29 @@ class NativeTesseractApiTest {
     val bitmap = Bitmap.createBitmap(200, 100, Bitmap.Config.ARGB_8888)
     val engine = OcrEngine(context, sourceLanguage = "en")
 
-    val recognized = engine.recognize(bitmap, pageWidth = 100f, pageHeight = 50f)
+    val recognized = engine.recognize(bitmap, pageWidth = 100f, pageHeight = 50f, includeWordEvidence = true)
 
     assertEquals("eng", TessShadowState.initializeLanguage)
     assertTrue(TessShadowState.initializePath.orEmpty().endsWith("/tesseract"))
     assertEquals(TessBaseAPI.PageSegMode.PSM_AUTO, TessShadowState.pageSegMode)
     assertEquals(1, TessShadowState.imageSet)
     assertEquals(1, TessShadowState.recognizeCalls)
-    assertEquals(1, TessShadowState.iteratorBegins)
-    assertEquals(1, TessShadowState.iteratorDeletes)
+    assertEquals(2, TessShadowState.iteratorCreates)
+    assertEquals(2, TessShadowState.iteratorBegins)
+    assertEquals(2, TessShadowState.iteratorDeletes)
     assertEquals(1, TessShadowState.clears)
     assertEquals("adapter boundary", recognized.getJSONObject(0).getString("sourceText"))
+    assertEquals(88.5, recognized.getJSONObject(0).getDouble("ocrConfidence"), 0.001)
+    assertEquals("adapter boundary", recognized.getJSONObject(0).getJSONArray("wordEvidence").getJSONObject(0).getString("text"))
+    assertEquals(72.0, recognized.getJSONObject(0).getJSONArray("wordEvidence").getJSONObject(0).getDouble("confidence"), 0.001)
+    assertTrue(TessShadowState.confidenceLevels.containsAll(listOf(
+      TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE,
+      TessBaseAPI.PageIteratorLevel.RIL_WORD,
+    )))
+    assertTrue(TessShadowState.nextLevels.containsAll(listOf(
+      TessBaseAPI.PageIteratorLevel.RIL_WORD,
+      TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE,
+    )))
     assertEquals(5.0, recognized.getJSONObject(0).getDouble("left"), 0.001)
     assertEquals(35.0, recognized.getJSONObject(0).getDouble("right"), 0.001)
 

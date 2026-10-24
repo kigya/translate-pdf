@@ -42,7 +42,20 @@ internal class ModelDownloader(
   fun isReady(modelId: String): Boolean {
     val definition = definitionLookup(modelId)
     val file = fileFor(modelId)
-    return file.isFile && file.length() == definition.bytes && sha256(file) == definition.sha256
+    val verified = file.isFile && file.length() == definition.bytes && sha256(file) == definition.sha256
+    if (verified && !hasActiveTransfer(modelId)) {
+      val state = database.modelState(modelId)
+      // Older app versions may leave the app-managed `<id>.gguf` in place
+      // without a matching ready row (for example, if the process stopped
+      // after the atomic rename). Rehydrate readiness only after the full
+      // pinned digest has been checked, and never while a transfer owns this
+      // model. This method is called from worker-backed start/load paths, not
+      // activity snapshot polling.
+      if (state == null || state.first != "ready" || state.second != definition.bytes || state.third != null) {
+        database.modelStatus(modelId, "ready", definition.bytes)
+      }
+    }
+    return verified
   }
 
   fun isInstalled(modelId: String): Boolean {
@@ -167,7 +180,7 @@ internal class ModelDownloader(
           connectTimeout = 20_000
           readTimeout = 45_000
           instanceFollowRedirects = true
-          setRequestProperty("User-Agent", "Folivela/0.0.1")
+          setRequestProperty("User-Agent", "Folivela/${BuildConfig.VERSION_NAME}")
           if (offset > 0) setRequestProperty("Range", "bytes=$offset-")
         }
         if (transfer.stopRequested) throw ModelDownloadCanceled()
@@ -239,6 +252,17 @@ internal class ModelDownloader(
         transfer.connection?.disconnect()
         if (!transfer.started) transfer.finished.countDown()
       }
+    }
+  }
+
+  /** Lifecycle cleanup may stop only its captured transfer, never a later retry. */
+  fun pauseIfOwned(modelId: String, token: String) {
+    val transfer = active[modelId] ?: return
+    synchronized(transfer) {
+      if (transfer.token != token) return
+      transfer.stopRequested = true
+      transfer.connection?.disconnect()
+      if (!transfer.started) transfer.finished.countDown()
     }
   }
 

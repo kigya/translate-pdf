@@ -22,6 +22,7 @@ const stages: readonly { key: string; label: (t: Translator, locale: string, job
 const stageIndex: Record<JobStage, number> = {
   queued: 0,
   copying: 0,
+  loadingModel: 0,
   extracting: 1,
   ocr: 1,
   translating: 2,
@@ -158,75 +159,85 @@ export function TranslationActivity({
   const statusTitleStyle = { color: job.status === 'failed' ? colors.accent : colors.text, fontWeight: '700' as const };
   const statusErrorStyle = { color: colors.muted } as const;
 
-  return (
+  const content = (
+    <View style={[styles.content, { direction: localeDirection(locale) }]}>
+      {isFinished ? currentPreview?.phase === 'ready' && previewUri ? (
+        <Image
+          accessible
+          accessibilityRole="image"
+          accessibilityLabel={`${job.documentName || t('document')}, ${activityLabel(job, t, locale)}`}
+          source={{ uri: previewUri }}
+          resizeMode="contain"
+          onError={() => {
+            if (previewRef.current === previewIdentity) setPreview({ identity: previewIdentity, phase: 'error' });
+          }}
+          style={[styles.resultPreview, { backgroundColor: colors.raised }]}
+        />
+      ) : currentPreview?.phase === 'error' ? (
+          <Notice colors={colors} text={t('unknownError')} retry={() => setRetryNonce(value => value + 1)} retryLabel={t('retry')} />
+      ) : (
+        <View accessible accessibilityRole="progressbar" accessibilityLabel={t('loading')} style={[styles.resultPlaceholder, { backgroundColor: colors.raised }]}>
+          <Icon name="document" size={42} color={colors.accent} />
+          <Text style={fallbackTextStyle}>{t('loading')}</Text>
+        </View>
+      ) : (
+        <ScanProgress
+          source={previewUri ? { uri: previewUri } : undefined}
+          imageLabel={job.documentName}
+          height={212}
+          progress={progress}
+          done={false}
+          label={activityLabel(job, t, locale)}
+          doneLabel={t('completed')}
+          tint={colors.accent}
+          active={active && running}
+          reduceEffects
+        >
+          {!previewUri ? (
+            <View style={[styles.fallback, { backgroundColor: colors.raised }]}>
+              <Icon name="document" size={42} color={colors.accent} />
+              <Text style={fallbackTextStyle} numberOfLines={2}>
+                {job.documentName || t('document')}
+              </Text>
+            </View>
+          ) : null}
+        </ScanProgress>
+      )}
+
+      <Text style={mutedCaptionStyle}>
+        {progressUnit}: {completedPages} / {total}
+      </Text>
+      {job.documentFormat !== 'docx' && job.currentPage !== null ? (
+        <Text style={mutedCaptionStyle}>
+          {t('page')} {ux(locale, 'pageOf', { page: job.currentPage + 1, total: job.totalPages })}
+        </Text>
+      ) : null}
+      <Timeline events={timeline} playKey={job.id} currentLabel={t('running')} upcomingLabel={t('stageQueued')} />
+      {job.status !== 'running' && job.status !== 'queued' ? (
+        <View style={[styles.status, { backgroundColor: colors.raised }]}>
+          <Text style={statusTitleStyle}>
+            {activityLabel(job, t, locale)}
+          </Text>
+          {job.error ? <Text style={statusErrorStyle}>{job.error}</Text> : null}
+        </View>
+      ) : null}
+    </View>
+  );
+
+  // The burst is only useful after a successful result. Keeping its Skia
+  // atlas mounted during long-running jobs adds a full-screen render surface
+  // to every progress frame on resource-constrained devices.
+  return isFinished ? (
     <ConfettiBurst
       ref={confetti}
       style={styles.confetti}
       colors={[colors.accent, colors.success, colors.accent, colors.muted]}
       haptics
     >
-      <View style={[styles.content, { direction: localeDirection(locale) }]}>
-        {isFinished ? currentPreview?.phase === 'ready' && previewUri ? (
-          <Image
-            accessible
-            accessibilityRole="image"
-            accessibilityLabel={`${job.documentName || t('document')}, ${activityLabel(job, t, locale)}`}
-            source={{ uri: previewUri }}
-            resizeMode="contain"
-            onError={() => {
-              if (previewRef.current === previewIdentity) setPreview({ identity: previewIdentity, phase: 'error' });
-            }}
-            style={[styles.resultPreview, { backgroundColor: colors.raised }]}
-          />
-        ) : currentPreview?.phase === 'error' ? (
-          <Notice colors={colors} text={t('unknownError')} retry={() => setRetryNonce(value => value + 1)} retryLabel={t('retry')} />
-        ) : (
-          <View accessible accessibilityRole="progressbar" accessibilityLabel={t('loading')} style={[styles.resultPlaceholder, { backgroundColor: colors.raised }]}>
-            <Icon name="document" size={42} color={colors.accent} />
-            <Text style={fallbackTextStyle}>{t('loading')}</Text>
-          </View>
-        ) : (
-          <ScanProgress
-            source={previewUri ? { uri: previewUri } : undefined}
-            imageLabel={job.documentName}
-            height={212}
-            progress={progress}
-            done={false}
-            label={activityLabel(job, t, locale)}
-            doneLabel={t('completed')}
-            tint={colors.accent}
-            active={active && running}
-          >
-            {!previewUri ? (
-              <View style={[styles.fallback, { backgroundColor: colors.raised }]}>
-                <Icon name="document" size={42} color={colors.accent} />
-                <Text style={fallbackTextStyle} numberOfLines={2}>
-                  {job.documentName || t('document')}
-                </Text>
-              </View>
-            ) : null}
-          </ScanProgress>
-        )}
-
-        <Text style={mutedCaptionStyle}>
-          {progressUnit}: {completedPages} / {total}
-        </Text>
-        {job.documentFormat !== 'docx' && job.currentPage !== null ? (
-          <Text style={mutedCaptionStyle}>
-            {t('page')} {ux(locale, 'pageOf', { page: job.currentPage + 1, total: job.totalPages })}
-          </Text>
-        ) : null}
-        <Timeline events={timeline} playKey={job.id} currentLabel={t('running')} upcomingLabel={t('stageQueued')} />
-        {job.status !== 'running' && job.status !== 'queued' ? (
-          <View style={[styles.status, { backgroundColor: colors.raised }]}>
-            <Text style={statusTitleStyle}>
-              {activityLabel(job, t, locale)}
-            </Text>
-            {job.error ? <Text style={statusErrorStyle}>{job.error}</Text> : null}
-          </View>
-        ) : null}
-      </View>
+      {content}
     </ConfettiBurst>
+  ) : (
+    <View style={styles.confetti}>{content}</View>
   );
 }
 

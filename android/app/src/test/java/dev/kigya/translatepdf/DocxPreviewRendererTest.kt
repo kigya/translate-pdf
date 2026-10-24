@@ -58,6 +58,7 @@ class DocxPreviewRendererTest {
       assertFalse(web.settings.domStorageEnabled)
       assertEquals(WebSettings.MIXED_CONTENT_NEVER_ALLOW,web.settings.mixedContentMode)
       assertTrue(shadow.webViewClient.shouldOverrideUrlLoading(web,null as android.webkit.WebResourceRequest?))
+      assertEquals(403,shadow.webViewClient.shouldInterceptRequest(web,null as android.webkit.WebResourceRequest?)?.statusCode)
       assertTrue(shadow.webViewClient.onRenderProcessGone(web,null))
       // Duplicate Chromium callbacks must not complete or destroy twice.
       assertTrue(shadow.webViewClient.onRenderProcessGone(web,null))
@@ -84,6 +85,48 @@ class DocxPreviewRendererTest {
       assertTrue(result.get().exceptionOrNull()?.message?.contains("Open Folivela") == true)
       assertEquals("keep",source.readText())
     } finally {worker.interrupt();worker.join(5000);source.delete()}
+  }
+
+  @Test fun missingActivityContentDestroysWebViewAndPreservesTheSource() {
+    val activity=Robolectric.buildActivity(WindowlessPreviewActivity::class.java).create().get()
+    val source=File(activity.cacheDir,"unattached.docx").apply {writeText("keep")}
+    val created=AtomicReference<WebView?>()
+    val result=AtomicReference<Result<Int>>()
+    val worker=Thread {
+      result.set(runCatching {DocxPreviewRenderer(activity,activity,{ context -> WebView(context).also(created::set) })
+        .render(source,File(activity.cacheDir,"unattached.pdf"))})
+    }
+    worker.start()
+    try {
+      await {!worker.isAlive}
+      assertTrue(result.get().exceptionOrNull()?.message?.contains("Open Folivela") == true)
+      assertTrue(requireNotNull(created.get()).let { shadowOf(it).wasDestroyCalled() })
+      assertEquals("keep",source.readText())
+      assertTrue(File(activity.cacheDir,"docx-preview").listFiles().orEmpty().isEmpty())
+    } finally {worker.interrupt();worker.join(5000);shadowOf(Looper.getMainLooper()).idle();source.delete();activity.finish()}
+  }
+
+  @Test fun interruptAfterWebViewAttachmentDetachesAndDestroysPreviewWithoutChangingPriorOutput() {
+    val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+    val content=activity.findViewById<ViewGroup>(android.R.id.content)
+    val source=File(activity.cacheDir,"interrupt-attached.docx").apply {writeText("original")}
+    val output=File(activity.cacheDir,"interrupt-attached.pdf").apply {writeText("previous result")}
+    val result=AtomicReference<Result<Int>>()
+    val worker=Thread {result.set(runCatching {DocxPreviewRenderer(activity,activity).render(source,output)})}
+    worker.start()
+    try {
+      await {content.childCount>0}
+      val web=content.getChildAt(0) as WebView
+      worker.interrupt()
+      await {!worker.isAlive}
+      shadowOf(Looper.getMainLooper()).idle()
+      assertTrue(result.get().exceptionOrNull()?.message?.contains("canceled") == true)
+      assertTrue(shadowOf(web).wasDestroyCalled())
+      assertEquals(0,content.childCount)
+      assertEquals("previous result",output.readText())
+      assertEquals("original",source.readText())
+      assertTrue(File(activity.cacheDir,"docx-preview").listFiles().orEmpty().isEmpty())
+    } finally {worker.interrupt();worker.join(5000);shadowOf(Looper.getMainLooper()).idle();source.delete();output.delete();activity.finish()}
   }
 
   @Test fun interruptBeforeMainThreadCreationCancelsQueuedPreviewWork() {
@@ -130,6 +173,38 @@ class DocxPreviewRendererTest {
     assertEquals("The Word preview could not be prepared.",error.message)
   }
 
+  @Test fun readinessCallbackAfterFailureIsIgnoredAndDoesNotStartRasterization() {
+    val error=previewCallback {web->
+      val bridge=shadowOf(web).getJavascriptInterface("FolivelaPreview")
+      bridge.javaClass.getMethod("failed",String::class.java).invoke(bridge,"ignored")
+      bridge.javaClass.getMethod("ready").invoke(bridge)
+    }
+    assertEquals("The Word preview could not be prepared.",error.message)
+  }
+
+  @Test
+  @Config(sdk = [28], application = Application::class)
+  fun previewSettingsRemainUsableBeforeAndroidTen() {
+    val error=previewCallback {web->
+      assertFalse(web.settings.allowFileAccess)
+      assertFalse(web.settings.allowContentAccess)
+      val bridge=shadowOf(web).getJavascriptInterface("FolivelaPreview")
+      bridge.javaClass.getMethod("failed",String::class.java).invoke(bridge,"fixture")
+    }
+    assertEquals("The Word preview could not be prepared.",error.message)
+  }
+
+  @Test
+  @Config(sdk = [29], application = Application::class)
+  fun previewSettingsDisableForceDarkBeforeAlgorithmicDarkeningApi() {
+    val error=previewCallback {web->
+      assertEquals(WebSettings.FORCE_DARK_OFF,web.settings.forceDark)
+      val bridge=shadowOf(web).getJavascriptInterface("FolivelaPreview")
+      bridge.javaClass.getMethod("failed",String::class.java).invoke(bridge,"fixture")
+    }
+    assertEquals("The Word preview could not be prepared.",error.message)
+  }
+
   @Test fun malformedAndOversizedPageMetricsAreRejectedBeforeRasterAllocation() {
     val cases=listOf(
       null to "did not expose page layout",
@@ -140,6 +215,8 @@ class DocxPreviewRendererTest {
       org.json.JSONObject.quote("""{"dpr":1,"pages":[]}""") to "unsupported page count",
       org.json.JSONObject.quote("""{"dpr":1,"pages":[{"w":1601,"h":100}]}""") to "safe preview dimensions",
       org.json.JSONObject.quote("""{"dpr":1,"pages":[{"w":100,"h":2201}]}""") to "safe preview dimensions",
+      org.json.JSONObject.quote("""{"dpr":1,"pages":[{"w":0,"h":100}]}""") to "safe preview dimensions",
+      org.json.JSONObject.quote("""{"dpr":1,"pages":[{"w":100,"h":0}]}""") to "safe preview dimensions",
     )
     for((encoded,expected) in cases) {
       val error=previewCallback {web->
@@ -151,6 +228,21 @@ class DocxPreviewRendererTest {
       }
       assertTrue("Unexpected preview failure: ${error.message}",error.message?.contains(expected)==true)
     }
+  }
+
+  @Test
+  @Config(sdk = [37], qualifiers = "xxhdpi", application = Application::class)
+  fun pageRasterPixelLimitUsesActualDisplayDensity() {
+    val error=previewCallback {web->
+      val shadow=shadowOf(web)
+      val bridge=shadow.getJavascriptInterface("FolivelaPreview")
+      bridge.javaClass.getMethod("ready").invoke(bridge)
+      await {shadow.lastEvaluatedJavascriptCallback!=null}
+      val density=web.resources.displayMetrics.density.coerceAtLeast(1f)
+      val metrics=org.json.JSONObject.quote("""{"dpr":$density,"pages":[{"w":1600,"h":2200}]}""")
+      shadow.lastEvaluatedJavascriptCallback.onReceiveValue(metrics)
+    }
+    assertTrue("Unexpected preview failure: ${error.message}",error.message?.contains("safe preview memory limit")==true)
   }
 
   @Test fun pageSelectionMismatchRejectsThePreviewWithoutCachingAPdf() {
@@ -167,4 +259,8 @@ class DocxPreviewRendererTest {
     assertTrue(error.message?.contains("page could not be selected")==true)
   }
 
+}
+
+private class WindowlessPreviewActivity : Activity() {
+  override fun getWindow(): android.view.Window? = null
 }

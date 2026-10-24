@@ -22,10 +22,11 @@ Pod::Spec.new do |spec|
   spec.resource_bundles = {
     'TranslatePDFFont' => [
       'TranslateCore/Resources/fonts/NotoSans-Regular.ttf',
+    'TranslateCore/Resources/fonts/NotoSansCondensed-Regular.ttf',
       'TranslateCore/Resources/fonts/NotoSansSC-Regular.ttf'
     ],
     'TranslatePDFLicenses' => ['TranslateCore/Licenses/*'],
-    'FolivelaDocxPreview' => ['../assets/docx-preview/*']
+    'FolivelaDocxPreview' => ['TranslateCore/Resources/docx-preview/*']
   }
   spec.vendored_frameworks = ['Frameworks/TranslateCore.xcframework', 'Frameworks/PDFium.xcframework']
   spec.pod_target_xcconfig = {

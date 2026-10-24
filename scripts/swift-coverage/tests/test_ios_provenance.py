@@ -1,8 +1,11 @@
 """Metadata parser controls, not fabricated Xcode or runtime evidence."""
 import importlib.util
+import copy
+import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 TOOL = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("ios_provenance_tool",TOOL / "run_ios.py")
@@ -10,6 +13,47 @@ runner = importlib.util.module_from_spec(spec);spec.loader.exec_module(runner)
 
 
 class HostedMetadataTests(unittest.TestCase):
+    def test_swift_definitions_do_not_include_clang_or_frontend_forwarded_operands(self):
+        arguments = ['-DDEBUG','-D','COCOAPODS','-Xcc','-DDEBUG=1','-Xcc','-DCLANG_ONLY','-Xfrontend','-DOTHER']
+        self.assertEqual(runner.swift_definitions(arguments),['COCOAPODS','DEBUG'])
+        for malformed in [['-D'],['-Xcc']]:
+            with self.assertRaises(ValueError): runner.swift_definitions(malformed)
+
+    def test_original_typing_configuration_is_source_compiler_and_target_bound(self):
+        with tempfile.TemporaryDirectory(dir=runner.coverage.ROOT / '.local-private') as temporary:
+            root = Path(temporary).resolve(); records = []
+            config = {'os':'iOS','arch':'arm64','environment':'simulator','languageVersion':[5],
+                      'compilerVersion':[6,3,3],'defines':['DEBUG','COCOAPODS']}
+            for name in runner.coverage.OWNED:
+                source = root / name; source.parent.mkdir(parents=True,exist_ok=True); source.write_text('// parser control\n')
+                records.append({'source':str(source),'sourceSHA256':runner.coverage.sha(source),
+                                'transformedBodySHA256':'metadata-only','configuration':copy.deepcopy(config)})
+            payload = {'sources':records,'compiler':{'version':'parser-control-compiler'},'registry':{'metadata':['false','true']}}
+            path = root / 'metadata-manifest.json'
+            def save(value):
+                value['registryDigest'] = runner.coverage.digest(runner.coverage.registry_payload(value))
+                path.write_text(json.dumps(value))
+            save(payload)
+            with patch.object(runner.coverage,'ROOT',root):
+                actual = runner.prepared_configurations(path,'parser-control-compiler')
+                self.assertEqual(len(actual),8)
+                with self.assertRaisesRegex(ValueError,'compiler differs'):
+                    runner.prepared_configurations(path,'different compiler')
+                original = path.read_text()
+                bad = copy.deepcopy(payload); bad['sources'][0]['configuration']['environment'] = None; save(bad)
+                with self.assertRaisesRegex(ValueError,'does not match'):
+                    runner.prepared_configurations(path,'parser-control-compiler')
+                bad = copy.deepcopy(payload); bad['sources'][0]['configuration']['defines'] = ['COCOAPODS']; save(bad)
+                with self.assertRaisesRegex(ValueError,'no Swift DEBUG'):
+                    runner.prepared_configurations(path,'parser-control-compiler')
+                bad = copy.deepcopy(payload); bad['sources'].pop(); save(bad)
+                with self.assertRaisesRegex(ValueError,'inventory differs'):
+                    runner.prepared_configurations(path,'parser-control-compiler')
+                path.write_text(original)
+                source = Path(records[0]['source']); source.write_text('// stale metadata\n')
+                with self.assertRaisesRegex(ValueError,'typing is stale'):
+                    runner.prepared_configurations(path,'parser-control-compiler')
+
     def test_test_driver_can_only_export_and_preserves_original_test_body(self):
         original = 'final class NativeCoverageTests: XCTestCase {\n func testA() { print("unchanged") }\n}\n'
         transformed = runner.teardown_driver(original,{"TranslatePDF":"app.json","TranslateCore":"core.json"},"fixture")

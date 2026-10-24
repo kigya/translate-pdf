@@ -16,6 +16,7 @@ from pathlib import Path
 import subprocess
 import struct
 import sys
+import importlib.util
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -53,17 +54,25 @@ def write(path: Path, value: object) -> None:
 
 def run(command: list[str]) -> str:
     env = {**os.environ, "DEVELOPER_DIR": DEVELOPER}
+    env.pop("SDKROOT", None)
     return subprocess.run(command, env=env, check=True, text=True, capture_output=True).stdout
+
+
+def toolchain_fingerprint() -> dict:
+    toolchain=Path(DEVELOPER)/"Toolchains/XcodeDefault.xctoolchain/usr"
+    paths=[toolchain/"bin/swift-frontend"]+[toolchain/"lib/swift/host"/(name+".dylib") for name in ("libSwiftSyntax","libSwiftParser","libSwiftOperators","libSwiftIfConfig")]
+    return {str(path):sha(path) for path in paths}
 
 
 def build(output: Path) -> Path:
     output.mkdir(parents=True, exist_ok=True)
     host = Path(DEVELOPER) / "Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host"
     binary = output / "swift-branch-instrument"
-    command = ["xcrun", "swiftc", "-swift-version", "5", "-I", str(host), "-L", str(host),
+    command = ["xcrun", "swiftc", "-swift-version", "5", "-module-cache-path",str(output / "instrument-module-cache"),"-I", str(host), "-L", str(host),
                "-Xlinker", "-rpath", "-Xlinker", str(host), str(HERE / "Instrument.swift"), "-o", str(binary)]
     run(command)
     write(output / "compiler.json", {"command": command, "version": run(["xcrun", "swiftc", "--version"]),
+          "toolchainInputSHA256":toolchain_fingerprint(),
           "toolSourceSHA256": sha(HERE / "Instrument.swift"), "toolBinarySHA256": sha(binary)})
     return binary
 
@@ -78,19 +87,53 @@ def overlay_value(sources: list[dict], extra: list[dict] | None = None) -> dict:
 
 
 def registry_payload(manifest: dict) -> dict:
-    # Injected runtime contains this digest: normalize its derived final SHA to
-    # the already-bound transformed-body SHA, avoiding a circular hash contract.
-    payload = copy.deepcopy({key:value for key,value in manifest.items() if key != "registryDigest"})
-    for source in payload["sources"]:
-        source["transformedSHA256"] = source["transformedBodySHA256"]
-    return payload
+    """Production measurement identity, independent of export driver/run paths.
+
+    Artifact locations, the instrumenter executable and complete export driver
+    remain bound by preparationDigest and per-execution receipts below.
+    """
+    def stable(value):
+        if isinstance(value, dict):
+            if set(value) == {"path", "sha256"}: return {"sha256": value["sha256"]}
+            return {key:stable(item) for key,item in value.items()}
+        if isinstance(value, list): return [stable(item) for item in value]
+        return value
+    compiler = {key:value for key,value in manifest["compiler"].items() if key not in {"command", "toolBinarySHA256"}}
+    command = manifest["compiler"].get("command", [])
+    normalized = []; index = 0
+    while index < len(command):
+        flag = command[index]; normalized.append(flag)
+        if flag in {"-o", "-module-cache-path"}:
+            normalized.append("<execution-artifact>"); index += 2
+        else: index += 1
+    if command: compiler["buildCommand"] = normalized
+    fields = ("source", "sourceSHA256", "transformedBodySHA256", "namespace", "runtimeInjectedModule",
+              "configuration", "sites", "unsupported", "reviewRequired", "structural", "classificationInventory", "astSHA256")
+    sources=[]
+    for source in manifest["sources"]:
+        item={key:source[key] for key in fields if key in source}
+        if item.get("configuration"):
+            # Raw compiler dump hashes contain allocation IDs; the complete
+            # artifacts stay bound per preparation. Actual selected facts stay
+            # in stable configuration identity.
+            item["configuration"]={key:value for key,value in item["configuration"].items() if key not in {"typingHintsProof","chainReadHintsProof"}}
+        sources.append(stable(item))
+    return {"identitySchemaVersion":2, "compiler":compiler,
+            "sources":sources,
+            "registry":manifest.get("registry", {}), "metricPolicy":manifest.get("metricPolicy"),
+            "chainReadPolicySHA256":manifest.get("chainReadPolicySHA256"),
+            "toolDriverSHA256":manifest.get("toolDriverSHA256"), "runtimeTemplateSHA256":manifest.get("runtimeTemplateSHA256")}
+
+
+def preparation_payload(manifest: dict) -> dict:
+    return {key:value for key,value in manifest.items() if key != "preparationDigest"}
 
 
 def runtime_suffix(registry: dict, registry_digest: str, module: str) -> str:
     return "\n\n// BEGIN TEST-ONLY SWIFT BRANCH RUNTIME\n" + render_runtime(registry,registry_digest,module) + "\n// END TEST-ONLY SWIFT BRANCH RUNTIME\n"
 
 
-def prepare(output: Path, files: list[Path] | None = None, configuration: dict | None = None, runtime_injections: dict[str,Path] | None = None, extra_overlays: dict[Path,Path] | None = None) -> dict:
+def prepare(output: Path, files: list[Path] | None = None, configuration: dict | None = None, runtime_injections: dict[str,Path] | None = None, extra_overlays: dict[Path,Path] | None = None, configurations_by_source: dict[str,dict] | None = None, execution: dict | None = None) -> dict:
     output = output.resolve(); binary = build(output)
     if files is None:
         discovered = {p.relative_to(ROOT).as_posix() for p in (ROOT / "ios/TranslatePDF").rglob("*.swift")}
@@ -99,6 +142,9 @@ def prepare(output: Path, files: list[Path] | None = None, configuration: dict |
     sources = [p.resolve() for p in (files or [ROOT / f for f in OWNED])]
     if len(sources) != len(set(sources)):
         raise ValueError("Duplicate source in inventory")
+    source_configurations = {str(Path(path).resolve()): value for path,value in (configurations_by_source or {}).items()}
+    if source_configurations and (set(source_configurations) != {str(path) for path in sources} or any(not isinstance(value,dict) for value in source_configurations.values())):
+        raise ValueError("Per-source configurations must bind every exact prepared source")
     injections = {}
     for module,path in (runtime_injections or {}).items():
         if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*",module): raise ValueError("Invalid injected Swift module identifier")
@@ -116,14 +162,35 @@ def prepare(output: Path, files: list[Path] | None = None, configuration: dict |
         if not isinstance(configuration,dict): raise ValueError("Configuration must be an object")
         write(config_path,configuration)
     for index, source in enumerate(sources):
+        source_configuration = source_configurations.get(str(source),configuration)
+        if source_configuration and source_configuration.get("typingHints"):
+            proof = source_configuration.get("typingHintsProof",{})
+            ast_proof = proof.get("originalTypedAST",{})
+            if (proof.get("sourceSHA256") != sha(source) or proof.get("typingHints") != source_configuration["typingHints"]
+                or not Path(ast_proof.get("path","")).is_file() or sha(Path(ast_proof["path"])) != ast_proof.get("sha256")):
+                raise ValueError("Typed rewrite hints require exact original-source and typed-AST bindings")
+        if source_configuration and source_configuration.get("chainReadHints"):
+            proof=source_configuration.get("chainReadHintsProof",{}); artifact=proof.get("originalTypedAST",{})
+            if proof.get("sourceSHA256") != sha(source) or not Path(artifact.get("path","")).is_file() or sha(Path(artifact["path"])) != artifact.get("sha256"):
+                raise ValueError("Optional-chain read hints require exact original-source and typed-AST bindings")
+            spec=importlib.util.spec_from_file_location("bound_chain_reads",HERE / "chain_reads.py")
+            policy=importlib.util.module_from_spec(spec);spec.loader.exec_module(policy)
+            observed=policy.derive(source,json.loads(Path(artifact["path"]).read_text()),proof.get("requests",[]))
+            if observed != source_configuration["chainReadHints"]: raise ValueError("Optional-chain selected-declaration/read proof differs")
+        source_config_path = output / f"{index}-configuration.json"
+        if source_configuration is not None: write(source_config_path,source_configuration)
         namespace = "s" + hashlib.sha256(str(source).encode()).hexdigest()[:16]
         transformed = output / f"{index}-{source.name}"
         ast = output / f"{index}-ast.json"
         original_sha = sha(source)
-        run([str(binary), str(source), str(transformed), str(ast), namespace, str(config_path) if configuration is not None else "-"])
+        run([str(binary), str(source), str(transformed), str(ast), namespace, str(source_config_path) if source_configuration is not None else "-"])
         if sha(source) != original_sha: raise ValueError(f"Source changed during instrumentation: {source}")
         parsed = json.loads(ast.read_text())
         original_bytes = source.read_bytes()
+        if hashlib.sha256(original_bytes).hexdigest() != original_sha:
+            raise ValueError(f"Source changed before immutable snapshot: {source}")
+        original_snapshot = output / f"{index}-original-{source.name}"
+        original_snapshot.write_bytes(original_bytes)
         for node in parsed["sites"] + parsed["unsupported"] + parsed["reviewRequired"] + parsed["structural"]:
             offset = node["startUTF8"]
             node["line"] = original_bytes[:offset].count(b"\n") + 1
@@ -152,9 +219,10 @@ def prepare(output: Path, files: list[Path] | None = None, configuration: dict |
         for site in parsed["sites"]:
             registry[f'{namespace}:{site["id"]}'] = site["outcomes"]
         records.append({"source": str(source), "sourceSHA256": original_sha,
+                        "originalSnapshot":{"path":str(original_snapshot),"sha256":original_sha},
                         "transformed": str(transformed), "transformedSHA256": sha(transformed),
                         "transformedBodySHA256":sha(transformed),"runtimeInjectedModule":injections.get(source),
-                        "namespace": namespace, "ast": str(ast), "astSHA256": sha(ast), **parsed})
+                        "namespace": namespace, "configuration":source_configuration, "ast": str(ast), "astSHA256": sha(ast), **parsed})
         roots.append({"type": "file", "name": str(source), "external-contents": str(transformed)})
     payload = {"schemaVersion": 1, "sources": records, "registry": registry,
                "extraOverlays":extra_records,
@@ -168,6 +236,14 @@ def prepare(output: Path, files: list[Path] | None = None, configuration: dict |
                                "Compiler acceptance alone does not establish overload/ownership equivalence",
                                "Does not replace original LLVM lines/functions/regions",
                                "Application binary UUID / compile job attestation must be supplied by integration"]}
+    payload["metricPolicy"] = {"version":"swift-source-conditions-v1-proposed", "approval":"pending-independent-review",
+        "countedRole":"source-condition", "allOtherRolesRetained":True,
+        "mandatoryCoverageObligations":"ALL recorded roles/outcomes including iteration and switch/catch arms; null denominator pending independent review",
+        "forIn":"next observations are iteration diagnostics; where predicates are conditions",
+        "switch":"selected arms are dispatch diagnostics; no invented per-pattern false counters",
+        "catch":"typed matches and selected catches are dispatch diagnostics; throwing calls are error diagnostics"}
+    payload["execution"] = execution
+    payload["chainReadPolicySHA256"] = sha(HERE / "chain_reads.py")
     payload["registryDigest"] = digest(registry_payload(payload))
     for source in records:
         if source["runtimeInjectedModule"]:
@@ -176,6 +252,7 @@ def prepare(output: Path, files: list[Path] | None = None, configuration: dict |
             source["transformedSHA256"] = sha(transformed)
     (output / "BranchRuntime.swift").write_text(render_runtime(registry,payload["registryDigest"]))
     write(output / "overlay.json",overlay_value(records,extra_records))
+    payload["preparationDigest"] = digest(preparation_payload(payload))
     write(output / "manifest.json", payload)
     write(output / "classification-inventory.json", {"registryDigest":payload["registryDigest"],
           "sites":[item for record in records for item in record["classificationInventory"]],
@@ -183,13 +260,16 @@ def prepare(output: Path, files: list[Path] | None = None, configuration: dict |
     return payload
 
 
-def validate(manifest_path: Path, result_paths: list[Path], fixture_only: bool = False, binary_artifacts: dict[str,Path] | None = None) -> dict:
+def validate(manifest_path: Path, result_paths: list[Path], fixture_only: bool = False, binary_artifacts: dict[str,Path] | None = None, execution_manifests: dict[str,Path] | None = None) -> dict:
     manifest = json.loads(manifest_path.read_text()); failures = []
     expected_digest = manifest.get("registryDigest")
     unsigned = registry_payload(manifest)
     if expected_digest != digest(unsigned): failures.append("Manifest digest mismatch")
+    if manifest.get("preparationDigest") != digest(preparation_payload(manifest)): failures.append("Preparation artifact/driver digest mismatch")
+    if manifest["compiler"].get("toolchainInputSHA256") != toolchain_fingerprint(): failures.append("Pinned compiler/SwiftSyntax input drift")
     if manifest.get("toolDriverSHA256") != sha(Path(__file__).resolve()): failures.append("Tool driver drift")
     if manifest.get("runtimeTemplateSHA256") != sha(HERE / "Runtime.swift.in"): failures.append("Runtime template drift")
+    if manifest.get("chainReadPolicySHA256") != sha(HERE / "chain_reads.py"): failures.append("Typed chain-read policy drift")
     if manifest["compiler"].get("toolSourceSHA256") != sha(HERE / "Instrument.swift"): failures.append("Instrumenter source drift")
     instrumenter = Path(manifest["compiler"]["command"][-1])
     if not instrumenter.is_file() or sha(instrumenter) != manifest["compiler"].get("toolBinarySHA256"): failures.append("Instrumenter binary drift")
@@ -217,6 +297,9 @@ def validate(manifest_path: Path, result_paths: list[Path], fixture_only: bool =
             if hashlib.sha256(contents.encode()).hexdigest() != source["transformedBodySHA256"]: failures.append(f"Transformed body drift: {transformed}")
         if source["unsupported"]: failures.append(f'{source["source"]}: {len(source["unsupported"])} unsupported source constructs')
         if source["reviewRequired"]: failures.append(f'{source["source"]}: {len(source["reviewRequired"])} pending invariant/ownership classifications')
+        roles={"source-condition","composite-diagnostic","error-diagnostic","iteration-diagnostic","dispatch-diagnostic","operation-diagnostic"}
+        if any(site.get("metricRole") not in roles or not site.get("metricRule") for site in source["sites"]):
+            failures.append(f'{source["source"]}: unmapped metric role remains a blocker')
     for source in manifest["extraOverlays"]:
         for key,hash_key in [("source","sourceSHA256"),("transformed","transformedSHA256")]:
             path = Path(source[key])
@@ -231,8 +314,41 @@ def validate(manifest_path: Path, result_paths: list[Path], fixture_only: bool =
         identity = result.get("runID")
         if not identity or identity in seen: failures.append(f"Missing/duplicate run identity: {path}")
         seen.add(identity)
+        execution_manifest = manifest
+        if execution_manifests and identity in execution_manifests:
+            execution_manifest = json.loads(Path(execution_manifests[identity]).read_text())
+            if (execution_manifest.get("preparationDigest") != digest(preparation_payload(execution_manifest))
+                or execution_manifest.get("registryDigest") != expected_digest
+                or digest(registry_payload(execution_manifest)) != expected_digest):
+                failures.append(f"Execution measurement/artifact mismatch: {path}")
+            # Each execution owns different transformed artifact paths. Equal
+            # production identity must not hide drift in the second copy.
+            for source in execution_manifest["sources"]:
+                for key,hash_key in [("source","sourceSHA256"),("transformed","transformedSHA256"),("ast","astSHA256")]:
+                    artifact=Path(source[key])
+                    if not artifact.is_file() or sha(artifact)!=source[hash_key]: failures.append(f"Execution source/artifact drift: {path}")
+                transformed=Path(source["transformed"])
+                if transformed.is_file():
+                    body=transformed.read_text()
+                    if source["runtimeInjectedModule"]:
+                        suffix=runtime_suffix(expected,expected_digest,source["runtimeInjectedModule"])
+                        if not body.endswith(suffix):failures.append(f"Execution injected runtime drift: {path}")
+                        else:body=body[:-len(suffix)]
+                    if hashlib.sha256(body.encode()).hexdigest()!=source["transformedBodySHA256"]:failures.append(f"Execution transformed body drift: {path}")
+            producer=Path(execution_manifest["compiler"]["command"][-1])
+            if not producer.is_file() or sha(producer)!=execution_manifest["compiler"]["toolBinarySHA256"]:failures.append(f"Execution instrumenter binary drift: {path}")
+            overlay=producer.parent/"overlay.json"
+            expected_overlay=json.dumps(overlay_value(execution_manifest["sources"],execution_manifest["extraOverlays"]),indent=2,sort_keys=True)+"\n"
+            if not overlay.is_file() or overlay.read_text()!=expected_overlay:failures.append(f"Execution VFS overlay drift: {path}")
+            for extra in execution_manifest.get("extraOverlays", []):
+                for key,hash_key in [("source","sourceSHA256"),("transformed","transformedSHA256")]:
+                    if not Path(extra[key]).is_file() or sha(Path(extra[key])) != extra[hash_key]: failures.append(f"Execution driver drift: {path}")
+        execution = execution_manifest.get("execution")
+        if execution and (identity not in execution.get("runIDs",[]) or result.get("executionDigest") != execution.get("digest")):
+            failures.append(f"Execution driver/run identity mismatch: {path}")
         recorded_binary = result.get("binaryPath", "")
-        binary = Path((binary_artifacts or {}).get(recorded_binary,recorded_binary))
+        images = binary_artifacts or {}
+        binary = Path(images.get(result.get("binarySHA256"),images.get(recorded_binary,recorded_binary)))
         if result.get("binaryRole") != "loaded-instrumented-image" or not result.get("recorderModule"): failures.append(f"Missing loaded-module provenance: {path}")
         if not binary.is_file() or sha(binary) != result.get("binarySHA256"): failures.append(f"Binary drift: {path}")
         if binary.is_file():
@@ -255,6 +371,8 @@ def validate(manifest_path: Path, result_paths: list[Path], fixture_only: bool =
     count = sum(len(o) for o in totals.values())
     if fixture_only: report.update(covered=covered, count=count)
     else: report.update(coveredCandidateOutcomes=covered, candidateOutcomeCount=count, sourceBranchDenominator=None)
+    report["metricRoles"] = {role:sum(len(site["outcomes"]) for source in manifest["sources"] for site in source["sites"] if site.get("metricRole","unmapped-blocker") == role)
+        for role in sorted({site.get("metricRole","unmapped-blocker") for source in manifest["sources"] for site in source["sites"]})}
     return report
 
 

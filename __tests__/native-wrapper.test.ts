@@ -4,6 +4,7 @@ function makeBridge() {
     getLicenseNotices: jest.fn(),
     getLicenseNotice: jest.fn(),
     bootstrap: jest.fn(),
+    getActivitySnapshot: jest.fn(),
     pickPdf: jest.fn(),
     pickDocument: jest.fn(),
     renderDocxPreview: jest.fn(),
@@ -16,6 +17,7 @@ function makeBridge() {
     resumeJob: jest.fn(),
     cancelJob: jest.fn(),
     deleteJob: jest.fn(),
+    deleteDocument: jest.fn(),
     getJob: jest.fn(),
     renderPage: jest.fn(),
     renderTranslatedPage: jest.fn(),
@@ -73,6 +75,31 @@ describe('typed native bridge boundary', () => {
     expect(await api.pickDocument()).toBeNull();
     bridge.pickDocument.mockResolvedValue('{"id":"word-1","name":"guide.docx","format":"docx"}');
     expect(await api.pickDocument()).toEqual({ id: 'word-1', name: 'guide.docx', format: 'docx' });
+  });
+
+  it('parses lightweight activity snapshots and forwards both delete operations', async () => {
+    const activity = {
+      jobs: [{ id: 'job-1', workerStopping: true, stageStartedAt: 1234, currentBlock: 0, pageBlocks: 3, completedPageBlocks: 0, processedTokens: 42 }],
+      models: [{ id: 'compact', status: 'downloading', downloadedBytes: 12 }],
+      notifications: { status: 'denied', requestedBefore: true, canRequest: false },
+    };
+    bridge.getActivitySnapshot.mockResolvedValue(JSON.stringify(activity));
+    expect(await api.getActivitySnapshot()).toEqual(activity);
+    expect(bridge.getActivitySnapshot).toHaveBeenCalledTimes(1);
+
+    bridge.deleteJob.mockResolvedValue(undefined);
+    bridge.deleteDocument.mockResolvedValue(undefined);
+    await api.deleteJob('job-1');
+    await api.deleteDocument('doc-raw');
+    expect(bridge.deleteJob).toHaveBeenCalledWith('job-1');
+    expect(bridge.deleteDocument).toHaveBeenCalledWith('doc-raw');
+  });
+
+  it('rejects malformed lightweight activity JSON instead of treating it as empty progress', async () => {
+    bridge.getActivitySnapshot.mockResolvedValue('{not activity json');
+    await expect(api.getActivitySnapshot()).rejects.toThrow(
+      'getActivitySnapshot returned invalid native data.',
+    );
   });
 
   it('forwards DOCX preview defaults and parses both export formats', async () => {

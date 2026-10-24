@@ -20,9 +20,14 @@ internal interface OcrLineIterator {
   fun begin()
   fun text(): String?
   fun bounds(): Rect
+  fun confidence(): Float? = null
   fun next(): Boolean
   fun delete()
 }
+
+internal data class OcrWordEvidence(val text: String, val bounds: Rect, val confidence: Float?)
+
+internal data class OcrRecognitionEvidence(val lines: JSONArray, val words: JSONArray)
 
 internal interface OcrEngineApi {
   fun initialize(dataDirectory: String, language: String): Boolean
@@ -30,6 +35,7 @@ internal interface OcrEngineApi {
   fun setImage(bitmap: Bitmap)
   fun recognize()
   fun resultIterator(): OcrLineIterator
+  fun wordEvidence(): List<OcrWordEvidence> = emptyList()
   fun clear()
   fun stop()
   fun recycle()
@@ -48,9 +54,29 @@ private class NativeTesseractApi : OcrEngineApi {
       override fun begin() = iterator.begin()
       override fun text(): String? = iterator.getUTF8Text(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE)
       override fun bounds(): Rect = iterator.getBoundingRect(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE)
+      override fun confidence(): Float = iterator.confidence(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE)
       override fun next(): Boolean = iterator.next(TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE)
       override fun delete() = iterator.delete()
     }
+  }
+
+  override fun wordEvidence(): List<OcrWordEvidence> {
+    val iterator = delegate.getResultIterator()
+    val words = mutableListOf<OcrWordEvidence>()
+    try {
+      iterator.begin()
+      do {
+        val level = TessBaseAPI.PageIteratorLevel.RIL_WORD
+        val text = iterator.getUTF8Text(level)?.trim().orEmpty()
+        val bounds = iterator.getBoundingRect(level)
+        if (text.isNotEmpty() && bounds.width() > 0 && bounds.height() > 0) {
+          words += OcrWordEvidence(text, bounds, iterator.confidence(level))
+        }
+      } while (iterator.next(TessBaseAPI.PageIteratorLevel.RIL_WORD))
+    } finally {
+      iterator.delete()
+    }
+    return words
   }
   override fun clear() = delegate.clear()
   override fun stop() = delegate.stop()
@@ -83,10 +109,24 @@ internal class OcrEngine(
     }
   }
 
-  fun recognize(bitmap: Bitmap, pageWidth: Float, pageHeight: Float): JSONArray {
+  /** Backward-compatible line-only entry point used by the PDF merge path. */
+  fun recognize(bitmap: Bitmap, pageWidth: Float, pageHeight: Float): JSONArray =
+    recognize(bitmap, pageWidth, pageHeight, includeWordEvidence = false)
+
+  fun recognize(bitmap: Bitmap, pageWidth: Float, pageHeight: Float, includeWordEvidence: Boolean): JSONArray =
+    recognizeDetailed(bitmap, pageWidth, pageHeight, includeWordEvidence).lines
+
+  /** Diagnostic-only recognition result, including tight word bounds even when a word is not line-matched. */
+  fun recognizeDetailed(
+    bitmap: Bitmap,
+    pageWidth: Float,
+    pageHeight: Float,
+    includeWordEvidence: Boolean = true,
+  ): OcrRecognitionEvidence {
     check(!closed) { "The OCR engine has been released." }
     requireValidOcrGeometry(bitmap.width, bitmap.height, pageWidth, pageHeight)
     val lines = JSONArray()
+    val wordsJson = JSONArray()
     val scaleX = pageWidth / bitmap.width
     val scaleY = pageHeight / bitmap.height
     var iterator: OcrLineIterator? = null
@@ -97,26 +137,47 @@ internal class OcrEngine(
       val currentIterator = api.resultIterator()
       iterator = currentIterator
       currentIterator.begin()
+      val wordEvidence = if (includeWordEvidence) api.wordEvidence() else emptyList()
+      for (word in wordEvidence) {
+        if (word.text.isBlank() || word.bounds.width() <= 0 || word.bounds.height() <= 0) continue
+        val item = JSONObject()
+          .put("text", word.text)
+          .put("left", word.bounds.left * scaleX)
+          .put("top", word.bounds.top * scaleY)
+          .put("right", word.bounds.right * scaleX)
+          .put("bottom", word.bounds.bottom * scaleY)
+        val confidence = word.confidence
+        if (confidence != null && confidence.isFinite() && confidence in 0f..100f) {
+          item.put("confidence", confidence.toDouble())
+        }
+        wordsJson.put(item)
+      }
       var index = 0
       do {
         val text = currentIterator.text()?.trim().orEmpty()
         val bounds: Rect = currentIterator.bounds()
         if (text.isNotBlank() && bounds.width() > 0 && bounds.height() > 0) {
-          lines.put(
-            JSONObject()
-              .put("id", "ocr-$index")
-              .put("sourceText", text)
-              .put("translatedText", JSONObject.NULL)
-              .put("left", bounds.left * scaleX)
-              .put("top", bounds.top * scaleY)
-              .put("right", bounds.right * scaleX)
-              .put("bottom", bounds.bottom * scaleY)
-              .put("fontSize", (bounds.height() * scaleY).coerceAtLeast(6f))
-              .put("source", "ocr")
-              .put("objectIndex", JSONObject.NULL)
-              .put("objectIndices", JSONArray())
-              .put("status", "pending"),
-          )
+          val line = JSONObject()
+            .put("id", "ocr-$index")
+            .put("sourceText", text)
+            .put("translatedText", JSONObject.NULL)
+            .put("left", bounds.left * scaleX)
+            .put("top", bounds.top * scaleY)
+            .put("right", bounds.right * scaleX)
+            .put("bottom", bounds.bottom * scaleY)
+            .put("fontSize", (bounds.height() * scaleY).coerceAtLeast(6f))
+            .put("source", "ocr")
+            .put("objectIndex", JSONObject.NULL)
+            .put("objectIndices", JSONArray())
+            .put("status", "pending")
+          val confidence = currentIterator.confidence()
+          if (confidence != null && confidence.isFinite() && confidence in 0f..100f) {
+            line.put("ocrConfidence", confidence.toDouble())
+          }
+          if (includeWordEvidence) {
+            line.put("wordEvidence", wordsWithinLine(bounds, wordEvidence, scaleX, scaleY))
+          }
+          lines.put(line)
           index++
         }
       } while (currentIterator.next())
@@ -124,7 +185,7 @@ internal class OcrEngine(
       iterator?.delete()
       api.clear()
     }
-    return lines
+    return OcrRecognitionEvidence(lines, wordsJson)
   }
 
   /** Safe to call from the service lifecycle while recognize() is running. */
@@ -174,8 +235,31 @@ internal class OcrEngine(
     return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
   }
 
+  private fun wordsWithinLine(lineBounds: Rect, words: List<OcrWordEvidence>, scaleX: Float, scaleY: Float): JSONArray {
+    val output = JSONArray()
+    for (word in words) {
+      val intersectionWidth = (minOf(lineBounds.right, word.bounds.right) - maxOf(lineBounds.left, word.bounds.left)).coerceAtLeast(0)
+      val intersectionHeight = (minOf(lineBounds.bottom, word.bounds.bottom) - maxOf(lineBounds.top, word.bounds.top)).coerceAtLeast(0)
+      val wordArea = word.bounds.width().toLong() * word.bounds.height().toLong()
+      if (wordArea <= 0L || intersectionWidth.toLong() * intersectionHeight / wordArea.toDouble() < WORD_LINE_OVERLAP) continue
+      val item = JSONObject()
+        .put("text", word.text)
+        .put("left", word.bounds.left * scaleX)
+        .put("top", word.bounds.top * scaleY)
+        .put("right", word.bounds.right * scaleX)
+        .put("bottom", word.bounds.bottom * scaleY)
+      val confidence = word.confidence
+      if (confidence != null && confidence.isFinite() && confidence in 0f..100f) {
+        item.put("confidence", confidence.toDouble())
+      }
+      output.put(item)
+    }
+    return output
+  }
+
   private companion object {
     const val DATA_DIRECTORY = "tesseract"
+    const val WORD_LINE_OVERLAP = 0.5
     val DATA_BY_PRODUCT_LANGUAGE = mapOf(
       "en" to TrainedData("eng.traineddata", "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"),
       "ru" to TrainedData("rus.traineddata", "e16e5e036cce1d9ec2b00063cf8b54472625b9e14d893a169e2b0dedeb4df225"),

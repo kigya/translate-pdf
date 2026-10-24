@@ -1,0 +1,14 @@
+bb0(%0 : $*(String, UInt64), %1 : $*Never, %2 : $*String):
+%3 = load_borrow %2
+%6 = tuple_element_addr %0, 0
+%7 = tuple_element_addr %0, 1
+%8 = copy_value %3
+store %8 to [init] %6
+%10 = integer_literal $Builtin.IntLiteral, 0
+%11 = metatype $@thin UInt64.Type
+%12 = function_ref @$ss6UInt64V22_builtinIntegerLiteralABBI_tcfC : $@convention(method) (Builtin.IntLiteral, @thin UInt64.Type) -> UInt64
+%13 = apply %12(%10, %11) : $@convention(method) (Builtin.IntLiteral, @thin UInt64.Type) -> UInt64
+store %13 to [trivial] %7
+end_borrow %3
+%16 = tuple ()
+return %16

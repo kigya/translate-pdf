@@ -29,6 +29,7 @@ export type JobStatus =
 export type JobStage =
   | 'queued'
   | 'copying'
+  | 'loadingModel'
   | 'extracting'
   | 'ocr'
   | 'translating'
@@ -118,6 +119,14 @@ export interface DocumentSnapshot {
 }
 
 export interface JobSnapshot {
+  /** Pause has been requested; the owning worker is still saving/releasing. */
+  workerStopping?: boolean;
+  stageStartedAt?: number;
+  currentBlock?: number;
+  pageBlocks?: number;
+  completedPageBlocks?: number;
+  processedTokens?: number;
+  generatedTokens?: number;
   labelColor?: DocumentColor | null;
   id: string;
   documentId: string;
@@ -202,6 +211,8 @@ export interface BootstrapSnapshot {
   notifications?: NotificationPermissionSnapshot;
 }
 
+export type ActivitySnapshot = Pick<BootstrapSnapshot, 'jobs' | 'models' | 'notifications'>;
+
 export type NotificationPermissionStatus =
   | 'granted'
   | 'denied'
@@ -222,6 +233,17 @@ export interface JobDetails {
   job: JobSnapshot;
   pages: Array<{ index: number; status: PageSnapshot['status'] }>;
   selectedPage: PageSnapshot | null;
+  /** Version 3 preserves the source page map; version 2 remains readable for older results. */
+  pdfLayout?: {
+    layoutVersion: 2 | 3;
+    outputPageCount: number;
+    sourcePageCount: number;
+    pages: Array<{
+      outputPageIndex: number;
+      sourcePageIndex: number;
+      sourceOutputPageIndex: number;
+    }>;
+  } | null;
 }
 
 export interface ImportedDocument extends DocumentSnapshot {}
@@ -263,6 +285,7 @@ export interface SettingsUpdate {
 interface NativePdfTranslatorModule {
   setJobColor(jobId: string, color: string): Promise<string>;
   bootstrap(): Promise<string>;
+  getActivitySnapshot(): Promise<string>;
   pickPdf(): Promise<string>;
   pickDocument(): Promise<string>;
   renderDocxPreview(documentId: string, jobId: string | null, translated: boolean): Promise<string>;
@@ -275,6 +298,7 @@ interface NativePdfTranslatorModule {
   resumeJob(jobId: string): Promise<string>;
   cancelJob(jobId: string): Promise<string>;
   deleteJob(jobId: string): Promise<string>;
+  deleteDocument(documentId: string): Promise<string>;
   getJob(jobId: string, pageIndex: number): Promise<string>;
   renderPage(
     documentId: string,
@@ -329,6 +353,10 @@ function parseNullable<T>(raw: string, operation: string): T | null {
 export const PdfTranslator = {
   async bootstrap(): Promise<BootstrapSnapshot> {
     return parseJson(await requireNativeModule().bootstrap(), 'bootstrap');
+  },
+
+  async getActivitySnapshot(): Promise<ActivitySnapshot> {
+    return parseJson(await requireNativeModule().getActivitySnapshot(), 'getActivitySnapshot');
   },
 
   async pickPdf(): Promise<ImportedDocument | null> {
@@ -396,6 +424,9 @@ export const PdfTranslator = {
   },
   async deleteJob(jobId: string): Promise<void> {
     await requireNativeModule().deleteJob(jobId);
+  },
+  async deleteDocument(documentId: string): Promise<void> {
+    await requireNativeModule().deleteDocument(documentId);
   },
   async getJob(jobId: string, pageIndex = 0): Promise<JobDetails> {
     return parseJson(

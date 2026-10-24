@@ -29,6 +29,7 @@ enum TranslatorStorePipelineTest {
     try testOperationsWaitForBackgroundTaskRestoration()
     try testSQLiteTypesAndFailuresDoNotPartiallyCommit()
     try testDocumentJobAndExportLifecycle()
+    try testLightweightProgressAndSharedDocumentDeletion()
     try testPageMetadataAndJsonFailuresRetainCheckpoints()
     try testMissingPinnedInputsAndLegacySourceMigration()
     try testDocxAndOnlineJobMigrationAndConsent()
@@ -41,7 +42,112 @@ enum TranslatorStorePipelineTest {
     try testMyMemoryCancellationCannotBeReplacedByLateProtocolData()
     try testDocxWarningsAndExpandedTranslationCheckpoint()
     try testSchema6LabelsAndRatingPreferencesPreserveLegacyState()
-    print("PASS 29 TranslatorStore pipeline/catalog/language/online/labels tests")
+    try testLocalTranslationMemoReusesOnlyExactSuccessfulRequests()
+    try testLocalTranslationMemoNeverCachesFailuresOrBlankText()
+    try testLocalTranslationMemoEvictsLeastRecentlyUsedEntry()
+    try testLocalTranslationMemoHonorsUtf8BudgetAndJobClear()
+    try testLocalTranslationMemoUsesProductionDefaultBounds()
+    print("PASS 36 TranslatorStore pipeline/catalog/language tests")
+  }
+
+  private static func testLocalTranslationMemoReusesOnlyExactSuccessfulRequests() throws {
+    var calls=0
+    let memo=LocalTranslationMemo()
+    let original=try memo.translate("Warning",glossary:"glossary",context:"context",source:"en",target:"ru",using:{text,glossary,context,source,target in
+      calls += 1
+      return try! jsonString(["text":"Перевод: \(text)","tokens":17,"seconds":2.5,"request":"\(glossary)|\(context)|\(source)|\(target)"])
+    })
+    let repeated=try jsonObject(memo.translate("Warning",glossary:"glossary",context:"context",source:"en",target:"ru",using:{_,_,_,_,_ in
+      calls += 1
+      return "{}"
+    }))
+    let originalText=try jsonObject(original)["text"] as? String
+    try expect(repeated["text"] as? String=="Перевод: Warning" && repeated["text"] as? String==originalText,"a cache hit should return the exact previously translated text")
+    try expect(repeated["tokens"] as? Int==0 && repeated["seconds"] as? Int==0 && repeated["tokensPerSecond"] as? Int==0 && repeated["cacheHit"] as? Bool==true,"cache hits must not claim inference tokens or elapsed time")
+    try expect(calls==1,"a repeated exact request must not invoke native inference again")
+    let variations=[
+      ("Warning","different glossary","context","en","ru"),
+      ("Warning","glossary","different context","en","ru"),
+      ("Different source","glossary","context","en","ru"),
+      ("Warning","glossary","context","de","ru"),
+      ("Warning","glossary","context","en","de")
+    ]
+    for (text,glossary,context,source,target) in variations {
+      _=try memo.translate(text,glossary:glossary,context:context,source:source,target:target,using:{text,_,_,_,_ in
+        calls += 1
+        return try! jsonString(["text":"translated \(text)"])
+      })
+    }
+    try expect(calls==6,"source, target, source text, glossary, and context must each be part of the exact-request cache key")
+  }
+
+  private static func testLocalTranslationMemoNeverCachesFailuresOrBlankText() throws {
+    for response in ["{\"error\":\"interrupted\"}",try jsonString(["text":" \n "]),"invalid json"] {
+      var calls=0
+      let memo=LocalTranslationMemo()
+      for _ in 0..<2 {
+        do {
+          _=try memo.translate("source",glossary:"",context:"",source:"en",target:"ru",using:{_,_,_,_,_ in calls += 1;return response})
+        } catch {
+          try expect(response=="invalid json","only malformed native JSON should surface a parse failure")
+        }
+      }
+      try expect(calls==2,"failed or blank native responses must be retried rather than cached")
+    }
+  }
+
+  private static func testLocalTranslationMemoEvictsLeastRecentlyUsedEntry() throws {
+    var calls=0
+    let memo=LocalTranslationMemo(maxEntries:2)
+    for text in ["a","b","a","c","b"] {
+      _=try memo.translate(text,glossary:"",context:"",source:"en",target:"ru",using:{text,_,_,_,_ in calls += 1;return try! jsonString(["text":text,"tokens":1,"seconds":0.1])})
+    }
+    try expect(calls==4,"touching a cached entry must make the untouched entry the next LRU eviction")
+  }
+
+  private static func testLocalTranslationMemoHonorsUtf8BudgetAndJobClear() throws {
+    let output=try jsonString(["text":String(repeating:"Ж",count:20),"tokens":1,"seconds":0.1])
+    let key=try jsonString(["x","","","en","ru"])
+    let entryBytes=key.utf8.count+output.utf8.count
+    try expect(output.utf8.count>output.count,"the budget fixture must distinguish UTF-8 bytes from character count")
+    var calls=0
+    let tooSmall=LocalTranslationMemo(maxBytes:entryBytes-1)
+    for _ in 0..<2 { _=try tooSmall.translate("x",glossary:"",context:"",source:"en",target:"ru",using:{_,_,_,_,_ in calls += 1;return output}) }
+    try expect(calls==2,"an entry one UTF-8 byte over budget must remain uncached")
+
+    let shortOutput=try jsonString(["text":"a"])
+    let shortKey=try jsonString(["a","","","en","ru"])
+    let shortEntryBytes=shortOutput.utf8.count+shortKey.utf8.count
+    let bounded=LocalTranslationMemo(maxBytes:shortEntryBytes*2)
+    for text in ["a","b","a","c","b"] {
+      _=try bounded.translate(text,glossary:"",context:"",source:"en",target:"ru",using:{text,_,_,_,_ in calls += 1;return try! jsonString(["text":text])})
+    }
+    try expect(calls==6,"the UTF-8 byte budget must evict the least recently used entry when the next value exceeds its capacity")
+    bounded.clear()
+    let cleared=try jsonObject(bounded.translate("a",glossary:"",context:"",source:"en",target:"ru",using:{text,_,_,_,_ in calls += 1;return try! jsonString(["text":text])}))
+    try expect(cleared["cacheHit"] as? Bool != true && calls==7,"clearing at the job boundary must force fresh inference for an earlier request")
+  }
+
+  private static func testLocalTranslationMemoUsesProductionDefaultBounds() throws {
+    var entryCalls=0
+    let defaultMemo=LocalTranslationMemo()
+    for index in 0..<256 {
+      let text=String(index)
+      _=try defaultMemo.translate(text,glossary:"",context:"",source:"en",target:"ru",using:{text,_,_,_,_ in entryCalls += 1;return try! jsonString(["text":text])})
+    }
+    _=try defaultMemo.translate("0",glossary:"",context:"",source:"en",target:"ru",using:{_,_,_,_,_ in entryCalls += 1;return "{}"})
+    _=try defaultMemo.translate("256",glossary:"",context:"",source:"en",target:"ru",using:{text,_,_,_,_ in entryCalls += 1;return try! jsonString(["text":text])})
+    _=try defaultMemo.translate("0",glossary:"",context:"",source:"en",target:"ru",using:{_,_,_,_,_ in entryCalls += 1;return "{}"})
+    _=try defaultMemo.translate("1",glossary:"",context:"",source:"en",target:"ru",using:{text,_,_,_,_ in entryCalls += 1;return try! jsonString(["text":text])})
+    try expect(entryCalls==258,"the default cache should hold 256 entries and evict the least recently used entry")
+
+    var byteCalls=0
+    let defaultByteMemo=LocalTranslationMemo()
+    let large="Ж".padding(toLength:600_000,withPad:"Ж",startingAt:0)
+    for _ in 0..<2 {
+      _=try defaultByteMemo.translate(large,glossary:"",context:"",source:"en",target:"ru",using:{text,_,_,_,_ in byteCalls += 1;return try! jsonString(["text":text])})
+    }
+    try expect(byteCalls==2,"the default 2 MiB cap should reject a UTF-8 entry whose combined key and response exceed its byte budget")
   }
 
   private static func testDocxAndOnlineJobMigrationAndConsent() throws {
@@ -230,10 +336,12 @@ enum TranslatorStorePipelineTest {
 
     let migrated=try TranslatorStore(directory:fixture.directory)
     let version=try migrated.query("PRAGMA user_version").first?["user_version"] as? Int64
-    try expect(version==6,"opening a schema 5 store should apply additive schema 6")
+    try expect(version==7,"opening a schema 5 store should apply additive schemas 6 and 7")
     let job=try migrated.job("job-schema5")
     try expect(job?["status"] as? String=="completed" && job?["modelId"] as? String==ModelCatalog.recommendedId && job?["labelColor"] is NSNull,"schema migration should retain job/model state and initialize labels as null")
     try expect(try migrated.pageRows("job-schema5").count==1 && migrated.page("job-schema5",index:0)?["blocks"] != nil,"schema migration must retain translation checkpoints")
+    let counters=try migrated.query("SELECT completed_blocks,total_blocks FROM pages WHERE job_id=? AND page_index=0",["job-schema5"]).first
+    try expect(counters?["completed_blocks"] as? Int64==1 && counters?["total_blocks"] as? Int64==1,"schema 7 must backfill lightweight page counters from existing block checkpoints")
     try expect(try migrated.glossary().count==1 && migrated.setting("theme",fallback:"system")=="dark","schema migration must retain glossary and settings")
     try expect(try migrated.appPreferences()["appRating"] as? Int==0 && migrated.appPreferences()["librarySort"] as? String=="recent","new app preferences should default safely for existing users")
 
@@ -243,7 +351,9 @@ enum TranslatorStorePipelineTest {
     try expectThrows("unknown label colors must be rejected") { _=try migrated.setJobColor("job-schema5",color:"black") }
     try expectThrows("missing jobs cannot receive labels") { _=try migrated.setJobColor("missing-job",color:"red") }
     _=try migrated.addJob(id:"job-running-label",input:["documentId":"document-1","modelId":ModelCatalog.recommendedId,"sourceLanguage":"en","targetLanguage":"ru"],pageCount:1)
-    try expectThrows("nonterminal jobs must reject labels") { _=try migrated.setJobColor("job-running-label",color:"red") }
+    try expect(try migrated.setJobColor("job-running-label",color:"red")["labelColor"] as? String=="red","active jobs must allow color labels")
+    try migrated.updateJob("job-running-label",status:"canceled")
+    try expectThrows("canceled jobs must reject labels") { _=try migrated.setJobColor("job-running-label",color:"red") }
 
     var invalidPreferencesRejected=false
     do {
@@ -587,13 +697,21 @@ enum TranslatorStorePipelineTest {
 
   private static func testSQLiteTypesAndFailuresDoNotPartiallyCommit() throws {
     let fixture = try Fixture()
-    let row = try fixture.store.query("SELECT 42 AS integer_value,2.5 AS real_value,'text' AS text_value,x'0102' AS blob_value,NULL AS null_value,x'' AS empty_blob").first!
+    let row = try fixture.store.query("SELECT 42 AS integer_value,2.5 AS real_value,'text' AS text_value,x'0102' AS blob_value,NULL AS null_value,x'' AS empty_blob,'' AS empty_text,CAST(x'410042' AS TEXT) AS embedded_nul").first!
     try expect(row["integer_value"] as? Int64 == 42, "SQLite INTEGER must retain its value")
     try expect(row["real_value"] as? Double == 2.5, "SQLite REAL must retain its fractional part")
     try expect(row["text_value"] as? String == "text", "SQLite TEXT must remain text")
     try expect(row["blob_value"] as? Data == Data([1,2]), "SQLite BLOB must retain its actual bytes")
     try expect(row["null_value"] is NSNull, "SQLite NULL must remain explicit")
     try expect(row["empty_blob"] as? Data == Data(), "SQLite empty BLOB must retain its column and remain distinct from NULL")
+    try expect(row["empty_text"] as? String == "", "SQLite empty TEXT must retain its column and remain distinct from NULL")
+    try expect(row["embedded_nul"] as? String == "A\0B", "SQLite TEXT must use its explicit byte length rather than truncate at an embedded NUL")
+    do {
+      _ = try fixture.store.query("SELECT CAST(x'80' AS TEXT) AS malformed_utf8")
+      throw TestFailure(description: "invalid UTF-8 in a persisted SQLite TEXT value must fail materialization")
+    } catch let error as NSError {
+      try expect(error.localizedDescription.contains("invalid UTF-8") && error.localizedDescription.contains("malformed_utf8"), "invalid text errors should identify the failed SQLite column")
+    }
     for (value, expected) in [(Int(7) as Any,Int64(7)),(Int64(8) as Any,Int64(8)),(NSNumber(value:9) as Any,Int64(9))] {
       try expect(try fixture.store.query("SELECT ? AS value",[value]).first?["value"] as? Int64 == expected, "integer Foundation bridging must preserve numeric values")
     }
@@ -611,6 +729,21 @@ enum TranslatorStorePipelineTest {
     try expect(try fixture.store.setting("stable",fallback:"") == "original", "failed binding must not commit a partial update")
     try expectThrows("SQLite constraints must surface to the caller") {
       try fixture.store.execute("INSERT INTO settings(key,value) VALUES('stable','duplicate')")
+    }
+    _ = try fixture.insertJob(id: "job-corrupt-null-id")
+    try fixture.store.execute("UPDATE jobs SET id=NULL WHERE id=?", ["job-corrupt-null-id"])
+    do {
+      _ = try fixture.store.jobs()
+      throw TestFailure(description: "job listing must fail closed for a persisted NULL primary identifier")
+    } catch let error as NSError {
+      try expect(error.localizedDescription.contains("non-text identifier"), "a NULL job identifier should produce a meaningful history error")
+    }
+    try fixture.store.execute("UPDATE jobs SET id=x'0102' WHERE id IS NULL")
+    do {
+      _ = try fixture.store.jobs()
+      throw TestFailure(description: "job listing must fail closed for a persisted BLOB primary identifier")
+    } catch let error as NSError {
+      try expect(error.localizedDescription.contains("non-text identifier"), "a BLOB job identifier should produce a meaningful history error")
     }
     try expectThrows("unavailable parent directory must fail opening the private database") {
       _ = try TranslatorStore(directory:fixture.directory.appendingPathComponent("missing/parent"))
@@ -652,6 +785,52 @@ enum TranslatorStorePipelineTest {
     try expect(try fixture.store.glossaryText("term") == "source translates to target", "specific term lookup must trim and use its saved pair")
     try fixture.store.deleteGlossary("term")
     try expect(try fixture.store.glossary().isEmpty && fixture.store.glossaryText("term").isEmpty, "deleted terms must no longer enter new snapshots")
+  }
+
+  private static func testLightweightProgressAndSharedDocumentDeletion() throws {
+    let fixture=try Fixture()
+    _=try fixture.insertJob(id:"job-progress-a")
+    _=try fixture.insertJob(id:"job-progress-b")
+    let blocks=[["status":"translated"],["status":"running"],["status":"failed"]]
+    try fixture.store.savePage(jobId:"job-progress-a",index:0,status:"running",blocks:try jsonString(blocks))
+    try fixture.store.setPageProgress(jobId:"job-progress-a",index:0,currentBlock:1,pageBlocks:3)
+    let progress=try fixture.store.job("job-progress-a")!
+    try expect(progress["currentBlock"] as? Int64==1 && progress["pageBlocks"] as? Int64==3,"the active page cursor and block count must be stored without parsing checkpoint JSON during reads")
+    try expect(progress["completedBlocks"] as? Int64==2 && progress["completedPageBlocks"] as? Int64==2 && progress["totalBlocks"] as? Int64==3,"page counters must expose completed and discovered blocks in the lightweight job snapshot")
+    try expect(progress["stageStartedAt"] as? Int64 != nil,"each job snapshot must include a stage timing origin")
+    try fixture.store.execute("UPDATE jobs SET total_pages=2 WHERE id=?",["job-progress-a"])
+    let incomplete=try fixture.store.job("job-progress-a")!
+    try expect(incomplete["totalBlocks"] is NSNull && incomplete["discoveredBlocks"] as? Int64==3,"undiscovered pages must keep the document-wide block total unknown")
+    try fixture.store.execute("UPDATE jobs SET total_pages=1 WHERE id=?",["job-progress-a"])
+    try fixture.store.updateJob("job-progress-a",currentPage:0)
+    let restartedPage=try fixture.store.job("job-progress-a")!
+    try expect(restartedPage["currentBlock"] as? Int64==0 && restartedPage["pageBlocks"] as? Int64==3,"restarting a page resets its active cursor while retaining the saved checkpoint's discovered block count")
+    try expect(try fixture.store.deleteJobAndReleaseUnsharedDocument("job-progress-a")==nil,"deleting one of two translations must preserve their shared source")
+    try expect(try fixture.store.documentPath("document-1")==fixture.documentURL.path && fixture.store.job("job-progress-b") != nil,"a shared source and its remaining translation must survive single-job deletion")
+    try expect(try fixture.store.deleteJobAndReleaseUnsharedDocument("job-progress-b")==nil,"an external source must not be returned for deletion with its final translation")
+    try expect(try fixture.store.documentPath("document-1")==fixture.documentURL.path,"the final translation deletion must retain metadata for an external original")
+    try expectThrows("deleting a missing translation must fail without changing unrelated sources") { _ = try fixture.store.deleteJobAndReleaseUnsharedDocument("missing-job") }
+    let privateId="private-\(UUID().uuidString)"
+    let privateSource=AppPaths.documents.appendingPathComponent(privateId+".pdf")
+    defer { try? FileManager.default.removeItem(at:privateSource) }
+    try Data("private import".utf8).write(to:privateSource)
+    _=try fixture.store.saveDocument(id:privateId,name:"private.pdf",path:privateSource.path,pages:1,sourceSHA256:sha256(at:privateSource))
+    _=try fixture.store.addJob(id:privateId+"-a",input:["documentId":privateId,"modelId":ModelCatalog.recommendedId,"sourceLanguage":"en","targetLanguage":"ru"],pageCount:1)
+    _=try fixture.store.addJob(id:privateId+"-b",input:["documentId":privateId,"modelId":ModelCatalog.recommendedId,"sourceLanguage":"en","targetLanguage":"ru"],pageCount:1)
+    try expect(try fixture.store.deleteJobAndReleaseUnsharedDocument(privateId+"-a")==nil,"deleting one private-source translation must retain the shared source")
+    try expect(try fixture.store.deleteJobAndReleaseUnsharedDocument(privateId+"-b")==privateSource.path,"the final translation should release its now-unshared private source")
+    let rawId="raw-\(UUID().uuidString)",rawSource=AppPaths.documents.appendingPathComponent(rawId+".pdf")
+    defer { try? FileManager.default.removeItem(at:rawSource) }
+    try Data("raw import".utf8).write(to:rawSource)
+    let raw=try fixture.store.saveDocument(id:rawId,name:"raw.pdf",path:rawSource.path,pages:1,sourceSHA256:sha256(at:rawSource))
+    try expect(raw["id"] as? String==rawId && (try fixture.store.deleteUntranslatedDocument(rawId))==rawSource.path,"an unprocessed private import can be deleted and returns its own source path")
+    try expectThrows("a missing raw import cannot release a source") { _ = try fixture.store.deleteUntranslatedDocument("missing-import") }
+    let externalId="external-\(UUID().uuidString)"
+    _ = try fixture.store.saveDocument(id:externalId,name:"external.pdf",path:fixture.documentURL.path,pages:1,sourceSHA256:sha256(at:fixture.documentURL))
+    try expectThrows("an external source must not be deleted through the raw-import action") { _ = try fixture.store.deleteUntranslatedDocument(externalId) }
+    try expect(try fixture.store.documentPath(externalId)==fixture.documentURL.path,"a rejected external raw import must retain its source path")
+    _=try fixture.insertJob(id:"job-history")
+    try expectThrows("an import with translation history cannot be deleted as a raw document") { _=try fixture.store.deleteUntranslatedDocument("document-1") }
   }
 
   private static func testPageMetadataAndJsonFailuresRetainCheckpoints() throws {

@@ -1,0 +1,18 @@
+bb0(%0 : $Builtin.RawPointer):
+alloc_global @HITS_GLOBAL
+%2 = global_addr @HITS_GLOBAL : $*Dictionary<String, Dictionary<String, UInt64>>
+%3 = function_ref @REGISTRY_ACCESSOR : $@convention(thin) () -> Builtin.RawPointer
+%4 = apply %3() : $@convention(thin) () -> Builtin.RawPointer
+%5 = pointer_to_address %4 to [strict] $*Dictionary<String, Array<String>>
+%6 = load [copy] %5
+%7 = function_ref @OUTER_CALLBACK : $@convention(thin) @substituted <τ_0_0, τ_0_1> (@in_guaranteed τ_0_0) -> (@out τ_0_1, @error any Error) for <Array<String>, Dictionary<String, UInt64>>
+%8 = thin_to_thick_function %7 to $@noescape @callee_guaranteed @substituted <τ_0_0, τ_0_1> (@in_guaranteed τ_0_0) -> (@out τ_0_1, @error any Error) for <Array<String>, Dictionary<String, UInt64>>
+%9 = function_ref @$sSD9mapValuesySDyxqd__Gqd__q_KXEKlF : $@convention(method) <τ_0_0, τ_0_1 where τ_0_0 : Hashable><τ_1_0> (@guaranteed @noescape @callee_guaranteed @substituted <τ_0_0, τ_0_1> (@in_guaranteed τ_0_0) -> (@out τ_0_1, @error any Error) for <τ_0_1, τ_1_0>, @guaranteed Dictionary<τ_0_0, τ_0_1>) -> (@owned Dictionary<τ_0_0, τ_1_0>, @error any Error)
+try_apply %9<String, Array<String>, Dictionary<String, UInt64>>(%8, %6) : $@convention(method) <τ_0_0, τ_0_1 where τ_0_0 : Hashable><τ_1_0> (@guaranteed @noescape @callee_guaranteed @substituted <τ_0_0, τ_0_1> (@in_guaranteed τ_0_0) -> (@out τ_0_1, @error any Error) for <τ_0_1, τ_1_0>, @guaranteed Dictionary<τ_0_0, τ_0_1>) -> (@owned Dictionary<τ_0_0, τ_1_0>, @error any Error), normal bb1, error bb2
+bb1(%11 : @owned $Dictionary<String, Dictionary<String, UInt64>>):
+destroy_value %6
+store %11 to [init] %2
+%14 = tuple ()
+return %14
+bb2(%16 : @owned $any Error):
+unreachable

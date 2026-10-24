@@ -1,0 +1,25 @@
+bb0(%0 : $*Dictionary<String, UInt64>, %1 : $*Array<String>):
+%2 = load_borrow %1
+%6 = metatype $@thin Dictionary<String, UInt64>.Type
+%7 = alloc_stack $Array<String>
+%8 = store_borrow %2 to %7
+%9 = function_ref @PAIR_CALLBACK : $@convention(thin) @substituted <τ_0_0, τ_0_1, τ_0_2> (@in_guaranteed τ_0_0) -> (@out τ_0_2, @error_indirect τ_0_1) for <String, Never, (String, UInt64)>
+%10 = thin_to_thick_function %9 to $@noescape @callee_guaranteed @substituted <τ_0_0, τ_0_1, τ_0_2> (@in_guaranteed τ_0_0) -> (@out τ_0_2, @error_indirect τ_0_1) for <String, Never, (String, UInt64)>
+%11 = function_ref @$sSlsE3mapySayqd__Gqd__7ElementQzqd_0_YKXEqd_0_YKs5ErrorRd_0_r0_lF : $@convention(method) <τ_0_0 where τ_0_0 : Collection><τ_1_0, τ_1_1 where τ_1_1 : Error> (@guaranteed @noescape @callee_guaranteed @substituted <τ_0_0, τ_0_1, τ_0_2> (@in_guaranteed τ_0_0) -> (@out τ_0_2, @error_indirect τ_0_1) for <τ_0_0.Element, τ_1_1, τ_1_0>, @in_guaranteed τ_0_0) -> (@owned Array<τ_1_0>, @error_indirect τ_1_1)
+%12 = alloc_stack $Never
+try_apply %11<Array<String>, (String, UInt64), Never>(%12, %10, %8) : $@convention(method) <τ_0_0 where τ_0_0 : Collection><τ_1_0, τ_1_1 where τ_1_1 : Error> (@guaranteed @noescape @callee_guaranteed @substituted <τ_0_0, τ_0_1, τ_0_2> (@in_guaranteed τ_0_0) -> (@out τ_0_2, @error_indirect τ_0_1) for <τ_0_0.Element, τ_1_1, τ_1_0>, @in_guaranteed τ_0_0) -> (@owned Array<τ_1_0>, @error_indirect τ_1_1), normal bb1, error bb2
+bb1(%14 : @owned $Array<(String, UInt64)>):
+dealloc_stack %12
+end_borrow %8
+dealloc_stack %7
+%18 = alloc_stack $Array<(String, UInt64)>
+store %14 to [init] %18
+%20 = function_ref @$sSD20uniqueKeysWithValuesSDyxq_Gqd__n_tcSTRd__x_q_t7ElementRtd__lufC : $@convention(method) <τ_0_0, τ_0_1 where τ_0_0 : Hashable><τ_1_0 where τ_1_0 : Sequence, τ_1_0.Element == (τ_0_0, τ_0_1)> (@in τ_1_0, @thin Dictionary<τ_0_0, τ_0_1>.Type) -> @owned Dictionary<τ_0_0, τ_0_1>
+%21 = apply %20<String, UInt64, Array<(String, UInt64)>>(%18, %6) : $@convention(method) <τ_0_0, τ_0_1 where τ_0_0 : Hashable><τ_1_0 where τ_1_0 : Sequence, τ_1_0.Element == (τ_0_0, τ_0_1)> (@in τ_1_0, @thin Dictionary<τ_0_0, τ_0_1>.Type) -> @owned Dictionary<τ_0_0, τ_0_1>
+dealloc_stack %18
+store %21 to [init] %0
+end_borrow %2
+%25 = tuple ()
+return %25
+bb2:
+unreachable

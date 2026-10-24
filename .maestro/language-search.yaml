@@ -1,0 +1,36 @@
+appId: dev.kigya.translatepdf
+name: Language search aliases and diacritics
+tags:
+  - smoke
+  - T30
+---
+- assertVisible: "Translate documents"
+- tapOn:
+    text: "Settings"
+    waitToSettleTimeoutMs: 500
+- tapOn:
+    text: "App language"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "System default"
+- tapOn:
+    text: "Search"
+    waitToSettleTimeoutMs: 500
+- repeat:
+    times: 10
+    commands:
+      - eraseText
+      - inputText: "French"
+      - assertVisible: "Français"
+      - eraseText
+      - inputText: "francais"
+      - assertVisible: "Français"
+- eraseText
+- inputText: "__no_such_language__"
+- assertNotVisible: "Français"
+- eraseText
+- assertVisible: "System default"
+- hideKeyboard
+- back
+- assertVisible: "App language"
+- back
+- assertVisible: "Translate documents"

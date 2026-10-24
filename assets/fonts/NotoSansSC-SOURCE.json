@@ -1,0 +1,14 @@
+{
+  "repository": "google/fonts",
+  "revision": "47d54ca1ebb14fd864695f1d39dc734f39017c33",
+  "source": "ofl/notosanssc/NotoSansSC[wght].ttf",
+  "sourceSHA256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+  "instance": {
+    "wght": 400,
+    "fonttools": "4.60.1",
+    "recalcTimestamp": false
+  },
+  "bytes": 10595948,
+  "sha256": "b7bebb49c3c6b0266362cf75dd9bdd9bf5fbe5fb390be8f7808ebedef376de76",
+  "license": "OFL-NotoSansSC.txt"
+}

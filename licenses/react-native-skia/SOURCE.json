@@ -1,0 +1,194 @@
+{
+  "wrapper": "@shopify/react-native-skia@2.14.0",
+  "prebuilt_packages": [
+    "react-native-skia-android@154.0.0",
+    "react-native-skia-apple-ios@154.0.0"
+  ],
+  "build_run": "https://github.com/Shopify/react-native-skia/actions/runs/34695612150",
+  "wrapper_build_commit": "ce6353b7177a6e4100c9282cc7a77669824786ef",
+  "skia_source_commit": "9f9e6beb751091ef69163d2b4fdcd1e711b594ac",
+  "notice_files": [
+    {
+      "file": "third-party/expat/COPYING",
+      "sha256": "31b15de82aa19a845156169a17a5488bf597e561b2c318d159ed583139b25e87",
+      "source": "https://chromium.googlesource.com/external/github.com/libexpat/libexpat.git/+/6154446fccefbf3ca644894f598969113b0c7bcd/COPYING?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/harfbuzz/COPYING",
+      "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+      "source": "https://chromium.googlesource.com/external/github.com/harfbuzz/harfbuzz.git/+/9cb1fee51069b206effb4736e443b038d230789d/COPYING?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/libjpeg-turbo/LICENSE.md",
+      "sha256": "96f5b328adbb78eeaaec6980d73fd558cb1e4d62560ed615646bc3cf5e532430",
+      "source": "https://chromium.googlesource.com/chromium/deps/libjpeg_turbo.git/+/e14cbfaa85529d47f9f55b0f104a579c1061f9ad/LICENSE.md?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/libjpeg-turbo/README.ijg",
+      "sha256": "75815e3bf6484201a3c3d17a1bbf10f2e8e3237f84df10a2357ea896db2a81d6",
+      "source": "https://chromium.googlesource.com/chromium/deps/libjpeg_turbo.git/+/e14cbfaa85529d47f9f55b0f104a579c1061f9ad/README.ijg?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/libpng/LICENSE",
+      "sha256": "bdb0a645ea18c60507d0368379b1ac5474b92255fcc2d115e07486a7672ba526",
+      "source": "https://skia.googlesource.com/third_party/libpng.git/+/d5515b5b8be3901aac04e5bd8bd5c89f287bcd33/LICENSE?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/libwebp/COPYING",
+      "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf",
+      "source": "https://chromium.googlesource.com/webm/libwebp.git/+/845d5476a866141ba35ac133f856fa62f0b7445f/COPYING?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/libwebp/PATENTS",
+      "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c",
+      "source": "https://chromium.googlesource.com/webm/libwebp.git/+/845d5476a866141ba35ac133f856fa62f0b7445f/PATENTS?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/zlib/LICENSE",
+      "sha256": "e1cfcc55c325b3f78cf55df9664abaa066e2271dffe8213347d9fccdfbac8f2c",
+      "source": "https://chromium.googlesource.com/chromium/src/third_party/zlib/+/646b7f569718921d7d4b5b8e22572ff6c76f2596/LICENSE?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/piex/LICENSE",
+      "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+      "source": "https://android.googlesource.com/platform/external/piex.git/+/bb217acdca1cc0c16b704669dd6f91a1b509c406/LICENSE?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/dng_sdk/NOTICE",
+      "sha256": "b60660d2a5a3ee1a49366400e7e9b01c1872356d6f08942f095d356a44deb5f6",
+      "source": "https://android.googlesource.com/platform/external/dng_sdk.git/+/dbe0a676450d9b8c71bf00688bb306409b779e90/NOTICE?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/dng_sdk/PATENTS",
+      "sha256": "bd958835863f42d8479457503a7ed716424d35b6e76ef76db06b72b109696ec4",
+      "source": "https://android.googlesource.com/platform/external/dng_sdk.git/+/dbe0a676450d9b8c71bf00688bb306409b779e90/PATENTS?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/wuffs/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "source": "https://skia.googlesource.com/external/github.com/google/wuffs-mirror-release-c.git/+/e3f919ccfe3ef542cfc983a82146070258fb57f8/LICENSE?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/freetype/LICENSE.TXT",
+      "sha256": "bd36c8b474855fa294c2ec5c184544478ef3720aad37d65a6296a4f264fd2d3b",
+      "source": "https://chromium.googlesource.com/chromium/src/third_party/freetype2.git/+/264b5fbf5b912b39f98d038bf75d39be0a73f21b/LICENSE.TXT?format=TEXT",
+      "platforms": [
+        "android"
+      ]
+    },
+    {
+      "file": "third-party/freetype/docs/FTL.TXT",
+      "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f",
+      "source": "https://chromium.googlesource.com/chromium/src/third_party/freetype2.git/+/264b5fbf5b912b39f98d038bf75d39be0a73f21b/docs/FTL.TXT?format=TEXT",
+      "platforms": [
+        "android"
+      ]
+    },
+    {
+      "file": "third-party/cpu-features/NOTICE",
+      "sha256": "4102cd5ae35cbdeb0638c350966185e028ea9da863859f70e231c3cb273118d1",
+      "source": "https://android.googlesource.com/platform/ndk/+/ndk-r27c/sources/android/cpufeatures/cpu-features.c?format=TEXT",
+      "platforms": [
+        "android"
+      ]
+    },
+    {
+      "file": "third-party/icu/LICENSE",
+      "sha256": "e55522d81edc687a341a4411e0776e54ca654e90147f354a90458aaced4116af",
+      "source": "https://chromium.googlesource.com/chromium/deps/icu.git/+/d578f2e8b7bd5938e21cfb6bf15c079e0aa5b738/LICENSE?format=TEXT",
+      "platforms": [
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/libgrapheme/LICENSE",
+      "sha256": "35d4a3ecb4c641cef56fcf983d8addb31069603142a93179884164dad78457e2",
+      "source": "https://skia.googlesource.com/external/github.com/FRIGN/libgrapheme/+/c0cab63c5300fa12284194fbef57aa2ed62a94c0/LICENSE?format=TEXT",
+      "platforms": [
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/wuffs/SKIA-LICENSE",
+      "sha256": "e59bb5c5c6ba426a9ac4ba9fe667ad14c5166b12aa25be8af1d122b14fbe2e36",
+      "source": "https://skia.googlesource.com/skia/+/9f9e6beb751091ef69163d2b4fdcd1e711b594ac/third_party/wuffs/LICENSE?format=TEXT",
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/CSSColorParser/NOTICE",
+      "sha256": "f4d9e5c29b6ea45329c87af8e3d655916dff1a19139fbc08b517b7620a572d4c",
+      "source": "https://registry.npmjs.org/@shopify/react-native-skia/-/react-native-skia-2.14.0.tgz",
+      "package_paths": [
+        "cpp/api/third_party/CSSColorParser.h"
+      ],
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    },
+    {
+      "file": "third-party/wrapper/NOTICE",
+      "sha256": "530dcf5f89dcd981e04bf82c5993494c688a4d5a3f7c4fa219b4511edb0207b6",
+      "source": "https://registry.npmjs.org/@shopify/react-native-skia/-/react-native-skia-2.14.0.tgz",
+      "package_paths": [
+        "cpp/api/third_party/base64.h",
+        "cpp/api/third_party/SkottieUtils.cpp"
+      ],
+      "platforms": [
+        "android",
+        "ios"
+      ]
+    }
+  ]
+}

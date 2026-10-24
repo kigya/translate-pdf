@@ -1,0 +1,6 @@
+// Finite transfer rule. The complete SSA/CFG below must match; only SSA spelling and debug/profiling may differ.
+bb0(%0 : @guaranteed $String, %1 : @guaranteed $String, %2 : $@thin __FBCov.Type):
+%3 = function_ref @RECORDER : $@convention(method) (@guaranteed String, @guaranteed String, @thin __FBCov.Type) -> ()
+%4 = apply %3(%0, %1, %2) : $@convention(method) (@guaranteed String, @guaranteed String, @thin __FBCov.Type) -> ()
+%5 = tuple ()
+return %5

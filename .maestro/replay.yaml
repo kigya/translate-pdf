@@ -1,0 +1,50 @@
+appId: dev.kigya.translatepdf
+name: Three-scene tutorial replay and return
+tags:
+  - smoke
+  - T39
+---
+- assertVisible: "Translate documents"
+- tapOn:
+    text: "Settings"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "App language"
+- tapOn:
+    text: "View tutorial"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "Documents, in your language"
+- assertNotVisible: "Previous"
+- back
+- assertVisible: "App language"
+- tapOn:
+    text: "View tutorial"
+    waitToSettleTimeoutMs: 500
+- tapOn:
+    text: "Next"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "Online or on your device"
+- tapOn:
+    text: "Next"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "Compare and save"
+- tapOn:
+    text: "Next"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "App language"
+- tapOn:
+    text: "View tutorial"
+    waitToSettleTimeoutMs: 500
+- swipe:
+    direction: LEFT
+- assertVisible: "Online or on your device"
+- swipe:
+    direction: RIGHT
+- assertVisible: "Documents, in your language"
+- tapOn:
+    text: "Skip"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "App language"
+- tapOn:
+    text: "Library"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "Translate documents"

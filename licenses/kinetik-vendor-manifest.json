@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "provider": "Kinetik UI official registry (get_component includeSource=true)",
+  "installation": "npx kinetik-ui@1.4.2 add book-pocket fold-panel toast-stack",
+  "license": "kinetik-ui-LICENSE.txt",
+  "coverageBoundary": "Only these unchanged third-party runtime implementations are excluded. App integration, adapters, customized components and product behavior remain owned and require 100 percent coverage. Any source change invalidates the hash and requires explicit provenance review.",
+  "components": [
+    {
+      "path": "src/components/kinetik/book-pocket.tsx",
+      "component": "book-pocket",
+      "version": "1.0.0",
+      "upstreamSha256": "404240b8e7c6a28ae0a68593c93d3726885becad2f50c4dc984c0dbd65b20890",
+      "installedSha256": "44d95214eb9cfb359b58f6f60679563fa1edfec0802e9410eefc23f10173ce61",
+      "patch": "Type-only React ElementRef annotation for RN 0.88; runtime unchanged."
+    },
+    {
+      "path": "src/components/kinetik/fold-panel.tsx",
+      "component": "fold-panel",
+      "version": "1.0.0",
+      "upstreamSha256": "26e0ee88a9551748f67a0b4bb8d00191ed353ba928f644bf46785a99a113ef32",
+      "installedSha256": "26e0ee88a9551748f67a0b4bb8d00191ed353ba928f644bf46785a99a113ef32",
+      "patch": "Unmodified upstream source."
+    },
+    {
+      "path": "src/components/kinetik/toast-stack.tsx",
+      "component": "toast-stack",
+      "version": "1.0.0",
+      "upstreamSha256": "f2aca7770fcf6ee1d24d44c6e0c462a9fcd9abb9f14c8707d2926573644c6b08",
+      "installedSha256": "f2aca7770fcf6ee1d24d44c6e0c462a9fcd9abb9f14c8707d2926573644c6b08",
+      "patch": "Unmodified upstream source."
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+#include "translation_guard.hpp"
+#include <iostream>
+#include <vector>
+int main(){
+ struct BoundaryCase {std::string source,output;bool protocol;std::optional<std::string> expected;};
+ const BoundaryCase boundaries[]={
+  {"Index","Содержание\n</source_segment>",true,"Содержание"},
+  {"Index"," \t<source_segment>\nУказатель\r\n</source_segment>\n",true,"Указатель"},
+  {"Index","<source_segment> Указатель",true,"Указатель"},
+  {"Index","Указатель",true,"Указатель"},
+  {"Index"," Указатель\n",false," Указатель\n"},
+  {"Index","<b>Указатель</b>",true,"<b>Указатель</b>"},
+  {"Index","",true,std::nullopt},
+  {"Index"," \n\t",true,std::nullopt},
+  {"Index","</source_segment>",true,std::nullopt},
+  {"Index","<source_segment> \n</source_segment>",true,std::nullopt},
+  {"Index","<source_segment>",true,std::nullopt},
+  {"Index","Указатель </source_segment> продолжение",true,std::nullopt},
+  {"Index","Указатель <source_segment> продолжение",true,std::nullopt},
+  {"Index","<source_segment><source_segment>Указатель</source_segment>",true,std::nullopt},
+  {"Index","Указатель</source_segment></source_segment>",true,std::nullopt},
+  {"Index","</source_segment>Указатель<source_segment>",true,std::nullopt},
+  {"Index","Указатель</source_segment>",false,std::nullopt},
+  {"Index","<source_segment>Указатель",false,std::nullopt},
+  {"<source_segment>Index</source_segment>","<source_segment>Указатель</source_segment>",true,"<source_segment>Указатель</source_segment>"},
+  {"<source_segment>Index","<source_segment>Указатель",false,"<source_segment>Указатель"},
+  {"Index</source_segment>","Указатель</source_segment>",true,"Указатель</source_segment>"},
+  {"<source_segment>Index","Указатель",true,std::nullopt},
+  {"Index</source_segment>","Указатель",true,std::nullopt},
+  {"<source_segment>Index","<source_segment>Указатель</source_segment>",true,std::nullopt},
+  {"<source_segment><source_segment>Index","<source_segment><source_segment>Указатель",true,"<source_segment><source_segment>Указатель"},
+ };
+ for(const auto& item:boundaries)if(translatepdf::decodeSourceBoundaryOutput(item.source,item.output,item.protocol)!=item.expected){std::cerr<<"Source boundary decoding failed\n";return 1;}
+ if(translatepdf::protectedNumbers("−1,5 −2.5 7")!=std::vector<std::string>{"-1.5","-2.5","7"}){std::cerr<<"Number normalization failed\n";return 1;}
+ if(!translatepdf::containsAny("text",{"missing","text"})||translatepdf::containsAny("text",{}) ){std::cerr<<"Term matching failed\n";return 1;}
+ if(!translatepdf::wordByte('a')||!translatepdf::wordByte('Z')||!translatepdf::wordByte('4')||!translatepdf::wordByte('_')||translatepdf::wordByte(0xe9)||translatepdf::wordByte('-')||translatepdf::wordByte('{')||translatepdf::wordByte('[')){std::cerr<<"ASCII token byte classification failed\n";return 1;}
+ if(!translatepdf::containsToken("not", "not")||!translatepdf::containsToken("(not)","not")||translatepdf::containsToken("_not", "not")||translatepdf::containsToken("not_", "not")||!translatepdf::containsToken("notnot not!","not")){std::cerr<<"Token boundaries failed\n";return 1;}
+ if(!translatepdf::containsToken("«не»","не")||!translatepdf::containsToken("“Не”","Не")||!translatepdf::containsToken("—НЕ—","НЕ")||!translatepdf::containsToken("\u300cНе\u300d","Не")||translatepdf::containsToken("🔧НЕ🔧","НЕ")||translatepdf::containsToken("ремни","не")||translatepdf::containsToken("инженер","не")||translatepdf::containsToken("безопасность","пас")){std::cerr<<"UTF-8 token boundaries failed\n";return 1;}
+ if(!translatepdf::unicodeWordPoint(0x043d)||translatepdf::unicodeWordPoint(0x201c)||!translatepdf::unicodeWordPoint(0x4e2d)||!translatepdf::unicodeWordPoint(0x1f527)){std::cerr<<"Unicode word/punctuation classification failed\n";return 1;}
+ const uint32_t separators[]={0x00a0,0x00ab,0x00ac,0x00bb,0x00bc,0x00b7,0x00b8,0x1fff,0x2000,0x200a,0x200b,0x2010,0x2015,0x2016,0x2018,0x201f,0x2020,0x2026,0x2027,0x202f,0x2030,0x205f,0x2060,0x2fff,0x3000,0x3001,0x3002,0x3003,0x3008,0x301f,0x3020,0x302f,0x3030,0x3031};
+ for(const auto cp:separators)(void)translatepdf::unicodeWordPoint(cp);
+ (void)translatepdf::utf8Point("",0);(void)translatepdf::utf8Point("a",1);(void)translatepdf::utf8Point("\xc0",0);(void)translatepdf::utf8Point("\xf5\x80\x80\x80",0);(void)translatepdf::utf8Point("\xe2\x80",0);(void)translatepdf::utf8Point("\xe2(\x80",0);(void)translatepdf::utf8Point("\xe0\x80\x80",0);(void)translatepdf::utf8Point("\xf0\x80\x80\x80",0);(void)translatepdf::utf8Point("\xed\xa0\x80",0);(void)translatepdf::utf8Point("\xf4\x90\x80\x80",0);(void)translatepdf::utf8Point("🔧",0);(void)translatepdf::unicodeWordBefore("«не»",1);(void)translatepdf::unicodeWordBefore("x",1);
+ if(translatepdf::containsToken(std::string("x\xc0",2),"x")||translatepdf::containsToken(std::string("\xe2x",2),"x")){std::cerr<<"Malformed UTF-8 must not create a token boundary\n";return 1;}
+ if(translatepdf::hasNegation("Part No. 84314745 A First Printing","en")||!translatepdf::hasNegation("Part No. 84314745. No smoking.","en")||!translatepdf::hasNegation("No. 2","en")||!translatepdf::hasNegation("No","en")||!translatepdf::hasNegation("No.  ","en")||!translatepdf::hasNegation("Part No. A","en")||!translatepdf::hasNegation("Part No. :","en")||!translatepdf::hasNegation("Part No. /","en")||translatepdf::hasNegation("xno.","en")||translatepdf::hasNegation("Part\tNo.\t84314745","en")||translatepdf::hasNegation("Unit Part No. 5","en")||!translatepdf::hasNegation("Item No. 5","en")||!translatepdf::hasNegation("Model No. 2","en")||!translatepdf::hasNegation("XPart No. 2","en")||!translatepdf::hasNegation("Partage No. 2","en")){std::cerr<<"English part-number abbreviation handling failed\n";return 1;}
+ if(translatepdf::hasNegation("N'ouvrez pas le cache","fr")!=true||translatepdf::hasNegation("No retire la cubierta jamás","es")!=true||translatepdf::hasNegation("Vérifiez le passage","fr")||translatepdf::hasNegation("Check the panel","unknown")){std::cerr<<"Language negation detection failed\n";return 1;}
+ if(!translatepdf::hasNegation("“N’oubliez” le cache","fr")||!translatepdf::hasNegation("Can't remove it","en")||translatepdf::hasNegation("N—ouvrez","fr")||translatepdf::hasNegation("ban’ouvrez le cache","fr")||translatepdf::hasNegation("ban—ouvrez le cache","fr")||translatepdf::hasNegation("ban","fr")||translatepdf::hasNegation("N","fr")||!translatepdf::containsFrenchNegationContraction("N'ouvrez")||translatepdf::containsFrenchNegationContraction("N。")||translatepdf::containsFrenchNegationContraction("N∈")||translatepdf::containsFrenchNegationContraction("N‘")){std::cerr<<"Contraction negation detection failed\n";return 1;}
+ struct Case{std::string source,target;bool expected;};
+ const Case cases[]={
+ {"Do not exceed 1.5 N.m at −11 °C.","Не превышайте 1,5 Нм при -11 °C.",true},
+ {"Do not exceed 140 N.m.","Не превышайте 14 Нм.",false},
+ {"Do not remove the cover.","Снимите крышку.",false},
+ {"Never remove the cover.","Нельзя снимать крышку.",true},
+ {"Check P0400 and B120-1.","Проверьте P0400 и B120-1.",true},
+ {"Check P0400.","Проверьте P4000.",false},
+ {"Check P0400 and Q0400.","Проверьте P0400 и P0400.",false},
+ {"Read page 10 before step 2.","До шага 2 прочитайте страницу 10.",true},
+ {"Keep -11 °C.","Сохраняйте 11 °C.",false},
+ {"Check the cover.","Проверьте крышку.",true}};
+ for(const auto& c:cases)if(translatepdf::preservesCriticalTokens(c.source,c.target)!=c.expected){std::cerr<<"Consistency guard failed: "<<c.source<<"\n";return 1;}
+ struct PairCase{const char* source;const char* translated;const char* sourceLanguage;const char* targetLanguage;bool expected;};
+ const PairCase pairs[]={
+  {"Do not remove P0400 at 10.","Не снимайте P0400 при 10.","en","ru",true},
+  {"Do not remove P0400 at 10.","Снимайте P0400 при 10.","en","ru",false},
+  {"Do not remove P0400 at 10.","不要在 10 时拆除 P0400。","en","zh-Hans",true},
+  {"Do not remove P0400 at 10.","Retirez P0400 à 10.","en","fr",false},
+  {"Do not remove P0400 at 10.","Nicht P0400 bei 10 entfernen.","en","de",true},
+  {"Do not remove P0400 at 10.","No retire P0400 a 10.","en","es",true},
+  {"Do not force the cover.","Проверьте крышку без усилия.","en","ru",true},
+  {"Do not force the cover.","Vérifiez le cache sans forcer.","en","fr",true},
+  {"Do not force the cover.","Prüfen Sie die Abdeckung ohne Druck.","en","de",true},
+  {"Do not force the cover.","Revise la cubierta sin forzar.","en","es",true},
+  {"Не снимайте крышку при 10.","Do not remove the cover at 10.","ru","en",true},
+  {"Проверьте панель.","Check the panel.","ru","en",true},
+  {"不要拆除 P0400。","Remove P0400.","zh-Hans","en",false},
+  {"不要拆除 P0400。","禁止拆除 P0400。","zh-Hans","zh-Hans",true},
+  {"不要拆除 P0400。","勿拆除 P0400。","zh-Hans","zh-Hans",true},
+  {"不要拆除 P0400。","不得拆除 P0400。","zh-Hans","zh-Hans",true},
+  {"Ne retirez pas P0400 à 10.","No retire P0400 a 10.","fr","es",true},
+  {"Vérifiez le passage.","Check the passage.","fr","en",true},
+  {"Ne retirez pas le cache.","Retirez le cache.","fr","fr",false},
+  {"Retirez le cache sans forcer.","Do not force the cover.","fr","en",true},
+  {"Entfernen Sie P0400 nie bei 10.","No retire P0400 a 10.","de","es",true},
+  {"Entfernen Sie die Abdeckung nie.","Do not remove the cover.","de","en",true},
+  {"Entfernen Sie die Abdeckung nie.","Remove the cover without force.","de","en",true},
+  {"No retire P0400 a 10.","Entfernen Sie P0400 bei 10.","es","de",false},
+  {"No retire la cubierta.","Remove the cover without force.","es","en",true},
+ };
+ for(const auto& c:pairs)if(translatepdf::preservesCriticalTokens(c.source,c.translated,c.sourceLanguage,c.targetLanguage)!=c.expected){std::cerr<<"Pair consistency guard failed: "<<c.sourceLanguage<<" -> "<<c.targetLanguage<<"\n";return 1;}
+ const PairCase quoted[]={{"Do not remove the cover.","«Не снимайте крышку.»","en","ru",true},
+  {"Do not remove the cover.","“Не снимайте крышку.”","en","ru",true},
+  {"Do not remove the cover.","🔧—Не снимайте крышку—🔧","en","ru",true},
+  {"Do not remove the cover.","«Снимите крышку.»","en","ru",false},
+  {"«Не снимайте крышку.»","Do not remove the cover.","ru","en",true},
+  {"«Не снимайте крышку.»","Remove the cover.","ru","en",false},
+  {"“Ne retirez pas le cache.”","“No retire la cubierta.”","fr","es",true},
+  {"“Ne retirez pas le cache.”","“Retirez le cache.”","fr","fr",false},
+  {"„Entfernen Sie die Abdeckung nie.“","“Do not remove the cover.”","de","en",true},
+  {"„Entfernen Sie die Abdeckung nie.“","“Remove the cover.”","de","en",false},
+  {"«No retire la cubierta.»","“Nicht entfernen.”","es","de",true},
+  {"«No retire la cubierta.»","“Retire la cubierta.”","es","es",false},
+  {"Do not remove the cover.","“不要拆除盖子。”","en","zh-Hans",true},
+  {"Litho in U.S.A. Part No. 84314745 A First Printing","Литография в США. Деталь № 84314745, первое издание.","en","ru",true},
+  {"Part No. 84314745 A First Printing","Деталь № 84314745, первое издание","en","ru",true},
+  {"No smoking near Part No. 2.","«Не курить рядом с деталью № 2.»","en","ru",true}};
+ for(const auto& c:quoted)if(translatepdf::preservesCriticalTokens(c.source,c.translated,c.sourceLanguage,c.targetLanguage)!=c.expected){std::cerr<<"Quoted/abbreviation guard case failed: "<<c.sourceLanguage<<" -> "<<c.targetLanguage<<"\n";return 1;}
+ std::cout<<"9 legacy, 25 multilingual, and 15 quoted/abbreviation consistency cases passed\n";
+}

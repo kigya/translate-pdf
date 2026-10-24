@@ -1,0 +1,62 @@
+appId: dev.kigya.translatepdf
+name: Search and persistent translated-document colors
+tags:
+  - T43
+# Requires an already translated synthetic DOC_NAME fixture; no upload is performed.
+---
+- assertVisible: "Translate documents"
+- tapOn:
+    text: "Color label: ${DOC_NAME}, .*"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "No color"
+- tapOn:
+    text: "No color"
+    waitToSettleTimeoutMs: 500
+- tapOn:
+    text: "Color label: ${DOC_NAME}, No color"
+    waitToSettleTimeoutMs: 500
+- tapOn:
+    text: "Red"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "Color label: ${DOC_NAME}, Red"
+- tapOn:
+    text: "Sort documents, .*"
+    waitToSettleTimeoutMs: 500
+- tapOn:
+    text: "By color"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "Sort documents, By color"
+- tapOn:
+    text: "Search documents"
+    waitToSettleTimeoutMs: 500
+- inputText: "__no_matching_document__"
+- assertVisible: "No documents found"
+- hideKeyboard
+- tapOn:
+    text: "Clear search"
+    waitToSettleTimeoutMs: 500
+- tapOn:
+    text: "Cancel"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "Color label: ${DOC_NAME}, Red"
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: "Translate documents"
+    timeout: 60000
+- assertVisible: "Color label: ${DOC_NAME}, Red"
+- assertVisible: "Sort documents, By color"
+- tapOn:
+    text: "Color label: ${DOC_NAME}, Red"
+    waitToSettleTimeoutMs: 500
+- tapOn:
+    text: "No color"
+    waitToSettleTimeoutMs: 500
+- assertVisible: "Color label: ${DOC_NAME}, No color"
+- tapOn:
+    text: "Sort documents, By color"
+    waitToSettleTimeoutMs: 500
+- tapOn:
+    text: "Newest first"
+    waitToSettleTimeoutMs: 500

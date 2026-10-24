@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "CocoaPods public-spec SHA-1 pin for React-cxxstableapi; exact lockfile line only"
+condition = "AND"
+paths = ["^ios/Podfile\\.lock$"]
+regexTarget = "line"
+regexes = ["^\\s*React-cxxstableapi: f35502b4c542a0d44031b42f91c4ca813d267e16\\s*$"]

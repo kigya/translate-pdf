@@ -1,0 +1,22 @@
+# Independently reviewed build-tool applicability; raw findings remain in verification evidence.
+# Recheck these exact contexts after dependency, build command or input-trust changes.
+# Application and native runtime advisories are never covered by these entries.
+[[IgnoredVulns]]
+id = "GHSA-vfj7-8cjw-p6xm"
+ignoreUntil = 2026-11-22
+reason = "Reviewed 2026-10-22: braces3.0.3 is absent from Android/iOS Release JS maps; Jest/Metro/CLI use trusted repository globs, never document/provider text. Metro start binds localhost. Re-review if dynamic untrusted patterns, build input trust, package version or runtime reachability changes. Raw scan retained."
+
+[[IgnoredVulns]]
+id = "GHSA-86w9-cpqp-85rv"
+ignoreUntil = 2026-11-22
+reason = "Reviewed 2026-10-22: node-forge1.4.0 is absent from Release JS maps; CLI only verifies locally generated signatures/local matching key pairs. Updates disabled, no EAS project/signing certificate configuration, no attacker-supplied forge verifier. Re-review on signing/config, certificate input or runtime reachability change. Raw scan retained."
+
+[[IgnoredVulns]]
+id = "GHSA-hp3w-g68c-fv3c"
+ignoreUntil = 2026-11-22
+reason = "Reviewed 2026-10-22: sprintf-js1.0.3 is absent from Release JS maps; argparse receives fixed trusted help templates, never document text as a format string. Re-review on untrusted format/help/config input, version or runtime reachability change. Raw scan retained."
+
+[[IgnoredVulns]]
+id = "GHSA-84m7-p3x7-pcfv"
+ignoreUntil = 2026-11-22
+reason = "Reviewed 2026-10-22: mcp1.29.0 is a local Semgrep1.182.1 transitive tool dependency. The only approved invocation is semgrep scan --oss-only with pinned local rules, not semgrep mcp; it starts no stateful StreamableHTTP MCP server. Re-review on server/listener/command, transport, dependency version or input-trust change; remove after mcp>=1.30.0. Raw scan retained. This does not exempt any application/runtime dependency."

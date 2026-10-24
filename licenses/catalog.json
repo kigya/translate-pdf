@@ -1,0 +1,441 @@
+{
+  "version": 1,
+  "notices": [
+    {
+      "id": "react",
+      "title": "React",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "react/LICENSE"
+      ]
+    },
+    {
+      "id": "react-native",
+      "title": "React Native",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "react-native/LICENSE"
+      ]
+    },
+    {
+      "id": "hermes",
+      "title": "Hermes JavaScript engine",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "hermes/LICENSE"
+      ]
+    },
+    {
+      "id": "expo",
+      "title": "Expo SDK and Router",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "expo/LICENSE"
+      ]
+    },
+    {
+      "id": "react-native-gesture-handler",
+      "title": "React Native Gesture Handler",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "react-native-gesture-handler/LICENSE"
+      ]
+    },
+    {
+      "id": "react-native-screens",
+      "title": "React Native Screens",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "react-native-screens/LICENSE"
+      ]
+    },
+    {
+      "id": "react-native-safe-area-context",
+      "title": "React Native Safe Area Context",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "react-native-safe-area-context/LICENSE"
+      ]
+    },
+    {
+      "id": "react-native-reanimated",
+      "title": "React Native Reanimated",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "react-native-reanimated/LICENSE"
+      ]
+    },
+    {
+      "id": "react-native-worklets",
+      "title": "React Native Worklets",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "react-native-worklets/LICENSE"
+      ]
+    },
+    {
+      "id": "react-native-svg",
+      "title": "React Native SVG",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "react-native-svg/LICENSE"
+      ]
+    },
+    {
+      "id": "react-native-skia",
+      "title": "React Native Skia",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "react-native-skia/LICENSE.md",
+        "react-native-skia-upstream-LICENSE",
+        "react-native-skia/third-party/expat/COPYING",
+        "react-native-skia/third-party/harfbuzz/COPYING",
+        "react-native-skia/third-party/libjpeg-turbo/LICENSE.md",
+        "react-native-skia/third-party/libjpeg-turbo/README.ijg",
+        "react-native-skia/third-party/libpng/LICENSE",
+        "react-native-skia/third-party/libwebp/COPYING",
+        "react-native-skia/third-party/libwebp/PATENTS",
+        "react-native-skia/third-party/zlib/LICENSE",
+        "react-native-skia/third-party/piex/LICENSE",
+        "react-native-skia/third-party/dng_sdk/NOTICE",
+        "react-native-skia/third-party/dng_sdk/PATENTS",
+        "react-native-skia/third-party/wuffs/LICENSE",
+        "react-native-skia/third-party/wuffs/SKIA-LICENSE",
+        "react-native-skia/third-party/CSSColorParser/NOTICE",
+        "react-native-skia/third-party/wrapper/NOTICE"
+      ]
+    },
+    {
+      "id": "react-native-view-shot",
+      "title": "React Native View Shot",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "react-native-view-shot/LICENSE"
+      ]
+    },
+    {
+      "id": "kinetik-ui",
+      "title": "Kinetik UI components",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "kinetik-ui-LICENSE.txt"
+      ]
+    },
+    {
+      "id": "docx-preview",
+      "title": "DOCX preview renderer",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "docx-preview-LICENSE.txt"
+      ]
+    },
+    {
+      "id": "jszip",
+      "title": "JSZip",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "jszip-MIT-LICENSE.txt",
+        "jszip-runtime/pako-LICENSE",
+        "jszip-runtime/lie-LICENSE.md",
+        "jszip-runtime/immediate-LICENSE.txt",
+        "jszip-runtime/setimmediate-LICENSE.txt"
+      ]
+    },
+    {
+      "id": "llama-cpp",
+      "title": "llama.cpp inference engine",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "llama.cpp/LICENSE"
+      ]
+    },
+    {
+      "id": "nlohmann-json",
+      "title": "nlohmann/json",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "nlohmann-json/LICENSE"
+      ]
+    },
+    {
+      "id": "miniz",
+      "title": "miniz ZIP library",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "miniz-LICENSE.txt"
+      ]
+    },
+    {
+      "id": "pugixml",
+      "title": "pugixml XML parser",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "pugixml-LICENSE.txt"
+      ]
+    },
+    {
+      "id": "pdfium",
+      "title": "PDFium and its bundled components",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "pdfium/8100/LICENSE",
+        "pdfium/8100/abseil.txt",
+        "pdfium/8100/agg23.txt",
+        "pdfium/8100/dragonbox-Apache2-LLVM.txt",
+        "pdfium/8100/dragonbox-Boost.txt",
+        "pdfium/8100/fast_float.txt",
+        "pdfium/8100/freetype.txt",
+        "pdfium/8100/harfbuzz.txt",
+        "pdfium/8100/icu.txt",
+        "pdfium/8100/lcms.txt",
+        "pdfium/8100/libjpeg_turbo.ijg",
+        "pdfium/8100/libjpeg_turbo.md",
+        "pdfium/8100/libopenjpeg.txt",
+        "pdfium/8100/libpng.txt",
+        "pdfium/8100/llvm-libc.txt",
+        "pdfium/8100/pdfium.txt",
+        "pdfium/8100/simdutf.txt",
+        "pdfium/8100/zlib.txt"
+      ]
+    },
+    {
+      "id": "tesseract4android",
+      "title": "Tesseract OCR for Android",
+      "platforms": [
+        "android"
+      ],
+      "files": [
+        "tesseract4android/4.9.0/LICENSE",
+        "tesseract4android/4.9.0/dependencies/leptonica/LICENSE.txt",
+        "tesseract4android/4.9.0/dependencies/libjpeg/README",
+        "tesseract4android/4.9.0/dependencies/libpng/LICENSE",
+        "tesseract4android/4.9.0/dependencies/tesseract/LICENSE"
+      ]
+    },
+    {
+      "id": "tessdata-fast",
+      "title": "tessdata_fast OCR language data",
+      "platforms": [
+        "android"
+      ],
+      "files": [
+        "tessdata-fast/LICENSE.txt"
+      ]
+    },
+    {
+      "id": "noto-sans-fonts",
+      "title": "Noto Sans fonts",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "noto-sans/LICENSE.txt",
+        "fonts/NotoSansSC/OFL.txt"
+      ]
+    },
+    {
+      "id": "hy-mt2-1.8b",
+      "title": "Hy-MT2 1.8B model",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "models/hy-mt2-1.8b/LICENSE-Apache-2.0.txt"
+      ]
+    },
+    {
+      "id": "translategemma-4b",
+      "title": "TranslateGemma 4B model",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "models/TranslateGemma/TermsOfUse.txt",
+        "models/TranslateGemma/ProhibitedUsePolicy.txt",
+        "models/TranslateGemma/Notice",
+        "models/TranslateGemma/ModificationNotice.txt"
+      ]
+    },
+    {
+      "id": "hy-mt2-7b",
+      "title": "Hy-MT2 7B model",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "models/hy-mt2-7b/LICENSE",
+        "models/hy-mt2-7b/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "react-native-js-runtime",
+      "title": "React Native JavaScript runtime dependencies",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "js-runtime/_babel_runtime-LICENSE",
+        "js-runtime/base64-js-LICENSE",
+        "js-runtime/invariant-LICENSE",
+        "js-runtime/memoize-one-LICENSE",
+        "js-runtime/nullthrows-LICENSE",
+        "js-runtime/promise-LICENSE",
+        "js-runtime/react-native-is-edge-to-edge-LICENSE",
+        "js-runtime/regenerator-runtime-LICENSE",
+        "js-runtime/stacktrace-parser-LICENSE",
+        "js-runtime/whatwg-fetch-LICENSE",
+        "js-runtime-current/ansi-styles-LICENSE",
+        "js-runtime-current/expo-metro-LICENSE",
+        "js-runtime-current/flow-enums-react-is-LICENSE",
+        "js-runtime-current/nanoid-LICENSE",
+        "js-runtime-current/radix-ui-LICENSE",
+        "js-runtime-current/react-fast-compare-LICENSE",
+        "js-runtime-current/react-freeze-LICENSE",
+        "js-runtime-current/react-native-masked-view-LICENSE",
+        "js-runtime-current/semver-LICENSE",
+        "js-runtime-current/standard-navigation-LICENSE",
+        "js-runtime-current/ungap-structured-clone-LICENSE",
+        "js-runtime-current/warn-once-LICENSE",
+        "js-runtime-current/whatwg-url-minimum-LICENSE.md"
+      ]
+    },
+    {
+      "id": "skia-android",
+      "title": "Skia \u00b7 Android libraries",
+      "platforms": [
+        "android"
+      ],
+      "files": [
+        "react-native-skia/third-party/freetype/LICENSE.TXT",
+        "react-native-skia/third-party/freetype/docs/FTL.TXT",
+        "react-native-skia/third-party/cpu-features/NOTICE"
+      ]
+    },
+    {
+      "id": "skia-ios",
+      "title": "Skia \u00b7 iOS libraries",
+      "platforms": [
+        "ios"
+      ],
+      "files": [
+        "react-native-skia/third-party/icu/LICENSE",
+        "react-native-skia/third-party/libgrapheme/LICENSE"
+      ]
+    },
+    {
+      "id": "native-runtime-common",
+      "title": "React Native native runtime dependencies",
+      "platforms": [
+        "android",
+        "ios"
+      ],
+      "files": [
+        "native-runtime/common/Apache-2.0.txt",
+        "native-runtime/common/boost-LICENSE.txt",
+        "native-runtime/common/double-conversion-LICENSE.txt",
+        "native-runtime/common/glog-COPYING.txt",
+        "native-runtime/common/fmt-LICENSE.txt",
+        "native-runtime/common/glog-NOTICE.txt"
+      ]
+    },
+    {
+      "id": "native-runtime-android",
+      "title": "Android runtime dependencies",
+      "platforms": [
+        "android"
+      ],
+      "files": [
+        "native-runtime/android/commons-io-NOTICE.txt",
+        "native-runtime/android/commons-codec-NOTICE.txt",
+        "native-runtime/android/okhttp-psl-NOTICE.txt",
+        "native-runtime/android/MPL-2.0.txt",
+        "native-runtime/android/okhttp-psl-SOURCE.txt",
+        "native-runtime/android/bolts-LICENSE.txt",
+        "native-runtime/android/zstd-LICENSE.txt",
+        "native-runtime/android/expo-v2-LICENSE.txt",
+        "native-runtime/android/pika-LICENSE.txt",
+        "native-runtime/android/brotli-LICENSE.txt",
+        "native-runtime/android/brotli-NOTICE.txt",
+        "native-runtime/android/libcxx-LICENSE.txt",
+        "native-runtime/android/jpeg-turbo-LICENSE.md",
+        "native-runtime/android/jpeg-turbo-README.ijg"
+      ]
+    },
+    {
+      "id": "native-runtime-ios",
+      "title": "iOS native runtime dependencies",
+      "platforms": [
+        "ios"
+      ],
+      "files": [
+        "native-runtime/ios/socketrocket-LICENSE.txt",
+        "native-runtime/ios/socketrocket-NOTICE.txt"
+      ]
+    }
+  ]
+}

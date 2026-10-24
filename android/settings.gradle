@@ -1,0 +1,24 @@
+pluginManagement {
+ includeBuild("../node_modules/@react-native/gradle-plugin")
+ includeBuild("../node_modules/expo-modules-autolinking/android/expo-gradle-plugin")
+}
+plugins { id("com.facebook.react.settings"); id("expo-autolinking-settings") }
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://jitpack.io") }
+    }
+}
+def nodeBinary = System.getenv('NODE_BINARY') ?: 'node'
+def reactNativeCli = new File(settingsDir, '../node_modules/@react-native-community/cli/build/bin.js').absolutePath
+extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
+    ex.autolinkLibrariesFromCommand(expoAutolinking.rnConfigCommand)
+}
+rootProject.name = 'TranslatePDF'
+include ':app'
+includeBuild('../node_modules/@react-native/gradle-plugin')
+
+expoAutolinking.useExpoModules()
+expoAutolinking.useExpoVersionCatalog()
